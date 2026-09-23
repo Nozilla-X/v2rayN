@@ -1,20 +1,43 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using ServiceLib;
+using v2rayN.Web.Api;
 using v2rayN.Web.Contracts;
 using v2rayN.Web.Services;
 
-// ServiceLib resolves its config, SQLite, Core and log paths through LocalApplicationData.
-// Set this before constructing any ServiceLib singleton so a read-only app directory is never used.
-Environment.SetEnvironmentVariable(Global.LocalAppData, "1");
+// An optional XDG data-home override lets systemd and container services share the same
+// ServiceLib path behavior. Without it, ServiceLib keeps its native writable-app-dir/fallback policy.
+var dataHome = Environment.GetEnvironmentVariable("V2RAYN_DATA_HOME");
+if (!string.IsNullOrWhiteSpace(dataHome))
+{
+    var fullDataHome = Path.GetFullPath(dataHome);
+    Directory.CreateDirectory(fullDataHome);
+    Environment.SetEnvironmentVariable("XDG_DATA_HOME", fullDataHome);
+    Environment.SetEnvironmentVariable(Global.LocalAppData, "1");
+}
 
-var builder = WebApplication.CreateBuilder(args);
+var applicationBase = AppContext.BaseDirectory;
+var webRoot = Path.Combine(applicationBase, "wwwroot");
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = applicationBase,
+    WebRootPath = Directory.Exists(webRoot) ? webRoot : null,
+});
+if (string.IsNullOrWhiteSpace(builder.Configuration[Microsoft.AspNetCore.Hosting.WebHostDefaults.ServerUrlsKey])
+    && string.IsNullOrWhiteSpace(builder.Configuration["http_ports"]))
+{
+    builder.WebHost.UseUrls("http://127.0.0.1:5080");
+}
 builder.Services.AddSingleton<EventHub>();
 builder.Services.AddSingleton<LogBuffer>();
 builder.Services.AddSingleton<V2rayRuntime>();
 builder.Services.AddHostedService<V2rayHostedService>(services =>
     new V2rayHostedService(services.GetRequiredService<V2rayRuntime>()));
+builder.Services.ConfigureHttpJsonOptions(options =>
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
 
 var apiKey = Environment.GetEnvironmentVariable("V2RAYN_WEB_API_KEY");
 if (string.IsNullOrWhiteSpace(apiKey))
@@ -45,7 +68,7 @@ app.Use(async (context, next) =>
             || !CryptographicOperations.FixedTimeEquals(expectedBytes, suppliedBytes))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-            await context.Response.WriteAsJsonAsync(new { error = "A valid bearer token is required." });
+            await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail("unauthorized", ApiMessageKeys.CommonUnauthorized));
             return;
         }
     }
@@ -53,71 +76,35 @@ app.Use(async (context, next) =>
     await next();
 });
 
-app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
-app.MapGet("/api/status", async (V2rayRuntime runtime) => Results.Ok(await runtime.GetStatusAsync()));
-app.MapGet("/api/logs", (int? limit, V2rayRuntime runtime) => Results.Ok(runtime.GetRecentLogs(limit ?? 200)));
-
-app.MapGet("/api/subscriptions", async (V2rayRuntime runtime) => Results.Ok(await runtime.GetSubscriptionsAsync()));
-app.MapPost("/api/subscriptions", async (SubscriptionInput input, V2rayRuntime runtime) =>
+app.Use(async (context, next) =>
 {
-    var result = await runtime.AddSubscriptionAsync(input);
-    return result.Success ? Results.Created($"/api/subscriptions/{result.Subscription!.Id}", result.Subscription) : Results.BadRequest(new { error = result.Message });
-});
-app.MapPut("/api/subscriptions/{id}", async (string id, SubscriptionInput input, V2rayRuntime runtime) =>
-{
-    var result = await runtime.UpdateSubscriptionAsync(id, input);
-    return result.Success ? Results.Ok(result.Subscription) : Results.BadRequest(new { error = result.Message });
-});
-app.MapDelete("/api/subscriptions/{id}", async (string id, V2rayRuntime runtime) =>
-{
-    var result = await runtime.DeleteSubscriptionAsync(id);
-    return result.Success ? Results.Ok(result) : Results.NotFound(new { error = result.Message });
-});
-app.MapPost("/api/subscriptions/{id}/update", (string id, bool? useProxy, V2rayRuntime runtime) =>
-    runtime.StartSubscriptionUpdate(id, useProxy ?? false)
-        ? Results.Accepted($"/api/subscriptions/{id}", new OperationView(true, "Subscription update started."))
-        : Results.Conflict(new OperationView(false, "An update for this subscription is already running.")));
-
-app.MapGet("/api/profiles", async (string? subscriptionId, string? filter, V2rayRuntime runtime) =>
-    Results.Ok(await runtime.GetProfilesAsync(subscriptionId, filter)));
-app.MapPost("/api/profiles/{id}/select", async (string id, V2rayRuntime runtime, CancellationToken cancellationToken) =>
-{
-    var result = await runtime.SelectProfileAsync(id, cancellationToken);
-    return result.Success ? Results.Ok(result) : Results.Conflict(result);
-});
-app.MapPost("/api/profiles/{id}/latency", async (string id, V2rayRuntime runtime) =>
-{
-    var result = await runtime.StartLatencyTestAsync(id);
-    return result.Success ? Results.Accepted($"/api/profiles/{id}", result) : Results.BadRequest(result);
-});
-app.MapPost("/api/latency/stop", (V2rayRuntime runtime) => Results.Ok(runtime.StopLatencyTests()));
-
-app.MapPost("/api/core/start", async (V2rayRuntime runtime, CancellationToken cancellationToken) =>
-{
-    var result = await runtime.StartCoreAsync(null, cancellationToken);
-    return result.Success ? Results.Ok(result) : Results.Conflict(result);
-});
-app.MapPost("/api/core/stop", async (V2rayRuntime runtime, CancellationToken cancellationToken) =>
-    Results.Ok(await runtime.StopCoreAsync(cancellationToken)));
-app.MapPost("/api/core/restart", async (V2rayRuntime runtime, CancellationToken cancellationToken) =>
-{
-    var result = await runtime.RestartCoreAsync(cancellationToken);
-    return result.Success ? Results.Ok(result) : Results.Conflict(result);
-});
-
-app.MapGet("/api/events", async (HttpContext context, EventHub events) =>
-{
-    context.Response.ContentType = "text/event-stream";
-    context.Response.Headers["Cache-Control"] = "no-cache";
-    context.Response.Headers["X-Accel-Buffering"] = "no";
-
-    await foreach (var message in events.Subscribe(context.RequestAborted))
+    try
     {
-        var payload = JsonSerializer.Serialize(message.Data, message.Data.GetType(), new JsonSerializerOptions(JsonSerializerDefaults.Web));
-        await context.Response.WriteAsync($"event: {message.Type}\ndata: {payload}\n\n", context.RequestAborted);
-        await context.Response.Body.FlushAsync(context.RequestAborted);
+        await next();
+    }
+    catch (BadHttpRequestException exception) when (context.Request.Path.StartsWithSegments("/api") && !context.Response.HasStarted)
+    {
+        app.Logger.LogInformation(exception, "Invalid API request.");
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail("request_invalid", ApiMessageKeys.CommonInvalidInput));
+    }
+    catch (System.Text.Json.JsonException exception) when (context.Request.Path.StartsWithSegments("/api") && !context.Response.HasStarted)
+    {
+        app.Logger.LogInformation(exception, "Invalid API JSON payload.");
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail("json_invalid", ApiMessageKeys.CommonInvalidInput));
+    }
+    catch (Exception exception) when (context.Request.Path.StartsWithSegments("/api") && !context.Response.HasStarted)
+    {
+        app.Logger.LogError(exception, "Unhandled API request failure.");
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail("internal_error", ApiMessageKeys.CommonInternal));
     }
 });
+
+app.MapWebApi();
+app.MapFallback("/api/{**path}", () =>
+    Results.NotFound(ApiEnvelope<object>.Fail("route_not_found", ApiMessageKeys.CommonRouteNotFound)));
 
 app.UseDefaultFiles();
 app.UseStaticFiles();

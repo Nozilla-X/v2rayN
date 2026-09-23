@@ -1,4 +1,5 @@
 using v2rayN.Web.Contracts;
+using ServiceLib.Common;
 
 namespace v2rayN.Web.Services;
 
@@ -23,11 +24,24 @@ public sealed class LogBuffer
         return entry;
     }
 
-    public IReadOnlyList<LogView> Recent(int limit)
+    public IReadOnlyList<LogView> Recent(int limit, string? filter = null)
     {
         lock (_gate)
         {
-            return _items.TakeLast(Math.Clamp(limit, 1, Capacity)).ToArray();
+            var query = _items.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(filter))
+            {
+                query = query.Where(item => Utils.IsRegexMatch($"{item.Source} {item.Message}", filter));
+            }
+            return query.TakeLast(Math.Clamp(limit, 1, Capacity)).ToArray();
+        }
+    }
+
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _items.Clear();
         }
     }
 }

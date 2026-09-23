@@ -72,7 +72,14 @@ async function request(path, options = {}) {
     throw new Error('访问令牌无效或已过期')
   }
   const body = response.status === 204 ? null : await response.json().catch(() => null)
-  if (!response.ok) throw new Error(body?.error || body?.message || `请求失败 (${response.status})`)
+  if (!response.ok) {
+    throw new Error(body?.messageKey || body?.code || body?.error || body?.message || `请求失败 (${response.status})`)
+  }
+  // Backend read and operation responses use { success, code, messageKey, data }.
+  // Unwrap data here so the view model receives the status/profile/log payload it expects.
+  if (body && typeof body === 'object' && 'success' in body && 'data' in body) {
+    return body.data
+  }
   return body
 }
 

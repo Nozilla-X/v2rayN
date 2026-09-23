@@ -1,0 +1,241 @@
+using ServiceLib.Enums;
+using ServiceLib.Models.Entities;
+using Microsoft.AspNetCore.Mvc;
+using v2rayN.Web.Contracts;
+using v2rayN.Web.Services;
+
+namespace v2rayN.Web.Api;
+
+public static class WebApiEndpoints
+{
+    public static void MapWebApi(this WebApplication app)
+    {
+        app.MapGet("/api/health", () => ApiReplies.Ok(new { status = "ok" }, "common.health"));
+        app.MapGet("/api/status", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetStatusAsync(), "status.loaded"));
+        app.MapGet("/api/operations", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetRunningOperationsAsync(), "operations.loaded"));
+        app.MapGet("/api/logs", (int? limit, string? filter, V2rayRuntime runtime) =>
+            ApiReplies.Ok(runtime.GetRecentLogs(limit ?? 200, filter), "logs.loaded"));
+        app.MapDelete("/api/logs", (V2rayRuntime runtime) =>
+        {
+            runtime.ClearLogs();
+            return ApiReplies.Ok(new { cleared = true }, "logs.cleared");
+        });
+
+        MapSubscriptions(app);
+        MapProfiles(app);
+        MapSettings(app);
+        MapCore(app);
+        MapEvents(app);
+    }
+
+    private static void MapSubscriptions(WebApplication app)
+    {
+        app.MapGet("/api/subscriptions", async (V2rayRuntime runtime) =>
+            ApiReplies.Ok(await runtime.GetSubscriptionsAsync(), "subscriptions.loaded"));
+        app.MapPost("/api/subscriptions", async (SubscriptionInput input, V2rayRuntime runtime) =>
+        {
+            var result = await runtime.AddSubscriptionAsync(input);
+            return result.Success
+                ? Results.Created($"/api/subscriptions/{result.Data!.Id}", result)
+                : Results.BadRequest(result);
+        });
+        app.MapPut("/api/subscriptions/{id}", async (string id, SubscriptionInput input, V2rayRuntime runtime) =>
+        {
+            var result = await runtime.UpdateSubscriptionAsync(id, input);
+            return result.Success ? Results.Ok(result) : Results.BadRequest(result);
+        });
+        app.MapDelete("/api/subscriptions/{id}", async (string id, V2rayRuntime runtime) =>
+        {
+            var result = await runtime.DeleteSubscriptionAsync(id);
+            return ApiReplies.Operation(result, failureStatus: StatusCodes.Status404NotFound);
+        });
+        app.MapGet("/api/subscriptions/{id}/share", async (string id, V2rayRuntime runtime) =>
+        {
+            var url = await runtime.GetSubscriptionShareAsync(id);
+            return url is null
+                ? ApiReplies.NotFound("subscription_not_found", ApiMessageKeys.SubscriptionNotFound)
+                : ApiReplies.Ok(new { id, url }, "subscriptions.shareLoaded");
+        });
+        app.MapPost("/api/subscriptions/update", (SubscriptionUpdateRequest request, V2rayRuntime runtime) =>
+            runtime.StartSubscriptionUpdate(request.SubscriptionId ?? string.Empty, request.UseProxy)
+                ? Results.Accepted("/api/operations", OperationView.Ok(ApiMessageKeys.SubscriptionUpdateStarted,
+                    new { subscriptionId = request.SubscriptionId, useProxy = request.UseProxy }))
+                : ApiReplies.Operation(OperationView.Fail("subscription_update_busy", ApiMessageKeys.SubscriptionUpdateBusy), failureStatus: StatusCodes.Status409Conflict));
+        app.MapPost("/api/subscriptions/{id}/update", (string id, bool? useProxy, V2rayRuntime runtime) =>
+            runtime.StartSubscriptionUpdate(id, useProxy ?? false)
+                ? Results.Accepted($"/api/subscriptions/{id}", OperationView.Ok(ApiMessageKeys.SubscriptionUpdateStarted,
+                    new { subscriptionId = id, useProxy = useProxy ?? false }))
+                : ApiReplies.Operation(OperationView.Fail("subscription_update_busy", ApiMessageKeys.SubscriptionUpdateBusy), failureStatus: StatusCodes.Status409Conflict));
+    }
+
+    private static void MapProfiles(WebApplication app)
+    {
+        app.MapGet("/api/profile-groups", async (V2rayRuntime runtime) =>
+            ApiReplies.Ok(await runtime.GetProfileGroupsAsync(), "profiles.groupsLoaded"));
+        app.MapPut("/api/profile-groups/current", async (ProfileGroupSelectionRequest request, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.SelectProfileGroupAsync(request.SubscriptionId), failureStatus: StatusCodes.Status404NotFound));
+        app.MapPost("/api/profile-groups/generate/all", async (string? subscriptionId, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.GenerateProfileGroupsAsync(subscriptionId, false)));
+        app.MapPost("/api/profile-groups/generate/regions", async (string? subscriptionId, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.GenerateProfileGroupsAsync(subscriptionId, true)));
+
+        app.MapGet("/api/profiles", async (string? subscriptionId, string? filter, V2rayRuntime runtime) =>
+            ApiReplies.Ok(await runtime.GetProfilesAsync(subscriptionId, filter), "profiles.loaded"));
+        app.MapGet("/api/profiles/{id}", async (string id, V2rayRuntime runtime) =>
+        {
+            var profile = await runtime.GetProfileDetailsAsync(id);
+            return profile is null
+                ? ApiReplies.NotFound("profile_not_found", ApiMessageKeys.ProfileNotFound)
+                : ApiReplies.Ok(profile, ApiMessageKeys.ProfileDetailLoaded);
+        });
+        app.MapPost("/api/profiles/import", async (ProfileImportRequest request, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.ImportProfilesAsync(request)));
+        app.MapPost("/api/profiles", async (ProfileItem profile, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.SaveProfileAsync(profile)));
+        app.MapPut("/api/profiles/{id}", async (string id, ProfileItem profile, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.SaveProfileAsync(profile, id), failureStatus: StatusCodes.Status404NotFound));
+        app.MapDelete("/api/profiles", async ([FromBody] ProfileIdsRequest request, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.DeleteProfilesAsync(request.ProfileIds)));
+        app.MapPost("/api/profiles/copy", async (ProfileIdsRequest request, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.CopyProfilesAsync(request.ProfileIds)));
+        app.MapPost("/api/profiles/move-to-group", async (MoveProfilesRequest request, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.MoveProfilesToGroupAsync(request)));
+        app.MapPost("/api/profiles/move", async (MoveProfileRequest request, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.MoveProfileAsync(request)));
+        app.MapPost("/api/profiles/sort", async (SortProfilesRequest request, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.SortProfilesAsync(request)));
+        app.MapPost("/api/profiles/deduplicate", async (string? subscriptionId, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.RemoveDuplicateProfilesAsync(subscriptionId)));
+        app.MapDelete("/api/profiles/invalid-test-results", async (string? subscriptionId, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.RemoveInvalidProfilesAsync(subscriptionId)));
+        app.MapPost("/api/profiles/export", async (ProfileExportRequest request, V2rayRuntime runtime) =>
+            ApiReplies.Ok(await runtime.ExportProfileDataAsync(request), "profiles.exportReady"));
+        app.MapPost("/api/profiles/{id}/select", async (string id, V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            ApiReplies.Operation(await runtime.SelectProfileAsync(id, cancellationToken), failureStatus: StatusCodes.Status409Conflict));
+        app.MapPost("/api/profiles/{id}/latency", async (string id, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.StartLatencyTestAsync(id), successStatus: StatusCodes.Status202Accepted));
+        app.MapPost("/api/speedtests", async (SpeedTestRequest request, V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            ApiReplies.Operation(await runtime.StartSpeedTestAsync(request, cancellationToken), successStatus: StatusCodes.Status202Accepted));
+        app.MapDelete("/api/speedtests", (V2rayRuntime runtime) => ApiReplies.Operation(runtime.StopSpeedTests()));
+        app.MapPost("/api/latency/stop", (V2rayRuntime runtime) => ApiReplies.Operation(runtime.StopLatencyTests()));
+    }
+
+    private static void MapSettings(WebApplication app)
+    {
+        app.MapGet("/api/settings", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetSettingsAsync(), "settings.loaded"));
+        app.MapPut("/api/settings/inbound", async (InboundSettingsInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateInboundSettingsAsync(input)));
+        app.MapPut("/api/settings/core", async (CoreSettingsInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateCoreSettingsAsync(input)));
+        app.MapPut("/api/settings/application", async (AppSettingsInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateAppSettingsAsync(input)));
+        app.MapPut("/api/settings/speedtest", async (SpeedTestSettingsInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateSpeedTestSettingsAsync(input)));
+        app.MapPut("/api/settings/core-types", async (CoreTypeMappingsInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateCoreTypeMappingsAsync(input.Mappings)));
+        app.MapPut("/api/settings/routing", async (RoutingSettingsInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateRoutingStrategiesAsync(input)));
+        app.MapGet("/api/settings/webdav", (V2rayRuntime runtime) => ApiReplies.Ok(runtime.GetWebDavSettings(), "backup.webdavSettingsLoaded"));
+        app.MapPut("/api/settings/webdav", async (WebDavSettingsInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateWebDavSettingsAsync(input)));
+
+        app.MapGet("/api/settings/dns/simple", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetSimpleDNSAsync(), "dns.simpleLoaded"));
+        app.MapPut("/api/settings/dns/simple", async (ServiceLib.Models.Configs.SimpleDNSItem input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateSimpleDNSAsync(input)));
+        app.MapGet("/api/settings/dns/profiles", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetDnsProfilesAsync(), "dns.profilesLoaded"));
+        app.MapPut("/api/settings/dns/profiles/{coreType}", async (ECoreType coreType, DnsProfileInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateDnsProfileAsync(coreType, input), failureStatus: StatusCodes.Status404NotFound));
+
+        app.MapGet("/api/settings/routing-profiles", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetRoutingProfilesAsync(), "routing.profilesLoaded"));
+        app.MapPost("/api/settings/routing-profiles", async (RoutingItem input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.SaveRoutingProfileAsync(input)));
+        app.MapPut("/api/settings/routing-profiles/{id}", async (string id, RoutingItem input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.SaveRoutingProfileAsync(input, id), failureStatus: StatusCodes.Status404NotFound));
+        app.MapDelete("/api/settings/routing-profiles/{id}", async (string id, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.DeleteRoutingProfileAsync(id), failureStatus: StatusCodes.Status404NotFound));
+        app.MapPost("/api/settings/routing-profiles/{id}/activate", async (string id, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.ActivateRoutingProfileAsync(id), failureStatus: StatusCodes.Status404NotFound));
+        app.MapGet("/api/settings/routing-profiles/{id}/rules", async (string id, V2rayRuntime runtime) =>
+            ApiReplies.Ok(await runtime.GetRoutingRulesAsync(id), "routing.rulesLoaded"));
+        app.MapPut("/api/settings/routing-profiles/{id}/rules", async (string id, List<RulesItem> rules, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.SaveRoutingRulesAsync(id, rules), failureStatus: StatusCodes.Status404NotFound));
+        app.MapPost("/api/settings/routing-profiles/{id}/rules/import", async (string id, RouteRulesImportInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.ImportRoutingRulesAsync(id, input)));
+        app.MapDelete("/api/settings/routing-profiles/{id}/rules/{ruleId}", async (string id, string ruleId, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.DeleteRoutingRuleAsync(id, ruleId), failureStatus: StatusCodes.Status404NotFound));
+        app.MapPost("/api/settings/routing-profiles/{id}/rules/move", async (string id, RouteRulesMoveRequest input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.MoveRoutingRuleAsync(id, input.RuleId, input.Direction, input.Position)));
+        app.MapPost("/api/settings/routing-profiles/import", async (V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.ImportRoutingProfilesAsync()));
+
+        app.MapGet("/api/settings/core-templates", async (V2rayRuntime runtime) =>
+            ApiReplies.Ok(await runtime.GetFullConfigTemplatesAsync(), "coreTemplates.loaded"));
+        app.MapPut("/api/settings/core-templates/{coreType}", async (ECoreType coreType, CoreConfigTemplateInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.SaveFullConfigTemplateAsync(coreType, input), failureStatus: StatusCodes.Status404NotFound));
+        app.MapPost("/api/settings/regional-presets/{preset}", async (EPresetType preset, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.ApplyRegionalPresetAsync(preset)));
+        app.MapDelete("/api/statistics", async (V2rayRuntime runtime) => ApiReplies.Operation(await runtime.ClearStatisticsAsync()));
+
+        app.MapPost("/api/backup/webdav/check", async (V2rayRuntime runtime) => ApiReplies.Operation(await runtime.CheckWebDavAsync()));
+        app.MapPost("/api/backup/webdav", async (V2rayRuntime runtime) => ApiReplies.Operation(await runtime.BackupToWebDavAsync()));
+        app.MapPost("/api/backup/webdav/restore", async (V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            ApiReplies.Operation(await runtime.RestoreFromWebDavAsync(cancellationToken), successStatus: StatusCodes.Status202Accepted));
+        app.MapGet("/api/backup/download", async (V2rayRuntime runtime) =>
+        {
+            var (result, filePath) = await runtime.CreateBackupArchiveAsync();
+            return result.Success && filePath is not null
+                ? Results.File(filePath, "application/zip", Path.GetFileName(filePath))
+                : ApiReplies.Operation(result);
+        });
+        app.MapPost("/api/backup/restore", async (IFormFile file, V2rayRuntime runtime, CancellationToken cancellationToken) =>
+        {
+            if (file.Length == 0)
+            {
+                return ApiReplies.Operation(OperationView.Fail("backup_file_empty", ApiMessageKeys.BackupArchiveInvalid));
+            }
+            await using var input = file.OpenReadStream();
+            return ApiReplies.Operation(await runtime.RestoreFromUploadAsync(input, cancellationToken), successStatus: StatusCodes.Status202Accepted);
+        }).DisableAntiforgery();
+    }
+
+    private static void MapCore(WebApplication app)
+    {
+        app.MapGet("/api/core/xray/check-update", async (bool? preRelease, bool? useProxy, V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            Results.Ok(await runtime.CheckXrayUpdateAsync(preRelease ?? false, useProxy ?? true, cancellationToken)));
+        app.MapPost("/api/core/xray/update", (bool? preRelease, bool? useProxy, V2rayRuntime runtime) =>
+            runtime.StartXrayUpdate(preRelease ?? false, useProxy ?? true)
+                ? Results.Accepted("/api/operations", OperationView.Ok(ApiMessageKeys.XrayUpdateStarted))
+                : ApiReplies.Operation(OperationView.Fail("xray_update_busy", ApiMessageKeys.XrayUpdateBusy), failureStatus: StatusCodes.Status409Conflict));
+        app.MapPost("/api/core/geo/update", (bool? useProxy, V2rayRuntime runtime) =>
+            runtime.StartGeoUpdate(useProxy ?? true)
+                ? Results.Accepted("/api/operations", OperationView.Ok(ApiMessageKeys.GeoUpdateStarted))
+                : ApiReplies.Operation(OperationView.Fail("geo_update_busy", ApiMessageKeys.GeoUpdateBusy), failureStatus: StatusCodes.Status409Conflict));
+
+        app.MapPost("/api/core/start", async (V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            ApiReplies.Operation(await runtime.StartCoreAsync(null, cancellationToken), failureStatus: StatusCodes.Status409Conflict));
+        app.MapPost("/api/core/stop", async (V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            ApiReplies.Operation(await runtime.StopCoreAsync(cancellationToken)));
+        app.MapPost("/api/core/restart", async (V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            ApiReplies.Operation(await runtime.RestartCoreAsync(cancellationToken), failureStatus: StatusCodes.Status409Conflict));
+    }
+
+    private static void MapEvents(WebApplication app)
+    {
+        app.MapGet("/api/events", async (HttpContext context, EventHub events) =>
+        {
+            context.Response.ContentType = "text/event-stream";
+            context.Response.Headers["Cache-Control"] = "no-cache";
+            context.Response.Headers["X-Accel-Buffering"] = "no";
+
+            await foreach (var message in events.Subscribe(context.RequestAborted))
+            {
+                var payload = System.Text.Json.JsonSerializer.Serialize(
+                    message.Data,
+                    message.Data.GetType(),
+                    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+                await context.Response.WriteAsync($"event: {message.Type}\ndata: {payload}\n\n", context.RequestAborted);
+                await context.Response.Body.FlushAsync(context.RequestAborted);
+            }
+        });
+    }
+}

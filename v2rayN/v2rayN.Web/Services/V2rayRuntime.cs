@@ -7,22 +7,34 @@ using ServiceLib.Handler.Builder;
 using ServiceLib.Helper;
 using ServiceLib.Manager;
 using ServiceLib.Models.Configs;
+using ServiceLib.Models.Dto;
 using ServiceLib.Models.Entities;
 using ServiceLib.Services;
+using NLog;
+using NLog.Config;
+using NLog.Targets;
 using v2rayN.Web.Adapters;
 using v2rayN.Web.Contracts;
 
 namespace v2rayN.Web.Services;
 
-public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration configuration)
+public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration configuration, IHostApplicationLifetime lifetime)
 {
+    private readonly EventHub _events = events;
+    private readonly LogBuffer _logs = logs;
+    private readonly IConfiguration _configuration = configuration;
+    private readonly IHostApplicationLifetime _lifetime = lifetime;
     private readonly SemaphoreSlim _coreGate = new(1, 1);
     private readonly object _subscriptionGate = new();
     private readonly Dictionary<string, Task> _subscriptionTasks = new(StringComparer.Ordinal);
     private SpeedtestService? _speedtestService;
+    private Task? _speedtestTask;
+    private Task? _xrayUpdateTask;
     private DateTimeOffset? _coreStartedAt;
     private string? _xrayPath;
+    private ServerSpeedItem? _latestTraffic;
     private bool _initialized;
+    private bool _restoring;
 
     private Config Config => AppManager.Instance.Config;
 
@@ -32,6 +44,7 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         {
             throw new InvalidOperationException("ServiceLib could not load its configuration.");
         }
+        ConfigureServiceLibConsoleLogging();
 
         AppManager.Instance.WindowDialog = new HeadlessWindowDialog();
         if (!AppManager.Instance.InitComponents())
@@ -40,8 +53,20 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         }
 
         EnsureInboundDefaults(Config);
+        var proxyPortOverride = _configuration.GetValue<int?>("V2RAYN_WEB_PROXY_PORT");
+        if (proxyPortOverride is <= 0 or > 65535)
+        {
+            throw new InvalidOperationException("V2RAYN_WEB_PROXY_PORT must be a valid TCP/UDP port (1-65535).");
+        }
+        if (proxyPortOverride is int configuredProxyPort)
+        {
+            Config.Inbound[0].LocalPort = configuredProxyPort;
+        }
         Config.TunModeItem.EnableTun = false;
-        Config.Inbound[0].AllowLANConn = configuration.GetValue("V2RAYN_WEB_PROXY_LISTEN_ALL", false);
+        if (_configuration.GetValue<bool?>("V2RAYN_WEB_PROXY_LISTEN_ALL") is bool allowProxyFromLan)
+        {
+            Config.Inbound[0].AllowLANConn = allowProxyFromLan;
+        }
         await ConfigHandler.SaveConfig(Config);
 
         await ConfigHandler.InitBuiltinDNS(Config);
@@ -49,6 +74,11 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         await ProfileExManager.Instance.Init();
         await CertPemManager.Instance.Init(Config);
         await CoreManager.Instance.Init(Config, OnCoreMessageAsync);
+        if (Config.GuiItem.EnableStatistics || Config.GuiItem.DisplayRealTimeSpeed)
+        {
+            await StatisticsManager.Instance.Init(Config, OnStatisticsUpdateAsync);
+        }
+        TaskManager.Instance.RegUpdateTask(Config, OnScheduledTaskMessageAsync);
         _xrayPath = FindXrayExecutable(out var missingXrayMessage);
         if (_xrayPath is null)
         {
@@ -56,14 +86,14 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         }
 
         _initialized = true;
-        AddLog("web", "ServiceLib initialized in headless mode.");
+        AddLog("web", "serviceLib.initialized");
 
-        if (configuration.GetValue("V2RAYN_WEB_AUTOSTART", false))
+        if (_configuration.GetValue("V2RAYN_WEB_AUTOSTART", false))
         {
             var result = await StartCoreAsync(null, cancellationToken);
             if (!result.Success)
             {
-                AddLog("core", $"Automatic start skipped or failed: {result.Message}");
+                AddLog("core", result.MessageKey);
             }
         }
     }
@@ -74,79 +104,71 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         {
             return;
         }
+        if (_restoring)
+        {
+            return;
+        }
 
         try
         {
             await CoreManager.Instance.CoreStop();
             await ProfileExManager.Instance.SaveTo();
+            await StatisticsManager.Instance.SaveTo();
+            StatisticsManager.Instance.Close();
             await ConfigHandler.SaveConfig(Config);
             await SQLiteHelper.Instance.DisposeDbConnectionAsync();
-            AddLog("web", "ServiceLib stopped.");
+            AddLog("web", "serviceLib.stopped");
         }
         catch (Exception ex)
         {
-            AddLog("web", $"Shutdown error: {ex.Message}");
+            AddLog("web", ex.Message);
         }
     }
 
     public async Task<IReadOnlyList<SubscriptionView>> GetSubscriptionsAsync()
     {
         var items = await AppManager.Instance.SubItems() ?? [];
-        return items.Select(item => new SubscriptionView(
-            item.Id,
-            item.Remarks,
-            item.Url,
-            item.Enabled,
-            item.AutoUpdateInterval,
-            item.UpdateTime,
-            item.Memo)).ToArray();
+        return items.Select(ToSubscriptionView).ToArray();
     }
 
-    public async Task<(bool Success, string Message, SubscriptionView? Subscription)> AddSubscriptionAsync(SubscriptionInput input)
+    public async Task<SubscriptionMutationResult> AddSubscriptionAsync(SubscriptionInput input)
     {
-        if (!TryValidateSubscription(input, out var message))
+        if (!TryValidateSubscription(input, out var code, out var messageKey))
         {
-            return (false, message, null);
+            return new(false, code, messageKey, null);
         }
 
-        var item = ToSubItem(input);
-        item.Id = string.Empty;
+        var item = ToSubItem(input, null);
         var result = await ConfigHandler.AddSubItem(Config, item);
         if (result != 0)
         {
-            return (false, "ServiceLib could not save the subscription.", null);
+            return new(false, "subscription_save_failed", ApiMessageKeys.SubscriptionSaveFailed, null);
         }
 
         var saved = (await AppManager.Instance.SubItems())?.FirstOrDefault(candidate => candidate.Url == item.Url);
         return saved is null
-            ? (false, "Subscription was not found after saving.", null)
-            : (true, "Subscription added.", ToSubscriptionView(saved));
+            ? new(false, "subscription_save_failed", ApiMessageKeys.SubscriptionSaveFailed, null)
+            : new(true, "ok", ApiMessageKeys.SubscriptionAdded, ToSubscriptionView(saved));
     }
 
-    public async Task<(bool Success, string Message, SubscriptionView? Subscription)> UpdateSubscriptionAsync(string id, SubscriptionInput input)
+    public async Task<SubscriptionMutationResult> UpdateSubscriptionAsync(string id, SubscriptionInput input)
     {
         var existing = await AppManager.Instance.GetSubItem(id);
         if (existing is null)
         {
-            return (false, "Subscription not found.", null);
+            return new(false, "subscription_not_found", ApiMessageKeys.SubscriptionNotFound, null);
         }
-        if (!TryValidateSubscription(input, out var message))
+        if (!TryValidateSubscription(input, out var code, out var messageKey))
         {
-            return (false, message, null);
+            return new(false, code, messageKey, null);
         }
 
-        var item = ToSubItem(input);
+        var item = ToSubItem(input, existing);
         item.Id = id;
-        item.Sort = existing.Sort;
-        item.UpdateTime = existing.UpdateTime;
-        item.PrevProfile = existing.PrevProfile;
-        item.NextProfile = existing.NextProfile;
-        item.PreSocksPort = existing.PreSocksPort;
-        item.CustomCoreType = existing.CustomCoreType;
         var result = await ConfigHandler.AddSubItem(Config, item);
         return result == 0
-            ? (true, "Subscription updated.", ToSubscriptionView(item))
-            : (false, "ServiceLib could not update the subscription.", null);
+            ? new(true, "ok", ApiMessageKeys.SubscriptionSaved, ToSubscriptionView(item))
+            : new(false, "subscription_save_failed", ApiMessageKeys.SubscriptionSaveFailed, null);
     }
 
     public async Task<OperationView> DeleteSubscriptionAsync(string id)
@@ -154,7 +176,7 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         var subscription = await AppManager.Instance.GetSubItem(id);
         if (subscription is null)
         {
-            return new(false, "Subscription not found.");
+            return OperationView.Fail("subscription_not_found", ApiMessageKeys.SubscriptionNotFound);
         }
 
         var selectedProfile = await AppManager.Instance.GetProfileItem(Config.IndexId);
@@ -171,8 +193,8 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
             await ConfigHandler.SaveConfig(Config);
         }
 
-        AddLog("subscription", $"Deleted subscription {subscription.Remarks} ({id}).");
-        return new(true, "Subscription deleted.");
+        AddLog("subscription", ApiMessageKeys.SubscriptionDeleted);
+        return OperationView.Ok(ApiMessageKeys.SubscriptionDeleted);
     }
 
     public bool StartSubscriptionUpdate(string id, bool useProxy)
@@ -190,15 +212,25 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
                 {
                     await SubscriptionHandler.UpdateProcess(Config, id, useProxy, (success, message) =>
                     {
-                        var payload = new { subscriptionId = id, success, message };
-                        events.Publish("subscription-progress", payload);
+                        var payload = new
+                        {
+                            subscriptionId = id,
+                            success,
+                            code = success ? "ok" : "subscription_update_progress",
+                            messageKey = success ? ApiMessageKeys.SubscriptionSaved : ApiMessageKeys.SubscriptionUpdateProgress,
+                            rawLog = message,
+                        };
+                        _events.Publish("subscription-progress", payload);
                         AddLog("subscription", message);
                         return Task.CompletedTask;
                     });
+
+                    await UpdateSubscriptionTimestampAsync(id);
+                    _events.Publish("profiles-changed", new { subscriptionId = id });
                 }
                 catch (Exception ex)
                 {
-                    AddLog("subscription", $"Subscription update failed: {ex.Message}");
+                    AddLog("subscription", ex.Message);
                 }
                 finally
                 {
@@ -216,39 +248,56 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
 
     public async Task<IReadOnlyList<ProfileView>> GetProfilesAsync(string? subscriptionId, string? filter)
     {
-        var profiles = await AppManager.Instance.ProfileItems(subscriptionId ?? string.Empty) ?? [];
+        var groupId = subscriptionId ?? Config.SubIndexId ?? string.Empty;
+        var profiles = await AppManager.Instance.ProfileItems(groupId) ?? [];
+        var profileModels = await AppManager.Instance.ProfileModels(groupId, string.Empty) ?? [];
+        var modelMap = profileModels.ToDictionary(item => item.IndexId);
         var subscriptions = (await AppManager.Instance.SubItems() ?? []).ToDictionary(item => item.Id, item => item.Remarks);
         var extensions = await ProfileExManager.Instance.GetProfileExs();
         var extensionMap = extensions.ToDictionary(item => item.IndexId);
+        var statistics = (Config.GuiItem.EnableStatistics ? StatisticsManager.Instance.ServerStat : null) ?? [];
+        var statisticsMap = statistics.ToDictionary(item => item.IndexId);
         var query = filter?.Trim();
 
         return profiles
             .Where(item => string.IsNullOrEmpty(query)
-                || item.Remarks.Contains(query, StringComparison.OrdinalIgnoreCase)
-                || item.Address.Contains(query, StringComparison.OrdinalIgnoreCase))
+                || Utils.IsRegexMatch(item.Remarks, query)
+                || Utils.IsRegexMatch(item.Address, query))
             .Select(item =>
             {
                 extensionMap.TryGetValue(item.IndexId, out var extension);
+                modelMap.TryGetValue(item.IndexId, out var model);
+                statisticsMap.TryGetValue(item.IndexId, out var statistic);
+                var delay = extension?.Delay ?? 0;
+                var speed = extension?.Speed ?? 0;
                 return new ProfileView(
                     item.IndexId,
                     item.Remarks,
-                    item.ConfigType.ToString(),
+                    System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(item.ConfigType.ToString()),
                     item.Address,
                     item.Port,
                     item.Network,
                     item.StreamSecurity,
                     item.Subid,
-                    subscriptions.GetValueOrDefault(item.Subid),
-                    AppManager.Instance.GetCoreType(item, item.ConfigType).ToString(),
-                    extension?.Delay ?? 0,
-                    extension?.Speed ?? 0,
+                    model?.SubRemarks ?? subscriptions.GetValueOrDefault(item.Subid),
+                    System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(AppManager.Instance.GetCoreType(item, item.ConfigType).ToString()),
+                    extension?.Sort ?? 0,
+                    delay,
+                    speed,
                     extension?.IpInfo,
+                    statistic?.TodayUp ?? 0,
+                    statistic?.TodayDown ?? 0,
+                    statistic?.TotalUp ?? 0,
+                    statistic?.TotalDown ?? 0,
                     item.IndexId == Config.IndexId,
                     !item.IsComplex() && item.Port > 0);
             })
-            .OrderBy(item => extensionMap.GetValueOrDefault(item.IndexId)?.Sort ?? int.MaxValue)
+            .OrderBy(item => item.Sort)
             .ToArray();
     }
+
+    public async Task<ProfileItem?> GetProfileDetailsAsync(string profileId) =>
+        await AppManager.Instance.GetProfileItem(profileId);
 
     public async Task<StatusView> GetStatusAsync()
     {
@@ -257,21 +306,47 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         var subscriptions = await AppManager.Instance.SubItems() ?? [];
         var firstInbound = Config.Inbound.FirstOrDefault();
         var port = firstInbound?.LocalPort ?? 0;
-        var listening = port is > 0 and <= 65535 && await IsListeningAsync(port, CancellationToken.None);
+        var listeners = new List<ListenerView>();
+        if (firstInbound is not null && port is > 0 and <= 65535)
+        {
+            var localAddress = firstInbound.AllowLANConn && !firstInbound.NewPort4LAN ? "0.0.0.0" : "127.0.0.1";
+            listeners.Add(new ListenerView("local", ["http", "socks"], localAddress, port,
+                await IsListeningAsync(port, CancellationToken.None)));
+            if (firstInbound.SecondLocalPortEnabled && port + (int)EInboundProtocol.socks2 <= 65535)
+            {
+                var secondaryPort = AppManager.Instance.GetLocalPort(EInboundProtocol.socks2);
+                listeners.Add(new ListenerView("local-secondary", ["http", "socks"], "127.0.0.1", secondaryPort,
+                    await IsListeningAsync(secondaryPort, CancellationToken.None)));
+            }
+            if (firstInbound.AllowLANConn && firstInbound.NewPort4LAN
+                && port + (int)EInboundProtocol.socks3 <= 65535)
+            {
+                var lanPort = AppManager.Instance.GetLocalPort(EInboundProtocol.socks3);
+                listeners.Add(new ListenerView("lan", ["http", "socks"], "0.0.0.0", lanPort,
+                    await IsListeningAsync(lanPort, CancellationToken.None)));
+            }
+        }
+        var listening = listeners.FirstOrDefault()?.Listening ?? false;
         return new StatusView(
             _coreStartedAt is not null && listening,
-            _coreStartedAt is not null && listening ? AppManager.Instance.RunningCoreType.ToString() : null,
+            _coreStartedAt is not null && listening
+                ? System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(AppManager.Instance.RunningCoreType.ToString())
+                : null,
             selectedProfile?.IndexId,
             selectedProfile?.Remarks,
             listening ? _coreStartedAt : null,
-            firstInbound is null
-                ? []
-                : [new ListenerView("mixed", ["http", "socks"], firstInbound.AllowLANConn ? "0.0.0.0" : "127.0.0.1", port, listening)],
+            listeners.ToArray(),
             !string.IsNullOrEmpty(_xrayPath),
             Utils.GetRuntimeInfo(),
             profileItems.Count,
             subscriptions.Count,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow,
+            Config.GuiItem.EnableStatistics,
+            _latestTraffic is null ? null : new TrafficView(
+                _latestTraffic.ProxyUp,
+                _latestTraffic.ProxyDown,
+                _latestTraffic.DirectUp,
+                _latestTraffic.DirectDown));
     }
 
     public async Task<OperationView> SelectProfileAsync(string profileId, CancellationToken cancellationToken)
@@ -279,7 +354,7 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         var profile = await AppManager.Instance.GetProfileItem(profileId);
         if (profile is null)
         {
-            return new(false, "Profile not found.");
+            return OperationView.Fail("profile_not_found", ApiMessageKeys.ProfileNotFound);
         }
 
         return await StartCoreAsync(profile, cancellationToken, selectProfile: true);
@@ -293,7 +368,7 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
             profile = await AppManager.Instance.GetProfileItem(profileId);
             if (profile is null)
             {
-                return new(false, "Profile not found.");
+                return OperationView.Fail("profile_not_found", ApiMessageKeys.ProfileNotFound);
             }
         }
 
@@ -305,51 +380,63 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         await _coreGate.WaitAsync(cancellationToken);
         try
         {
-            var profile = requestedProfile ?? await ConfigHandler.GetDefaultServer(Config);
-            if (profile is null)
-            {
-                return new(false, "No current profile is configured.");
-            }
-
-            if (_xrayPath is null)
-            {
-                return new(false, "Xray-core executable was not found in the Web runtime data path.");
-            }
-
-            var built = await CoreConfigContextBuilder.BuildAll(Config, profile);
-            if (!built.Success)
-            {
-                return new(false, string.Join(" ", built.CombinedValidatorResult.Errors));
-            }
-            if (built.MainResult.Context.RunCoreType != ECoreType.Xray
-                || (built.PreSocksResult?.Context.RunCoreType is { } preCore && preCore != ECoreType.Xray))
-            {
-                return new(false, "This profile requires a core other than Xray, which is not included in this Web build.");
-            }
-
-            if (selectProfile && await ConfigHandler.SetDefaultServerIndex(Config, profile.IndexId) != 0)
-            {
-                return new(false, "Could not select the requested profile.");
-            }
-
-            var port = Config.Inbound.FirstOrDefault()?.LocalPort ?? 0;
-            if (_coreStartedAt is null && await IsListeningAsync(port, cancellationToken))
-            {
-                return new(false, $"Configured proxy port {port} is already in use by another process.");
-            }
-
-            await CoreManager.Instance.LoadCore(built.MainResult.Context, built.PreSocksResult?.Context);
-            var started = await WaitForListenerAsync(port, cancellationToken);
-            _coreStartedAt = started ? DateTimeOffset.UtcNow : null;
-            var operation = new OperationView(started, started ? $"Xray started with {profile.Remarks}." : "Xray did not open the configured mixed listener.");
-            AddLog("core", operation.Message);
-            events.Publish("status", await GetStatusAsync());
-            return operation;
+            return await StartCoreLockedAsync(requestedProfile, cancellationToken, selectProfile);
         }
         finally
         {
             _coreGate.Release();
         }
+    }
+
+    private async Task<OperationView> StartCoreLockedAsync(ProfileItem? requestedProfile, CancellationToken cancellationToken, bool selectProfile = false)
+    {
+        var profile = requestedProfile ?? await ConfigHandler.GetDefaultServer(Config);
+        if (profile is null)
+        {
+            return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
+        }
+
+        if (_xrayPath is null)
+        {
+            return OperationView.Fail("xray_missing", ApiMessageKeys.CoreBinaryMissing);
+        }
+
+        var built = await CoreConfigContextBuilder.BuildAll(Config, profile);
+        if (!built.Success)
+        {
+            foreach (var message in built.CombinedValidatorResult.Errors.Concat(built.CombinedValidatorResult.Warnings))
+            {
+                AddLog("core-validation", message);
+            }
+            return OperationView.Fail("profile_validation_failed", ApiMessageKeys.ProfileInvalid);
+        }
+        if (built.MainResult.Context.RunCoreType != ECoreType.Xray
+            || (built.PreSocksResult?.Context.RunCoreType is { } preCore && preCore != ECoreType.Xray))
+        {
+            return OperationView.Fail("core_unsupported", ApiMessageKeys.ProfileUnsupportedCore,
+                new { requiredCore = built.MainResult.Context.RunCoreType.ToString() });
+        }
+
+        if (selectProfile && await ConfigHandler.SetDefaultServerIndex(Config, profile.IndexId) != 0)
+        {
+            return OperationView.Fail("profile_select_failed", ApiMessageKeys.ProfileNotFound);
+        }
+
+        var port = Config.Inbound.FirstOrDefault()?.LocalPort ?? 0;
+        if (_coreStartedAt is null && await IsListeningAsync(port, cancellationToken))
+        {
+            return OperationView.Fail("proxy_port_in_use", ApiMessageKeys.CorePortInUse, new { port });
+        }
+
+        await CoreManager.Instance.LoadCore(built.MainResult.Context, built.PreSocksResult?.Context);
+        var started = await WaitForListenerAsync(port, cancellationToken);
+        _coreStartedAt = started ? DateTimeOffset.UtcNow : null;
+        var operation = started
+            ? OperationView.Ok(ApiMessageKeys.CoreStarted, new { profileId = profile.IndexId })
+            : OperationView.Fail("core_start_failed", ApiMessageKeys.CoreStartFailed, new { profileId = profile.IndexId });
+        AddLog("core", operation.MessageKey);
+        _events.Publish("status", await GetStatusAsync());
+        return operation;
     }
 
     public async Task<OperationView> StopCoreAsync(CancellationToken cancellationToken)
@@ -359,9 +446,9 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         {
             await CoreManager.Instance.CoreStop();
             _coreStartedAt = null;
-            AddLog("core", "Core stopped.");
-            events.Publish("status", await GetStatusAsync());
-            return new(true, "Core stopped.");
+            AddLog("core", ApiMessageKeys.CoreStopped);
+            _events.Publish("status", await GetStatusAsync());
+            return OperationView.Ok(ApiMessageKeys.CoreStopped);
         }
         finally
         {
@@ -379,33 +466,15 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
             var profile = await ConfigHandler.GetDefaultServer(Config);
             if (profile is null)
             {
-                return new(false, "No current profile is configured.");
+                return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
             }
 
             if (_xrayPath is null)
             {
-                return new(false, "Xray-core executable was not found in the Web runtime data path.");
+                return OperationView.Fail("xray_missing", ApiMessageKeys.CoreBinaryMissing);
             }
-
-            var built = await CoreConfigContextBuilder.BuildAll(Config, profile);
-            if (!built.Success || built.MainResult.Context.RunCoreType != ECoreType.Xray)
-            {
-                return new(false, string.Join(" ", built.CombinedValidatorResult.Errors));
-            }
-
-            var port = Config.Inbound.FirstOrDefault()?.LocalPort ?? 0;
-            if (_coreStartedAt is null && await IsListeningAsync(port, cancellationToken))
-            {
-                return new(false, $"Configured proxy port {port} is already in use by another process.");
-            }
-
-            await CoreManager.Instance.LoadCore(built.MainResult.Context, built.PreSocksResult?.Context);
-            var started = await WaitForListenerAsync(port, cancellationToken);
-            _coreStartedAt = started ? DateTimeOffset.UtcNow : null;
-            var result = new OperationView(started, started ? "Xray restarted." : "Xray did not open the configured mixed listener.");
-            AddLog("core", result.Message);
-            events.Publish("status", await GetStatusAsync());
-            return result;
+            var result = await StartCoreLockedAsync(profile, cancellationToken);
+            return result.Success ? OperationView.Ok(ApiMessageKeys.CoreRestarted, result.Data) : result;
         }
         finally
         {
@@ -418,31 +487,21 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         var profile = await AppManager.Instance.GetProfileItem(profileId);
         if (profile is null || profile.IsComplex() || profile.Port <= 0)
         {
-            return new(false, "This profile cannot be TCP latency tested.");
+            return OperationView.Fail("speedtest_invalid_profile", ApiMessageKeys.SpeedTestInvalidProfile);
         }
 
-        _speedtestService ??= new SpeedtestService(Config, result =>
-        {
-            events.Publish("latency-result", result);
-            if (!string.IsNullOrEmpty(result.IndexId))
-            {
-                AddLog("latency", $"{result.IndexId}: {result.Delay}");
-            }
-            return Task.CompletedTask;
-        });
-
-        _ = Task.Run(() => _speedtestService.RunLoop(ESpeedActionType.Tcping, [profile]));
-        events.Publish("latency-started", new { profileId });
-        return new(true, "TCP latency test started.");
+        return await StartSpeedTestAsync(new SpeedTestRequest(ESpeedActionType.Tcping, [profileId]), CancellationToken.None);
     }
 
     public OperationView StopLatencyTests()
     {
         _speedtestService?.ExitLoop();
-        return new(true, "Latency test cancellation requested.");
+        return OperationView.Ok(ApiMessageKeys.CommonCompleted);
     }
 
-    public IReadOnlyList<LogView> GetRecentLogs(int limit) => logs.Recent(limit);
+    public IReadOnlyList<LogView> GetRecentLogs(int limit, string? filter = null) => _logs.Recent(limit, filter);
+
+    public void ClearLogs() => _logs.Clear();
 
     private async Task OnCoreMessageAsync(bool notify, string message)
     {
@@ -452,41 +511,109 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
 
     private void AddLog(string source, string message)
     {
-        var entry = logs.Add(source, message);
-        events.Publish("log", entry);
+        var entry = _logs.Add(source, message);
+        _events.Publish("log", entry);
+        Console.Out.WriteLine($"[{source}] {message.TrimEnd()}");
     }
 
-    private static bool TryValidateSubscription(SubscriptionInput input, out string message)
+    private static void ConfigureServiceLibConsoleLogging()
+    {
+        var logging = LogManager.Configuration;
+        if (logging is null)
+        {
+            return;
+        }
+
+        var target = new ConsoleTarget("web-console")
+        {
+            Layout = "${longdate}|${level:uppercase=true}|${logger}|${message}",
+        };
+        logging.AddTarget(target);
+        logging.LoggingRules.Add(new LoggingRule("*", NLog.LogLevel.Debug, target));
+        LogManager.Configuration = logging;
+    }
+
+    private Task OnStatisticsUpdateAsync(ServerSpeedItem update)
+    {
+        _latestTraffic = update;
+        _events.Publish("traffic", update);
+        return Task.CompletedTask;
+    }
+
+    private Task OnScheduledTaskMessageAsync(bool success, string message)
+    {
+        AddLog("task", message);
+        if (success)
+        {
+            _events.Publish("profiles-changed", new { subscriptionId = (string?)null });
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task UpdateSubscriptionTimestampAsync(string subscriptionId)
+    {
+        var updateTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (subscriptionId.Length > 0)
+        {
+            var item = await AppManager.Instance.GetSubItem(subscriptionId);
+            if (item is not null)
+            {
+                item.UpdateTime = updateTime;
+                await ConfigHandler.AddSubItem(Config, item);
+            }
+            return;
+        }
+
+        foreach (var item in await AppManager.Instance.SubItems() ?? [])
+        {
+            if (item.Enabled)
+            {
+                item.UpdateTime = updateTime;
+                await ConfigHandler.AddSubItem(Config, item);
+            }
+        }
+    }
+
+    private static bool TryValidateSubscription(SubscriptionInput input, out string code, out string messageKey)
     {
         if (string.IsNullOrWhiteSpace(input.Remarks))
         {
-            message = "Subscription name is required.";
+            code = "subscription_name_required";
+            messageKey = ApiMessageKeys.SubscriptionNameRequired;
             return false;
         }
         if (!Uri.TryCreate(input.Url, UriKind.Absolute, out var uri)
             || uri.Scheme is not ("http" or "https"))
         {
-            message = "Subscription URL must use HTTP or HTTPS.";
+            code = "subscription_url_invalid";
+            messageKey = ApiMessageKeys.SubscriptionInvalidUrl;
             return false;
         }
 
-        message = string.Empty;
+        code = "ok";
+        messageKey = string.Empty;
         return true;
     }
 
-    private static SubItem ToSubItem(SubscriptionInput input) => new()
+    private static SubItem ToSubItem(SubscriptionInput input, SubItem? existing) => new()
     {
-        Id = string.Empty,
+        Id = existing?.Id ?? string.Empty,
         Remarks = input.Remarks.Trim(),
         Url = input.Url.Trim(),
-        MoreUrl = input.MoreUrl?.Trim() ?? string.Empty,
-        Enabled = input.Enabled,
-        UserAgent = input.UserAgent?.Trim() ?? string.Empty,
-        RequestHeaders = input.RequestHeaders,
-        Filter = input.Filter,
-        AutoUpdateInterval = Math.Max(input.AutoUpdateInterval, 0),
-        ConvertTarget = input.ConvertTarget,
-        Memo = input.Memo,
+        MoreUrl = input.MoreUrl?.Trim() ?? existing?.MoreUrl ?? string.Empty,
+        Enabled = input.Enabled ?? existing?.Enabled ?? true,
+        UserAgent = input.UserAgent?.Trim() ?? existing?.UserAgent ?? string.Empty,
+        RequestHeaders = input.RequestHeaders ?? existing?.RequestHeaders,
+        Filter = input.Filter ?? existing?.Filter,
+        AutoUpdateInterval = Math.Max(input.AutoUpdateInterval ?? existing?.AutoUpdateInterval ?? 0, 0),
+        ConvertTarget = input.ConvertTarget ?? existing?.ConvertTarget,
+        Memo = input.Memo ?? existing?.Memo,
+        Sort = input.Sort ?? existing?.Sort ?? 0,
+        UpdateTime = existing?.UpdateTime ?? 0,
+        PrevProfile = input.PrevProfile ?? existing?.PrevProfile,
+        NextProfile = input.NextProfile ?? existing?.NextProfile,
+        PreSocksPort = input.PreSocksPort ?? existing?.PreSocksPort,
+        CustomCoreType = input.CustomCoreType ?? existing?.CustomCoreType,
     };
 
     private static SubscriptionView ToSubscriptionView(SubItem item) => new(
@@ -494,9 +621,19 @@ public sealed class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration
         item.Remarks,
         item.Url,
         item.Enabled,
+        item.MoreUrl,
+        item.Filter,
         item.AutoUpdateInterval,
         item.UpdateTime,
-        item.Memo);
+        item.UserAgent,
+        item.RequestHeaders,
+        item.ConvertTarget,
+        item.Memo,
+        item.Sort,
+        item.PrevProfile,
+        item.NextProfile,
+        item.PreSocksPort,
+        item.CustomCoreType is null ? null : System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(item.CustomCoreType.Value.ToString()));
 
     private static void EnsureInboundDefaults(Config config)
     {
