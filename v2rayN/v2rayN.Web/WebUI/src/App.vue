@@ -160,6 +160,7 @@ const allVisibleSelected = computed(() => filteredProfiles.value.length > 0 && f
 const listeners = computed(() => status.value?.listeners || [])
 const currentRoute = computed(() => routes.value.find((route) => route.isActive) || null)
 const logTotalPages = computed(() => Math.max(1, Math.ceil(logTotal.value / logPageSize)))
+const runtimeVersion = computed(() => status.value?.runtime?.split('|')[0]?.trim() || '')
 const pageTitle = computed(() => {
   const item = navItems.find((entry) => entry.id === activePage.value)
   return item ? t(item.key) : t('nav.nodes')
@@ -1263,6 +1264,7 @@ onUnmounted(() => {
           <span class="muted">{{ t('nodes.directUp') }} {{ formatBytes(traffic.directUp) }}/s · {{ t('nodes.directDown') }} {{ formatBytes(traffic.directDown) }}/s</span>
         </div>
         <span v-if="status && !status.statisticsEnabled" class="stats-hint">{{ t('coreToolbar.statsDisabled') }}</span>
+        <span v-if="runtimeVersion" class="runtime-version">{{ runtimeVersion }}</span>
       </section>
 
       <div v-if="notice" :class="['notice-bar', noticeKind]" role="status">{{ notice }}<button class="tool-button" @click="notice = ''">×</button></div>

@@ -65,6 +65,7 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .listener-item { display: inline-flex; align-items: center; gap: 5px; }
 .traffic-list span b { color: #ddd; font-weight: 500; }
 .stats-hint { margin-left: auto; color: #c5a877; }
+.runtime-version { margin-left: auto; color: #848484; font: 9px Consolas, "Cascadia Mono", monospace; white-space: nowrap; }
 .muted { color: var(--muted); }
 .notice-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 12px 0; padding: 6px 9px; color: #cde7d1; border: 1px solid #47634b; border-radius: 2px; background: #263529; font-size: 11px; }
 .notice-bar.error { color: #f0c4c4; border-color: #744747; background: #3a2929; }
@@ -259,6 +260,7 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
   .runtime-main { gap: 5px; }
   .current-runtime-name { max-width: 150px; }
   .connection-strip { align-items: flex-start; flex-direction: column; }
+  .stats-hint, .runtime-version { margin-left: 0; }
   .page-toolbar { align-items: flex-start; flex-direction: column; }
   .toolbar-main { justify-content: flex-start; }
   .group-toolbar { align-items: flex-start; flex-wrap: wrap; }
