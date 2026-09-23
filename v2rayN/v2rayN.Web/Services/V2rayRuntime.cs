@@ -62,7 +62,11 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
         {
             Config.Inbound[0].LocalPort = configuredProxyPort;
         }
-        Config.TunModeItem.EnableTun = false;
+        if (Config.TunModeItem.EnableTun && !GetTunSettings().CapabilityAvailable)
+        {
+            Config.TunModeItem.EnableTun = false;
+            AddLog("tun", "tun.capabilityUnavailable");
+        }
         if (_configuration.GetValue<bool?>("V2RAYN_WEB_PROXY_LISTEN_ALL") is bool allowProxyFromLan)
         {
             Config.Inbound[0].AllowLANConn = allowProxyFromLan;
@@ -346,7 +350,8 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
                 _latestTraffic.ProxyUp,
                 _latestTraffic.ProxyDown,
                 _latestTraffic.DirectUp,
-                _latestTraffic.DirectDown));
+                _latestTraffic.DirectDown),
+            Config.TunModeItem.EnableTun);
     }
 
     public async Task<OperationView> SelectProfileAsync(string profileId, CancellationToken cancellationToken)
@@ -500,6 +505,8 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
     }
 
     public IReadOnlyList<LogView> GetRecentLogs(int limit, string? filter = null) => _logs.Recent(limit, filter);
+
+    public LogPageView GetRecentLogsPage(int page, int pageSize, string? filter = null) => _logs.RecentPage(page, pageSize, filter);
 
     public void ClearLogs() => _logs.Clear();
 

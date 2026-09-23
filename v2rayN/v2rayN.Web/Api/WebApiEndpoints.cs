@@ -15,6 +15,8 @@ public static class WebApiEndpoints
         app.MapGet("/api/operations", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetRunningOperationsAsync(), "operations.loaded"));
         app.MapGet("/api/logs", (int? limit, string? filter, V2rayRuntime runtime) =>
             ApiReplies.Ok(runtime.GetRecentLogs(limit ?? 200, filter), "logs.loaded"));
+        app.MapGet("/api/logs/page", (int? page, int? pageSize, string? filter, V2rayRuntime runtime) =>
+            ApiReplies.Ok(runtime.GetRecentLogsPage(page ?? 1, pageSize ?? 100, filter), "logs.loaded"));
         app.MapDelete("/api/logs", (V2rayRuntime runtime) =>
         {
             runtime.ClearLogs();
@@ -125,6 +127,9 @@ public static class WebApiEndpoints
         app.MapGet("/api/settings", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetSettingsAsync(), "settings.loaded"));
         app.MapPut("/api/settings/inbound", async (InboundSettingsInput input, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.UpdateInboundSettingsAsync(input)));
+        app.MapGet("/api/settings/tun", (V2rayRuntime runtime) => ApiReplies.Ok(runtime.GetTunSettings(), "settings.tunLoaded"));
+        app.MapPut("/api/settings/tun", async (TunSettingsInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.UpdateTunSettingsAsync(input), failureStatus: StatusCodes.Status409Conflict));
         app.MapPut("/api/settings/core", async (CoreSettingsInput input, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.UpdateCoreSettingsAsync(input)));
         app.MapPut("/api/settings/application", async (AppSettingsInput input, V2rayRuntime runtime) =>

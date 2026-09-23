@@ -37,6 +37,28 @@ public sealed class LogBuffer
         }
     }
 
+    public LogPageView RecentPage(int page, int pageSize, string? filter = null)
+    {
+        lock (_gate)
+        {
+            var filtered = _items.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(filter))
+            {
+                filtered = filtered.Where(item => Utils.IsRegexMatch($"{item.Source} {item.Message}", filter));
+            }
+
+            var items = filtered.ToArray();
+            var total = items.Length;
+            var safePageSize = Math.Clamp(pageSize, 1, 200);
+            var totalPages = Math.Max(1, (total + safePageSize - 1) / safePageSize);
+            var safePage = Math.Clamp(page, 1, totalPages);
+            var end = total - ((safePage - 1) * safePageSize);
+            var start = Math.Max(0, end - safePageSize);
+
+            return new LogPageView(items.Skip(start).Take(end - start).ToArray(), safePage, safePageSize, total, totalPages);
+        }
+    }
+
     public void Clear()
     {
         lock (_gate)

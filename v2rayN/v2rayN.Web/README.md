@@ -1,8 +1,8 @@
 # v2rayN Headless Web frontend
 
-`v2rayN.Web` is a native ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, system-proxy integration, TUN, or elevated network capabilities. It uses the same backend and data-path behavior whether launched from a shell, systemd, Docker, or rootless Podman.
+`v2rayN.Web` is an ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, or system-proxy integration. TUN settings and toggling are available through the Web API/UI; activation depends on host access to `/dev/net/tun` and effective `CAP_NET_ADMIN`. Rootless containers normally lack these capabilities, and the Backend reports TUN as unavailable rather than removing the feature.
 
-The Vue source is in `WebUI/`. The current visual draft is frozen pending confirmation of the revised layout. The replacement will use TypeScript and `vue-i18n` locale JSON files; the Backend already returns stable field names, enum codes, and `messageKey` values.
+The Vue source is in `WebUI/`. The frontend uses TypeScript and `vue-i18n` locale JSON files, and calls the existing Backend/ServiceLib for profile and settings operations. Its primary workspace is a compact, high-density node table.
 
 ## Native Linux binary
 
@@ -31,6 +31,8 @@ Open `http://127.0.0.1:5080` and enter the configured API key. The mixed HTTP/SO
 - A bundled `bin/` folder beside the executable is copied into the writable ServiceLib data directory when the XDG override is active. Xray can also be checked/updated through `GET /api/core/xray/check-update` and `POST /api/core/xray/update`.
 - The Core listener is controlled by the existing `Config.Inbound`; a new installation retains v2rayN's mixed HTTP/SOCKS port `10808`, loopback-only. Set `V2RAYN_WEB_PROXY_PORT` to explicitly override the saved/default port at startup, and `V2RAYN_WEB_PROXY_LISTEN_ALL=true` only when the listener should accept non-loopback clients. For an isolated local test alongside a v2rayN instance using 10808, set `V2RAYN_WEB_PROXY_PORT=1145` and use a separate `V2RAYN_DATA_HOME`.
 - The WebUI/API defaults to `http://127.0.0.1:5080`. `ASPNETCORE_URLS` follows standard ASP.NET Core configuration for listen addresses and ports; set it to `http://0.0.0.0:5080` for remote access. `V2RAYN_WEB_AUTOSTART` controls starting the selected profile at process launch.
+
+For remote access, prefer a trusted LAN/VPN or place v2rayN.Web behind a TLS-enabled reverse proxy. Do not expose the plain HTTP management endpoint directly to the public Internet.
 
 The Backend requires `V2RAYN_WEB_API_KEY`; it does not require any desktop components or Docker socket access.
 
@@ -62,7 +64,7 @@ Application/Core messages go to stdout/stderr for journald and are also retained
 
 ## Optional Docker / rootless Podman
 
-The container is a packaging option for the same self-contained publish output; it does not select a separate runtime mode or add privileged/TUN capabilities. From the repository root:
+The container is a packaging option for the same self-contained publish output. The supplied rootless configuration does not grant TUN capabilities; deployments that need TUN must explicitly provide the device and required host capabilities. From the repository root:
 
 ```bash
 export V2RAYN_WEB_API_KEY='<strong-secret>'
@@ -75,4 +77,4 @@ The Compose example binds Web/API `5080` and proxy `10808` to host loopback by d
 
 ## API and feature map
 
-See [`FEATURE-MAP.md`](FEATURE-MAP.md) for the original WPF/Avalonia feature → ServiceLib → Backend API → planned Web page mapping, including the deliberately excluded desktop/system-proxy/TUN-only features and the low-fidelity desktop/mobile layouts.
+See [`FEATURE-MAP.md`](FEATURE-MAP.md) for the original WPF/Avalonia feature → ServiceLib → Backend API → Web page mapping, including TUN capability behavior and the desktop-only system-proxy exclusion.
