@@ -69,7 +69,12 @@
     "saved": "Saved",
     "deleted": "Deleted",
     "openFile": "Open file",
-    "paste": "Paste"
+    "paste": "Paste",
+    "format": "Format",
+    "health": "Health check",
+    "yes": "Yes",
+    "or": "or",
+    "no": "No"
   },
   "nodes": {
     "title": "Profiles",
@@ -151,12 +156,29 @@
     "noProfile": "No profiles",
     "regexHint": "Filter supports ServiceLib regular expressions",
     "publicKey": "Public key",
-    "shortId": "Short ID"
+    "shortId": "Short ID",
+    "advancedProfileFields": "Complete profile data (ProfileItem JSON; advanced and protocol-specific fields)",
+    "position": "Position",
+    "positionPrompt": "Enter the target position (starting from 1)",
+    "move": "调整顺序",
+    "generateRegionGroups": "Generate regional groups",
+    "includeInnerUri": "Export Inner URI",
+    "count": "{count} 个节点",
+    "base64ShareUris": "Base64-encoded share URIs",
+    "includeClientConfig": "Export client config",
+    "profileSaved": "节点已保存",
+    "groupGenerationEmpty": "This subscription has no nodes to group",
+    "fingerprint": "TLS fingerprint",
+    "regionGroupsNoMatches": "No nodes in this subscription match a region",
+    "includeShareUris": "Share URIs",
+    "generateAllGroups": "Generate all-node groups",
+    "groupGenerationSelectSubscription": "Select a subscription group first"
   },
   "coreToolbar": {
     "route": "Routing profile",
     "statsDisabled": "Traffic statistics are disabled",
-    "noListener": "No configured listeners"
+    "noListener": "No configured listeners",
+    "listenerStatus": "监听状态"
   },
   "subscriptions": {
     "title": "Subscriptions",
@@ -198,7 +220,8 @@
     "updateProgress": "Updating subscription",
     "invalidUrl": "Invalid subscription URL",
     "nameRequired": "Subscription name is required",
-    "saveFailed": "Failed to save subscription"
+    "saveFailed": "Failed to save subscription",
+    "loaded": "Subscriptions loaded"
   },
   "routing": {
     "title": "Routing and rules",
@@ -242,7 +265,9 @@
     "profileNotFound": "Routing profile not found",
     "rulesInvalid": "Invalid routing rules",
     "ruleNotFound": "Routing rule not found",
-    "saveFailed": "Failed to save routing profile"
+    "saveFailed": "Failed to save routing profile",
+    "profilesLoaded": "Routing profiles loaded",
+    "rulesLoaded": "Routing rules loaded"
   },
   "dns": {
     "title": "DNS",
@@ -276,7 +301,9 @@
     "jsonEditor": "Full DNS JSON",
     "saveSimple": "Save Simple DNS",
     "profileNotFound": "DNS profile not found",
-    "saveFailed": "Failed to save DNS profile"
+    "saveFailed": "Failed to save DNS profile",
+    "simpleLoaded": "Basic DNS settings loaded",
+    "profilesLoaded": "Core DNS profiles loaded"
   },
   "settings": {
     "title": "Settings",
@@ -359,14 +386,16 @@
     "saveRouting": "Save routing strategy",
     "restartHint": "A running Core restarts after saving settings.",
     "savedRestartRequired": "Settings saved; restart Core to apply",
-    "invalidPort": "Invalid port",
+    "invalidPort": "Invalid port range",
     "invalidCoreLogLevel": "Invalid Core log level",
     "invalidCoreValue": "Core setting is out of range",
     "invalidFragment": "Invalid Fragment parameters",
     "invalidSpeedTest": "Invalid speed test settings",
     "invalidRoutingStrategy": "Invalid routing strategy",
     "invalidRegionalPreset": "Invalid regional preset",
-    "regionalPresetFailed": "Failed to apply regional preset"
+    "regionalPresetFailed": "Failed to apply regional preset",
+    "loaded": "Settings loaded",
+    "tunLoaded": "TUN settings loaded"
   },
   "templates": {
     "title": "Core / Full Config templates",
@@ -435,7 +464,9 @@
     "nextPage": "Next",
     "lastPage": "Last",
     "totalRows": "{total} entries",
-    "pageIndicator": "Page {page} of {pages}"
+    "pageIndicator": "Page {page} of {pages}",
+    "loaded": "Logs loaded",
+    "cleared": "Logs cleared"
   },
   "status": {
     "online": "Backend online",
@@ -444,6 +475,7 @@
     "coreStopped": "Core stopped",
     "statisticsOff": "Statistics disabled",
     "tunOn": "TUN enabled",
+    "tunConfigured": "TUN configured; interface is not running",
     "tunOff": "TUN disabled",
     "tunUnavailable": "TUN capability unavailable"
   },
@@ -487,10 +519,14 @@
     "deduplicated": "Duplicate profiles removed",
     "invalidRemoved": "Failed profiles removed",
     "grouped": "Profile groups generated",
-    "saved": "Profile saved"
+    "saved": "Profile saved",
+    "loaded": "Profiles loaded",
+    "groupsLoaded": "Profile groups loaded",
+    "exportReady": "Export ready"
   },
   "speedtest": {
     "started": "Speed test started",
+    "busy": "A speed test is already running",
     "unsupportedCore": "Selected Core does not support this test",
     "selectRequired": "Select profiles first",
     "invalidProfile": "Profile cannot be tested",
@@ -508,5 +544,35 @@
     "deviceUnavailable": "Usable /dev/net/tun device not found",
     "devicePermissionDenied": "Process cannot access /dev/net/tun",
     "netAdminRequired": "CAP_NET_ADMIN is required; rootless containers usually do not have it"
+  },
+  "coreTemplates": {
+    "loaded": "Core templates loaded"
+  },
+  "operations": {
+    "loaded": "Operations loaded"
+  },
+  "backup": {
+    "restoreStarted": "Restore started; the backend will restart shortly",
+    "webdavBackupSucceeded": "WebDAV backup completed",
+    "restoreFailed": "Backup restore failed",
+    "webdavCheckFailed": "WebDAV connection failed",
+    "created": "Backup created",
+    "webdavRestoreFailed": "WebDAV restore failed",
+    "archiveInvalid": "Invalid backup archive",
+    "webdavSettingsSaved": "WebDAV settings saved",
+    "webdavCheckSucceeded": "WebDAV connection succeeded"
+  },
+  "protocols": {
+    "ws": "WebSocket",
+    "http": "HTTP",
+    "httpupgrade": "HTTPUpgrade",
+    "kcp": "mKCP",
+    "domainsocket": "Domain Socket",
+    "none": "无",
+    "tcp": "TCP",
+    "xhttp": "XHTTP",
+    "raw": "RAW",
+    "quic": "QUIC",
+    "grpc": "gRPC"
   }
 }

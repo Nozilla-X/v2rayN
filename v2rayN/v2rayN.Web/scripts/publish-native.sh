@@ -8,12 +8,25 @@ webui_root="$web_root/WebUI"
 rid="${1:-linux-x64}"
 output_dir="${2:-$web_root/publish/$rid}"
 
-for tool in dotnet npm; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    printf 'Required build tool is not available: %s\n' "$tool" >&2
-    exit 1
+dotnet="${DOTNET:-}"
+if [[ "$dotnet" != */* && -n "$dotnet" ]]; then
+  dotnet="$(command -v "$dotnet" || true)"
+fi
+if [[ -z "$dotnet" ]]; then
+  if [[ -x "$web_root/.NET/dotnet" ]]; then
+    dotnet="$web_root/.NET/dotnet"
+  else
+    dotnet="$(command -v dotnet || true)"
   fi
-done
+fi
+if [[ -z "$dotnet" || ! -x "$dotnet" ]]; then
+  printf 'Required build tool is not available: dotnet (expected .NET/dotnet or PATH)\n' >&2
+  exit 1
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  printf 'Required build tool is not available: npm\n' >&2
+  exit 1
+fi
 
 case "$rid" in
   linux-x64|linux-arm64) ;;
@@ -25,7 +38,7 @@ export npm_config_cache="${npm_config_cache:-$repo_root/.packages/npm-cache}"
 
 npm ci --prefix "$webui_root"
 npm run build --prefix "$webui_root"
-dotnet publish "$web_root/v2rayN.Web.csproj" \
+"$dotnet" publish "$web_root/v2rayN.Web.csproj" \
   --configuration Release \
   --runtime "$rid" \
   --self-contained true \

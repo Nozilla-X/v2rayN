@@ -4,6 +4,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>false</InvariantGlobalization>
+    <DefaultItemExcludes>$(DefaultItemExcludes);.NET/**;Tests/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

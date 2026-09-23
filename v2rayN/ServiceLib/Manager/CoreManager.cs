@@ -1,3 +1,5 @@
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("v2rayN.Web.Tests")]
+
 namespace ServiceLib.Manager;
 
 /// <summary>
@@ -302,6 +304,76 @@ public class CoreManager
             && isNonWindows;
     }
 
+    internal static bool ShouldRunAsSudoAfterLinuxPrivilegeCheck(
+        bool isTunLaunch,
+        ECoreType? coreType,
+        bool isNonWindows,
+        bool isLinux,
+        bool effectiveUserIsRoot,
+        bool hasEffectiveNetAdmin)
+    {
+        if (!ShouldRunAsSudo(isTunLaunch, coreType, isNonWindows))
+        {
+            return false;
+        }
+
+        return !isLinux || (!effectiveUserIsRoot && !hasEffectiveNetAdmin);
+    }
+
+    private static bool ShouldRunAsSudoForCurrentProcess(bool isTunLaunch, ECoreType? coreType)
+    {
+        var isNonWindows = Utils.IsNonWindows();
+        if (!ShouldRunAsSudo(isTunLaunch, coreType, isNonWindows))
+        {
+            return false;
+        }
+        if (!OperatingSystem.IsLinux())
+        {
+            return true;
+        }
+
+        return ShouldRunAsSudoAfterLinuxPrivilegeCheck(
+            isTunLaunch,
+            coreType,
+            isNonWindows,
+            isLinux: true,
+            effectiveUserIsRoot: IsCurrentLinuxRoot(),
+            hasEffectiveNetAdmin: HasEffectiveNetAdminCapability());
+    }
+
+    private static bool IsCurrentLinuxRoot()
+    {
+        try
+        {
+            return GetEffectiveUserId() == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "geteuid")]
+    private static extern uint GetEffectiveUserId();
+
+    private static bool HasEffectiveNetAdminCapability()
+    {
+        try
+        {
+            const ulong capNetAdmin = 1UL << 12;
+            var line = File.ReadLines("/proc/self/status")
+                .FirstOrDefault(value => value.StartsWith("CapEff:", StringComparison.Ordinal));
+            var hexadecimal = line?.Split(':', 2).ElementAtOrDefault(1)?.Trim();
+            return ulong.TryParse(hexadecimal, System.Globalization.NumberStyles.HexNumber,
+                       System.Globalization.CultureInfo.InvariantCulture, out var effectiveCapabilities)
+                   && (effectiveCapabilities & capNetAdmin) != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private async Task<ProcessService?> RunProcess(CoreInfo? coreInfo, string configPath, bool displayLog, bool mayNeedSudo, bool isTunLaunch = false)
     {
         var fileName = CoreInfoManager.Instance.GetCoreExecFile(coreInfo, out var msg);
@@ -313,8 +385,7 @@ public class CoreManager
 
         try
         {
-            if (mayNeedSudo
-                && ShouldRunAsSudo(isTunLaunch, coreInfo.CoreType, Utils.IsNonWindows()))
+            if (mayNeedSudo && ShouldRunAsSudoForCurrentProcess(isTunLaunch, coreInfo.CoreType))
             {
                 _linuxSudo = true;
                 await CoreAdminManager.Instance.Init(_config, _updateFunc);

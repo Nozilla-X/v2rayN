@@ -80,63 +80,6 @@ const navItems = [
   { id: 'maintenance', key: 'nav.maintenance', icon: '⇩' },
   { id: 'logs', key: 'nav.logs', icon: '▤' },
 ]
-const apiMessageAliases: Record<string, string> = {
-  'settings.invalidPort': 'settingsApi.invalidPort',
-  'settings.invalidCoreLogLevel': 'settingsApi.invalidCoreLogLevel',
-  'settings.invalidCoreValue': 'settingsApi.invalidCoreValue',
-  'settings.invalidFragment': 'settingsApi.invalidFragment',
-  'settings.invalidSpeedTest': 'settingsApi.invalidSpeedTest',
-  'settings.invalidRoutingStrategy': 'settingsApi.invalidRoutingStrategy',
-  'settings.savedRestartRequired': 'settingsApi.savedRestartRequired',
-  'settings.invalidRegionalPreset': 'settingsApi.invalidRegionalPreset',
-  'settings.regionalPresetFailed': 'settingsApi.regionalPresetFailed',
-  'routing.nameRequired': 'routingApi.nameRequired',
-  'routing.profileNotFound': 'routingApi.profileNotFound',
-  'routing.rulesInvalid': 'routingApi.rulesInvalid',
-  'routing.ruleNotFound': 'routingApi.ruleNotFound',
-  'routing.saveFailed': 'routingApi.saveFailed',
-  'dns.profileNotFound': 'dnsApi.profileNotFound',
-  'dns.saveFailed': 'dnsApi.saveFailed',
-  'speedtest.started': 'speedtestApi.started',
-  'speedtest.unsupportedCore': 'speedtestApi.unsupportedCore',
-  'speedtest.selectRequired': 'speedtestApi.selectRequired',
-  'speedtest.invalidProfile': 'speedtestApi.invalidProfile',
-  'speedtest.settingsSaved': 'speedtestApi.settingsSaved',
-  'speedtest.result': 'speedtestApi.result',
-  'core.updateCheckFailed': 'coreApi.updateCheckFailed',
-  'core.updateStarted': 'coreApi.updateStarted',
-  'core.updateBusy': 'coreApi.updateBusy',
-  'core.updateFailed': 'coreApi.updateFailed',
-  'core.updateCompleted': 'coreApi.updateCompleted',
-  'core.updateAvailable': 'coreApi.updateAvailable',
-  'core.updateCurrent': 'coreApi.updateCurrent',
-  'updates.geoStarted': 'updatesApi.geoStarted',
-  'updates.geoBusy': 'updatesApi.geoBusy',
-  'updates.geoProgress': 'updatesApi.geoProgress',
-  'backup.created': 'backupApi.created',
-  'backup.restoreStarted': 'backupApi.restoreStarted',
-  'backup.restoreFailed': 'backupApi.restoreFailed',
-  'backup.archiveInvalid': 'backupApi.archiveInvalid',
-  'backup.webdavSettingsSaved': 'backupApi.webdavSettingsSaved',
-  'backup.webdavCheckSucceeded': 'backupApi.webdavCheckSucceeded',
-  'backup.webdavCheckFailed': 'backupApi.webdavCheckFailed',
-  'backup.webdavBackupSucceeded': 'backupApi.webdavBackupSucceeded',
-  'backup.webdavRestoreFailed': 'backupApi.webdavRestoreFailed',
-  'settings.loaded': 'common.loaded',
-  'settings.tunLoaded': 'common.loaded',
-  'profiles.loaded': 'common.loaded',
-  'profiles.groupsLoaded': 'common.loaded',
-  'subscriptions.loaded': 'common.loaded',
-  'routing.profilesLoaded': 'common.loaded',
-  'routing.rulesLoaded': 'common.loaded',
-  'dns.simpleLoaded': 'common.loaded',
-  'dns.profilesLoaded': 'common.loaded',
-  'coreTemplates.loaded': 'common.loaded',
-  'profiles.exportReady': 'common.completed',
-  'operations.loaded': 'common.loaded',
-  'logs.loaded': 'common.loaded',
-  'logs.cleared': 'common.deleted',
-}
 const protocolTypes = ['VMess', 'VLESS', 'Shadowsocks', 'SOCKS', 'Trojan', 'Hysteria2', 'TUIC', 'WireGuard', 'HTTP', 'Anytls', 'Naive']
 const coreTypes = ['Xray', 'sing_box', 'v2fly', 'v2fly_v5', 'mihomo', 'hysteria', 'naiveproxy', 'tuic', 'juicity', 'brook', 'overtls', 'shadowquic', 'mieru']
 const testActions = [
@@ -149,12 +92,8 @@ const testActions = [
 ]
 
 const currentProfile = computed(() => profiles.value.find((profile) => profile.isCurrent) || null)
-const filteredProfiles = computed(() => {
-  const query = filter.value.trim().toLocaleLowerCase()
-  if (!query) return profiles.value
-  return profiles.value.filter((profile) => [profile.protocol, profile.remarks, profile.address, profile.port, profile.network,
-    profile.streamSecurity, profile.subscriptionName, profile.ipInfo].some((value) => String(value ?? '').toLocaleLowerCase().includes(query)))
-})
+// The backend owns filtering so its ServiceLib regex semantics are preserved.
+const filteredProfiles = computed(() => profiles.value)
 const selectedProfiles = computed(() => profiles.value.filter((profile) => selectedIds.value.includes(profile.indexId)))
 const allVisibleSelected = computed(() => filteredProfiles.value.length > 0 && filteredProfiles.value.every((profile) => selectedIds.value.includes(profile.indexId)))
 const listeners = computed(() => status.value?.listeners || [])
@@ -173,9 +112,8 @@ const tunnelCapabilityMessage = computed(() => {
 
 function translateKey(key?: string | null): string {
   if (!key) return t('common.operationDone')
-  const lookup = apiMessageAliases[key] || key
-  const translated = t(lookup)
-  return translated === lookup ? key : translated
+  const translated = t(key)
+  return translated === key ? key : translated
 }
 
 function showNotice(message: string, kind: 'success' | 'error' = 'success') {
@@ -207,6 +145,8 @@ async function request(path: string, init: ApiInit = {}): Promise<Dict> {
   if (response.status === 401) {
     authenticated.value = false
     closeEvents()
+    token.value = ''
+    localStorage.removeItem('v2rayn-web-token')
   }
   const payload = response.status === 204 ? null : await response.json().catch(() => null)
   if (!response.ok || payload?.success === false) {
@@ -289,10 +229,10 @@ async function connect() {
     return
   }
   token.value = candidate
-  localStorage.setItem('v2rayn-web-token', candidate)
   try {
     await refreshBase()
     if (authenticated.value) {
+      localStorage.setItem('v2rayn-web-token', candidate)
       openEvents()
       await Promise.all([loadSettings(), loadRouting(), loadPageData()])
       await loadLogs()
@@ -300,6 +240,8 @@ async function connect() {
     }
   } catch (error) {
     authenticated.value = false
+    token.value = ''
+    localStorage.removeItem('v2rayn-web-token')
     showError(error)
     if (!notice.value) showNotice(t('auth.connectFailed'), 'error')
   }
@@ -464,7 +406,7 @@ async function startSpeedTest(action: string, ids: string[] = selectedIds.value)
       method: 'POST',
       body: { action, ...(ids.length ? { profileIds: ids } : {}) },
     })
-    showNotice(operationMessage(result, 'speedtestApi.started'))
+    showNotice(operationMessage(result, 'speedtest.started'))
     await loadOperations()
   } catch (error) { showError(error) }
 }
@@ -1028,7 +970,7 @@ async function checkXrayUpdate() {
 async function updateXray() {
   try {
     const result = await request(queryPath('/api/core/xray/update', xrayUpdate.value), { method: 'POST' })
-    showNotice(operationMessage(result, 'coreApi.updateStarted'))
+    showNotice(operationMessage(result, 'core.updateStarted'))
     await loadOperations()
   } catch (error) { showError(error) }
 }
@@ -1036,7 +978,7 @@ async function updateXray() {
 async function updateGeo() {
   try {
     const result = await request(`/api/core/geo/update?useProxy=${xrayUpdate.value.useProxy}`, { method: 'POST' })
-    showNotice(operationMessage(result, 'updatesApi.geoStarted'))
+    showNotice(operationMessage(result, 'updates.geoStarted'))
     await loadOperations()
   } catch (error) { showError(error) }
 }
@@ -1238,8 +1180,8 @@ onUnmounted(() => {
             <option value="">{{ t('common.none') }}</option>
             <option v-for="route in routes" :key="route.id" :value="route.id">{{ route.remarks }}</option>
           </select>
-          <button :class="['tun-toggle', { enabled: status?.tunEnabled }]" :disabled="!tunForm.capabilityAvailable && !status?.tunEnabled" :title="tunForm.capabilityAvailable ? t('settings.tunEnabled') : tunnelCapabilityMessage" @click="saveTun(!status?.tunEnabled)">
-            <span class="toggle-led"></span>{{ status?.tunEnabled ? t('status.tunOn') : t('status.tunOff') }}
+          <button :class="['tun-toggle', { enabled: status?.tunInterfaceActive }]" :disabled="!tunForm.capabilityAvailable && !status?.tunEnabled" :title="!tunForm.capabilityAvailable ? tunnelCapabilityMessage : status?.tunInterfaceActive ? t('status.tunOn') : t('status.tunConfigured')" @click="saveTun(!status?.tunEnabled)">
+            <span class="toggle-led"></span>{{ status?.tunInterfaceActive ? t('status.tunOn') : status?.tunEnabled ? t('status.tunConfigured') : t('status.tunOff') }}
           </button>
         </div>
         <div class="core-actions">

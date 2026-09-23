@@ -1,0 +1,13 @@
+services:
+  v2rayn-web:
+    # The TUN deployment runs with only NET_ADMIN in its capability set.
+    # Use rootful Docker; rootless Podman may not grant host TUN capabilities.
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    security_opt:
+      - no-new-privileges:true

@@ -18,17 +18,25 @@ using v2rayN.Web.Contracts;
 
 namespace v2rayN.Web.Services;
 
-public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfiguration configuration, IHostApplicationLifetime lifetime)
+public sealed partial class V2rayRuntime(
+    EventHub events,
+    LogBuffer logs,
+    IConfiguration configuration,
+    IHostApplicationLifetime lifetime,
+    RuntimeOperationCoordinator operations)
 {
     private readonly EventHub _events = events;
     private readonly LogBuffer _logs = logs;
     private readonly IConfiguration _configuration = configuration;
     private readonly IHostApplicationLifetime _lifetime = lifetime;
+    private readonly RuntimeOperationCoordinator _operations = operations;
     private readonly SemaphoreSlim _coreGate = new(1, 1);
     private readonly object _subscriptionGate = new();
+    private readonly object _speedtestGate = new();
     private readonly Dictionary<string, Task> _subscriptionTasks = new(StringComparer.Ordinal);
     private SpeedtestService? _speedtestService;
     private Task? _speedtestTask;
+    private CancellationTokenSource? _speedtestCancellation;
     private Task? _xrayUpdateTask;
     private DateTimeOffset? _coreStartedAt;
     private string? _xrayPath;
@@ -64,7 +72,6 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
         }
         if (Config.TunModeItem.EnableTun && !GetTunSettings().CapabilityAvailable)
         {
-            Config.TunModeItem.EnableTun = false;
             AddLog("tun", "tun.capabilityUnavailable");
         }
         if (_configuration.GetValue<bool?>("V2RAYN_WEB_PROXY_LISTEN_ALL") is bool allowProxyFromLan)
@@ -75,14 +82,19 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
 
         await ConfigHandler.InitBuiltinDNS(Config);
         await ConfigHandler.InitBuiltinFullConfigTemplate(Config);
+        if ((await AppManager.Instance.RoutingItems() ?? []).Count == 0)
+        {
+            await ConfigHandler.InitBuiltinRouting(Config);
+        }
         await ProfileExManager.Instance.Init();
         await CertPemManager.Instance.Init(Config);
+        // CoreManager keeps the platform's normal sudo fallback, but starts TUN directly
+        // when this process already has the required Linux privilege.
         await CoreManager.Instance.Init(Config, OnCoreMessageAsync);
         if (Config.GuiItem.EnableStatistics || Config.GuiItem.DisplayRealTimeSpeed)
         {
             await StatisticsManager.Instance.Init(Config, OnStatisticsUpdateAsync);
         }
-        TaskManager.Instance.RegUpdateTask(Config, OnScheduledTaskMessageAsync);
         _xrayPath = FindXrayExecutable(out var missingXrayMessage);
         if (_xrayPath is null)
         {
@@ -91,6 +103,7 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
 
         _initialized = true;
         AddLog("web", "serviceLib.initialized");
+        StartScheduledOperations(cancellationToken);
 
         if (_configuration.GetValue("V2RAYN_WEB_AUTOSTART", false))
         {
@@ -104,6 +117,9 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
 
     public async Task ShutdownAsync(CancellationToken cancellationToken)
     {
+        await WaitForScheduledRestartAsync();
+        await StopScheduledOperationsAsync();
+        await _operations.StopAndDrainAsync(CancellationToken.None);
         if (!_initialized)
         {
             return;
@@ -203,17 +219,26 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
 
     public bool StartSubscriptionUpdate(string id, bool useProxy)
     {
+        return StartSubscriptionUpdateTask(id, useProxy, _operations.ShutdownToken) is not null;
+    }
+
+    private Task? StartSubscriptionUpdateTask(string id, bool useProxy, CancellationToken operationToken)
+    {
         lock (_subscriptionGate)
         {
-            if (_subscriptionTasks.TryGetValue(id, out var running) && !running.IsCompleted)
+            var hasConflictingUpdate = _subscriptionTasks.Any(pair =>
+                !pair.Value.IsCompleted
+                && (pair.Key.Length == 0 || id.Length == 0 || pair.Key == id));
+            if (hasConflictingUpdate)
             {
-                return false;
+                return null;
             }
 
             var task = Task.Run(async () =>
             {
                 try
                 {
+                    await using var operation = await _operations.EnterOperationAsync(operationToken);
                     await SubscriptionHandler.UpdateProcess(Config, id, useProxy, (success, message) =>
                     {
                         var payload = new
@@ -229,8 +254,13 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
                         return Task.CompletedTask;
                     });
 
+                    operation.Token.ThrowIfCancellationRequested();
                     await UpdateSubscriptionTimestampAsync(id);
                     _events.Publish("profiles-changed", new { subscriptionId = id });
+                }
+                catch (OperationCanceledException) when (_operations.IsStopping || operationToken.IsCancellationRequested)
+                {
+                    // Expected during graceful service shutdown.
                 }
                 catch (Exception ex)
                 {
@@ -246,7 +276,7 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
             });
 
             _subscriptionTasks[id] = task;
-            return true;
+            return task;
         }
     }
 
@@ -331,6 +361,23 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
             }
         }
         var listening = listeners.FirstOrDefault()?.Listening ?? false;
+        var tunLaunchActive = Config.TunModeItem.EnableTun && _coreStartedAt is not null && listening;
+        var expectedTunInterfaceName = tunLaunchActive
+            ? AppManager.Instance.RunningCoreType switch
+            {
+                ECoreType.Xray => "xray_tun",
+                ECoreType.sing_box => "singbox_tun",
+                ECoreType.mihomo => "tun0",
+                _ => null,
+            }
+            : null;
+        var activeTunInterfaceName = !tunLaunchActive
+            ? null
+            : new[] { expectedTunInterfaceName, "xray_tun", "singbox_tun", "tun0" }
+                .Distinct(StringComparer.Ordinal)
+                .Where(name => name is not null)
+                .FirstOrDefault(name => IsNetworkInterfacePresent(name!));
+        var tunInterfaceName = activeTunInterfaceName ?? expectedTunInterfaceName;
         return new StatusView(
             _coreStartedAt is not null && listening,
             _coreStartedAt is not null && listening
@@ -351,7 +398,9 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
                 _latestTraffic.ProxyDown,
                 _latestTraffic.DirectUp,
                 _latestTraffic.DirectDown),
-            Config.TunModeItem.EnableTun);
+            Config.TunModeItem.EnableTun,
+            tunInterfaceName,
+            activeTunInterfaceName is not null);
     }
 
     public async Task<OperationView> SelectProfileAsync(string profileId, CancellationToken cancellationToken)
@@ -401,11 +450,6 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
             return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
         }
 
-        if (_xrayPath is null)
-        {
-            return OperationView.Fail("xray_missing", ApiMessageKeys.CoreBinaryMissing);
-        }
-
         var built = await CoreConfigContextBuilder.BuildAll(Config, profile);
         if (!built.Success)
         {
@@ -415,11 +459,32 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
             }
             return OperationView.Fail("profile_validation_failed", ApiMessageKeys.ProfileInvalid);
         }
-        if (built.MainResult.Context.RunCoreType != ECoreType.Xray
-            || (built.PreSocksResult?.Context.RunCoreType is { } preCore && preCore != ECoreType.Xray))
+        if (Config.TunModeItem.EnableTun && !GetTunSettings().CapabilityAvailable)
         {
-            return OperationView.Fail("core_unsupported", ApiMessageKeys.ProfileUnsupportedCore,
-                new { requiredCore = built.MainResult.Context.RunCoreType.ToString() });
+            var capability = GetTunSettings();
+            return OperationView.Fail("tun_capability_unavailable",
+                capability.CapabilityMessageKey ?? "tun.capabilityUnavailable");
+        }
+
+        var requiredCoreTypes = new[]
+            {
+                (ECoreType?)built.MainResult.Context.RunCoreType,
+                built.PreSocksResult?.Context.RunCoreType,
+            }
+            .Where(coreType => coreType.HasValue)
+            .Select(coreType => coreType!.Value)
+            .Distinct()
+            .ToArray();
+        foreach (var coreType in requiredCoreTypes)
+        {
+            var coreInfo = CoreInfoManager.Instance.GetCoreInfo(coreType);
+            var executable = CoreInfoManager.Instance.GetCoreExecFile(coreInfo, out var missingCoreMessage);
+            if (string.IsNullOrEmpty(executable))
+            {
+                AddLog("core", missingCoreMessage);
+                return OperationView.Fail("core_binary_missing", ApiMessageKeys.CoreBinaryMissing,
+                    new { coreType = coreType.ToString() });
+            }
         }
 
         if (selectProfile && await ConfigHandler.SetDefaultServerIndex(Config, profile.IndexId) != 0)
@@ -474,10 +539,6 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
                 return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
             }
 
-            if (_xrayPath is null)
-            {
-                return OperationView.Fail("xray_missing", ApiMessageKeys.CoreBinaryMissing);
-            }
             var result = await StartCoreLockedAsync(profile, cancellationToken);
             return result.Success ? OperationView.Ok(ApiMessageKeys.CoreRestarted, result.Data) : result;
         }
@@ -544,16 +605,6 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
     {
         _latestTraffic = update;
         _events.Publish("traffic", update);
-        return Task.CompletedTask;
-    }
-
-    private Task OnScheduledTaskMessageAsync(bool success, string message)
-    {
-        AddLog("task", message);
-        if (success)
-        {
-            _events.Publish("profiles-changed", new { subscriptionId = (string?)null });
-        }
         return Task.CompletedTask;
     }
 
@@ -713,6 +764,19 @@ public sealed partial class V2rayRuntime(EventHub events, LogBuffer logs, IConfi
             throw;
         }
         catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsNetworkInterfacePresent(string name)
+    {
+        try
+        {
+            return System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+                .Any(networkInterface => string.Equals(networkInterface.Name, name, StringComparison.Ordinal));
+        }
+        catch (System.Net.NetworkInformation.NetworkInformationException)
         {
             return false;
         }

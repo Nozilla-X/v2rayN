@@ -10,7 +10,7 @@ public sealed class EventHub
     private const int EventBufferCapacity = 256;
     private readonly ConcurrentDictionary<Guid, Channel<WebEvent>> _subscribers = new();
 
-    public void Publish(string type, object data)
+    public void Publish(string type, object? data)
     {
         var message = new WebEvent(type, data, DateTimeOffset.UtcNow);
         foreach (var channel in _subscribers.Values)

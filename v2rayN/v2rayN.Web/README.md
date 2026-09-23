@@ -6,7 +6,7 @@ The Vue source is in `WebUI/`. The frontend uses TypeScript and `vue-i18n` local
 
 ## Native Linux binary
 
-Build on a machine or build environment that already has the .NET 10 SDK and Node.js/npm available:
+Build with Node.js/npm and the .NET 10 SDK. `scripts/publish-native.sh` prefers the local, git-ignored `.NET/dotnet` SDK when present, and otherwise uses `dotnet` from `PATH`:
 
 ```bash
 bash scripts/publish-native.sh linux-x64
@@ -21,7 +21,25 @@ V2RAYN_WEB_API_KEY='<strong-secret>' \
 ./v2rayN.Web
 ```
 
+The Web test project is kept within this project at `Tests/v2rayN.Web.Tests.csproj`:
+
+```bash
+DOTNET="${DOTNET:-}"
+if [[ -z "$DOTNET" ]]; then
+  if [[ -x .NET/dotnet ]]; then DOTNET=.NET/dotnet; else DOTNET="$(command -v dotnet)"; fi
+fi
+"$DOTNET" test Tests/v2rayN.Web.Tests.csproj --configuration Release
+```
+
 Open `http://127.0.0.1:5080` and enter the configured API key. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the hosted ServiceLib adapter stops Core and flushes ServiceLib profile/statistics data on shutdown.
+
+A fresh Web publish contains the management layer but no proxy Core executable. From `v2rayN/v2rayN.Web/`, validate an official Xray release and copy it beside the native publish before enabling Core autostart:
+
+```bash
+bash scripts/bootstrap-xray.sh /path/to/Xray-linux-64.zip
+mkdir -p publish/linux-x64/bin
+cp -a core-bin/xray publish/linux-x64/bin/
+```
 
 ### Data and Core paths
 
@@ -35,6 +53,10 @@ Open `http://127.0.0.1:5080` and enter the configured API key. The mixed HTTP/SO
 For remote access, prefer a trusted LAN/VPN or place v2rayN.Web behind a TLS-enabled reverse proxy. Do not expose the plain HTTP management endpoint directly to the public Internet.
 
 The Backend requires `V2RAYN_WEB_API_KEY`; it does not require any desktop components or Docker socket access.
+
+REST requests use a Bearer authorization header. Only `/api/events` accepts `access_token` in the query string, which is required by the browser's native `EventSource` API.
+
+Backup restore accepts archives up to 64 MiB compressed and 256 MiB expanded, with a 2,048-entry limit and path/symlink validation. Temporary files created for backup downloads are removed after the response completes.
 
 ## Native systemd service
 
@@ -60,6 +82,17 @@ Check service logs with:
 journalctl -u v2rayn-web.service -f
 ```
 
+TUN runs Core directly as the service user; the Web host does not invoke `sudo` or request a password. To grant the systemd service TUN access, install the optional drop-in:
+
+```bash
+sudo install -D -m 644 deploy/systemd/v2rayn-web-tun.conf \
+  /etc/systemd/system/v2rayn-web.service.d/10-tun.conf
+sudo systemctl daemon-reload
+sudo systemctl restart v2rayn-web.service
+```
+
+The backend checks the capability and device access, and `/api/status` reports whether the expected TUN interface was actually created. Run `bash scripts/smoke-test-tun.sh` after selecting a working profile; it temporarily disables the optional legacy-protection pre-Core to test the selected Core's TUN interface directly, then restores both TUN preferences and the Core running state.
+
 Application/Core messages go to stdout/stderr for journald and are also retained in the ServiceLib log path when file logging is enabled.
 
 ## Optional Docker / rootless Podman
@@ -74,6 +107,21 @@ podman compose -f v2rayN/v2rayN.Web/compose.yaml up -d --build
 ```
 
 The Compose example binds Web/API `5080` and proxy `10808` to host loopback by default and stores ServiceLib state in a named `/data` volume. Set `V2RAYN_WEB_PORT` or `V2RAYN_PROXY_PORT` to change published/container ports; for local testing beside a v2rayN instance on 10808, set `V2RAYN_PROXY_PORT=1145`. Both listeners are loopback-only from the host by default. No runtime Docker/Podman API or socket is used by the app.
+
+The compose file bind-mounts `./core-bin` at `/app/bin`; the image intentionally does not download a Core during build. Prepare an official Xray Linux release archive on a machine that can reach GitHub, then from `v2rayN/v2rayN.Web/` run:
+
+```bash
+bash scripts/bootstrap-xray.sh /path/to/Xray-linux-64.zip
+docker compose -f compose.yaml up -d --build
+```
+
+The bootstrap helper extracts and runs `xray -version` before placing it at `core-bin/xray/xray`. For a rootful Docker deployment that needs TUN, merge the capability/device overlay:
+
+```bash
+docker compose -f compose.yaml -f compose.tun.yaml up -d --build
+```
+
+That overlay runs the service with only `NET_ADMIN` in its capability set and maps `/dev/net/tun`. Rootless Podman typically cannot provide the host TUN capability; run `bash scripts/smoke-test-tun.sh` against the deployed instance and confirm it reports a created interface before relying on it. The script requires `curl` and `jq` on the machine where it runs.
 
 ## API and feature map
 

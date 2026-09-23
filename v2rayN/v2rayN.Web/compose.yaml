@@ -18,6 +18,7 @@ services:
       - "127.0.0.1:${V2RAYN_PROXY_PORT:-10808}:${V2RAYN_PROXY_PORT:-10808}/udp"
     volumes:
       - v2rayn-data:/data
+      - ./core-bin:/app/bin:ro
 
 volumes:
   v2rayn-data:

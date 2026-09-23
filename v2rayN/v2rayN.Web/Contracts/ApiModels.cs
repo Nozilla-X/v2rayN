@@ -354,6 +354,7 @@ public static class ApiMessageKeys
     public const string SubscriptionNameRequired = "subscriptions.nameRequired";
     public const string SubscriptionSaveFailed = "subscriptions.saveFailed";
     public const string SpeedTestStarted = "speedtest.started";
+    public const string SpeedTestBusy = "speedtest.busy";
     public const string SpeedTestUnsupportedCore = "speedtest.unsupportedCore";
     public const string SpeedTestSelectRequired = "speedtest.selectRequired";
     public const string SpeedTestInvalidProfile = "speedtest.invalidProfile";
@@ -418,10 +419,12 @@ public sealed record StatusView(
     DateTimeOffset CheckedAt,
     bool StatisticsEnabled,
     TrafficView? Traffic,
-    bool TunEnabled);
+    bool TunEnabled,
+    string? TunInterfaceName,
+    bool TunInterfaceActive);
 
 public sealed record LogView(DateTimeOffset Timestamp, string Source, string Message);
 
 public sealed record LogPageView(IReadOnlyList<LogView> Items, int Page, int PageSize, int Total, int TotalPages);
 
-public sealed record WebEvent(string Type, object Data, DateTimeOffset Timestamp);
+public sealed record WebEvent(string Type, object? Data, DateTimeOffset Timestamp);

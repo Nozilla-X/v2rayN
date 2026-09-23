@@ -220,7 +220,8 @@
     "invalidUrl": "订阅地址无效",
     "nameRequired": "订阅名称不能为空",
     "saveFailed": "订阅保存失败",
-    "updateProgress": "订阅更新中"
+    "updateProgress": "订阅更新中",
+    "loaded": "已加载"
   },
   "routing": {
     "title": "路由与规则",
@@ -383,7 +384,18 @@
     "saveSpeedtest": "保存测速设置",
     "saveCoreTypes": "保存 Core 映射",
     "saveRouting": "保存路由策略",
-    "restartHint": "运行中的 Core 将在保存后重启以应用设置。"
+    "restartHint": "运行中的 Core 将在保存后重启以应用设置。",
+    "invalidPort": "端口范围无效",
+    "invalidCoreLogLevel": "Core 日志级别无效",
+    "invalidCoreValue": "Core 参数超出范围",
+    "invalidFragment": "Fragment 参数格式无效",
+    "invalidSpeedTest": "测速参数无效",
+    "invalidRoutingStrategy": "路由解析策略无效",
+    "savedRestartRequired": "设置已保存，重启 Core 后生效",
+    "invalidRegionalPreset": "区域预设无效",
+    "regionalPresetFailed": "应用区域预设失败",
+    "loaded": "已加载",
+    "tunLoaded": "已加载"
   },
   "templates": {
     "title": "Core / Full Config 模板",
@@ -425,7 +437,16 @@
     "clearConfirm": "清除所有节点流量统计？",
     "capability": "运行环境能力",
     "operationList": "运行中任务",
-    "noOperations": "当前没有运行中的后台任务"
+    "noOperations": "当前没有运行中的后台任务",
+    "webdavBackupSucceeded": "WebDAV backup completed",
+    "webdavCheckFailed": "WebDAV connection failed",
+    "webdavCheckSucceeded": "WebDAV connection succeeded",
+    "restoreStarted": "Restore started; Backend will restart",
+    "created": "Backup created",
+    "archiveInvalid": "Invalid backup archive",
+    "webdavRestoreFailed": "WebDAV restore failed",
+    "restoreFailed": "Backup restore failed",
+    "webdavSettingsSaved": "WebDAV settings saved"
   },
   "logs": {
     "title": "运行日志",
@@ -443,7 +464,9 @@
     "nextPage": "下一页",
     "lastPage": "末页",
     "totalRows": "共 {total} 条",
-    "pageIndicator": "第 {page} / {pages} 页"
+    "pageIndicator": "第 {page} / {pages} 页",
+    "loaded": "已加载",
+    "cleared": "已删除"
   },
   "status": {
     "online": "Backend 在线",
@@ -452,6 +475,7 @@
     "coreStopped": "Core 已停止",
     "statisticsOff": "统计未启用",
     "tunOn": "TUN 已启用",
+    "tunConfigured": "TUN 已配置，接口未运行",
     "tunOff": "TUN 已关闭",
     "tunUnavailable": "TUN 能力不可用"
   },
@@ -482,7 +506,14 @@
     "startFailed": "Core 启动失败",
     "binaryMissing": "未找到 Xray Core 可执行文件",
     "portInUse": "代理监听端口已被占用",
-    "unsupported": "当前配置需要不支持的 Core"
+    "unsupported": "当前配置需要不支持的 Core",
+    "updateCheckFailed": "Xray 更新检查失败",
+    "updateStarted": "Xray 更新已启动",
+    "updateBusy": "Xray 更新正在进行",
+    "updateFailed": "Xray 更新失败",
+    "updateCompleted": "Xray 更新完成",
+    "updateAvailable": "发现 Xray 新版本",
+    "updateCurrent": "Xray 已是最新版本"
   },
   "profiles": {
     "allGroup": "全部节点",
@@ -501,65 +532,33 @@
     "deduplicated": "重复节点已清理",
     "invalidRemoved": "测试失败节点已清理",
     "grouped": "节点分组已生成",
-    "saved": "节点已保存"
+    "saved": "节点已保存",
+    "loaded": "已加载",
+    "groupsLoaded": "已加载",
+    "exportReady": "已完成"
   },
-  "subscriptionsApi": {
-    "notFound": "未找到订阅",
-    "added": "订阅已添加",
-    "saved": "订阅已保存",
-    "deleted": "订阅已删除",
-    "updateStarted": "订阅更新已启动",
-    "updateBusy": "该订阅正在更新",
-    "invalidUrl": "订阅地址无效",
-    "nameRequired": "订阅名称不能为空",
-    "saveFailed": "订阅保存失败",
-    "updateProgress": "订阅更新中"
+  "tun": {
+    "capabilityUnavailable": "宿主环境缺少 TUN 启用能力",
+    "unsupportedPlatform": "当前平台未提供 Web TUN 能力检查",
+    "deviceUnavailable": "未找到可用的 /dev/net/tun 设备",
+    "devicePermissionDenied": "当前进程无权访问 /dev/net/tun",
+    "netAdminRequired": "需要 CAP_NET_ADMIN；rootless 容器默认不具备此能力"
   },
-  "speedtestApi": {
+  "speedtest": {
     "started": "测速已启动",
+    "busy": "已有测速任务正在运行",
     "unsupportedCore": "所选节点的 Core 不支持此测速",
     "selectRequired": "请先选择节点",
     "invalidProfile": "该节点不支持测速",
     "settingsSaved": "测速设置已保存",
     "result": "测速结果"
   },
-  "settingsApi": {
-    "invalidPort": "端口范围无效",
-    "invalidCoreLogLevel": "Core 日志级别无效",
-    "invalidCoreValue": "Core 参数超出范围",
-    "invalidFragment": "Fragment 参数格式无效",
-    "invalidSpeedTest": "测速参数无效",
-    "invalidRoutingStrategy": "路由解析策略无效",
-    "savedRestartRequired": "设置已保存，重启 Core 后生效",
-    "invalidRegionalPreset": "区域预设无效",
-    "regionalPresetFailed": "应用区域预设失败"
-  },
-  "dnsApi": {
-    "profileNotFound": "未找到 DNS 配置",
-    "saveFailed": "DNS 配置保存失败"
-  },
-  "routingApi": {
-    "nameRequired": "路由名称不能为空",
-    "profileNotFound": "未找到路由配置",
-    "rulesInvalid": "路由规则格式无效",
-    "ruleNotFound": "未找到路由规则",
-    "saveFailed": "路由配置保存失败"
-  },
-  "coreApi": {
-    "updateCheckFailed": "Xray 更新检查失败",
-    "updateStarted": "Xray 更新已启动",
-    "updateBusy": "Xray 更新正在进行",
-    "updateFailed": "Xray 更新失败",
-    "updateCompleted": "Xray 更新完成",
-    "updateAvailable": "发现 Xray 新版本",
-    "updateCurrent": "Xray 已是最新版本"
-  },
-  "updatesApi": {
+  "updates": {
     "geoStarted": "Geo 数据更新已启动",
     "geoBusy": "Geo 数据更新正在进行",
     "geoProgress": "Geo 数据更新中"
   },
-  "backupApi": {
+  "backup": {
     "created": "备份已创建",
     "restoreStarted": "恢复已启动，Backend 即将重启",
     "restoreFailed": "备份恢复失败",
@@ -570,11 +569,10 @@
     "webdavBackupSucceeded": "WebDAV 备份完成",
     "webdavRestoreFailed": "WebDAV 恢复失败"
   },
-  "tun": {
-    "capabilityUnavailable": "宿主环境缺少 TUN 启用能力",
-    "unsupportedPlatform": "当前平台未提供 Web TUN 能力检查",
-    "deviceUnavailable": "未找到可用的 /dev/net/tun 设备",
-    "devicePermissionDenied": "当前进程无权访问 /dev/net/tun",
-    "netAdminRequired": "需要 CAP_NET_ADMIN；rootless 容器默认不具备此能力"
+  "coreTemplates": {
+    "loaded": "已加载"
+  },
+  "operations": {
+    "loaded": "已加载"
   }
 }

@@ -33,6 +33,7 @@ if (string.IsNullOrWhiteSpace(builder.Configuration[Microsoft.AspNetCore.Hosting
 }
 builder.Services.AddSingleton<EventHub>();
 builder.Services.AddSingleton<LogBuffer>();
+builder.Services.AddSingleton<RuntimeOperationCoordinator>();
 builder.Services.AddSingleton<V2rayRuntime>();
 builder.Services.AddHostedService<V2rayHostedService>(services =>
     new V2rayHostedService(services.GetRequiredService<V2rayRuntime>()));
@@ -57,7 +58,7 @@ app.Use(async (context, next) =>
         {
             suppliedKey = suppliedKey[7..].Trim();
         }
-        else
+        else if (path == "/api/events")
         {
             suppliedKey = context.Request.Query["access_token"].ToString();
         }
@@ -94,12 +95,51 @@ app.Use(async (context, next) =>
         context.Response.StatusCode = StatusCodes.Status400BadRequest;
         await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail("json_invalid", ApiMessageKeys.CommonInvalidInput));
     }
+    catch (OperationCanceledException) when (context.Request.Path.StartsWithSegments("/api") && !context.Response.HasStarted)
+    {
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+    }
     catch (Exception exception) when (context.Request.Path.StartsWithSegments("/api") && !context.Response.HasStarted)
     {
         app.Logger.LogError(exception, "Unhandled API request failure.");
         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
         await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail("internal_error", ApiMessageKeys.CommonInternal));
     }
+});
+
+app.Use(async (context, next) =>
+{
+    if (!context.Request.Path.StartsWithSegments("/api")
+        || context.Request.Path == "/api/health"
+        || context.Request.Path == "/api/events")
+    {
+        await next();
+        return;
+    }
+
+    var path = context.Request.Path.Value?.TrimEnd('/') ?? string.Empty;
+    var ownedByBackgroundOperation =
+        (HttpMethods.IsPost(context.Request.Method)
+            && (path is "/api/core/xray/update" or "/api/core/geo/update" or "/api/speedtests"
+                or "/api/subscriptions/update" or "/api/backup/restore" or "/api/backup/webdav/restore"))
+        || (HttpMethods.IsPost(context.Request.Method)
+            && path.StartsWith("/api/subscriptions/", StringComparison.Ordinal)
+            && path.EndsWith("/update", StringComparison.Ordinal));
+
+    if (ownedByBackgroundOperation)
+    {
+        await next();
+        return;
+    }
+
+    var operations = context.RequestServices.GetRequiredService<RuntimeOperationCoordinator>();
+    var exclusive = (HttpMethods.IsGet(context.Request.Method) && path == "/api/backup/download")
+        || (HttpMethods.IsPost(context.Request.Method) && path == "/api/backup/webdav");
+    await using var operation = exclusive
+        ? await operations.EnterExclusiveAsync(context.RequestAborted)
+        : await operations.EnterOperationAsync(context.RequestAborted);
+    context.RequestAborted = operation.Token;
+    await next();
 });
 
 app.MapWebApi();

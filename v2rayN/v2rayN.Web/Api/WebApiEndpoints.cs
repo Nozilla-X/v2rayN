@@ -8,6 +8,13 @@ namespace v2rayN.Web.Api;
 
 public static class WebApiEndpoints
 {
+    private static readonly System.Text.Json.JsonSerializerOptions SseJsonOptions =
+        new(System.Text.Json.JsonSerializerDefaults.Web);
+
+    internal static string SerializeEventData(object? data) => data is null
+        ? "null"
+        : System.Text.Json.JsonSerializer.Serialize(data, data.GetType(), SseJsonOptions);
+
     public static void MapWebApi(this WebApplication app)
     {
         app.MapGet("/api/health", () => ApiReplies.Ok(new { status = "ok" }, "common.health"));
@@ -189,7 +196,7 @@ public static class WebApiEndpoints
         {
             var (result, filePath) = await runtime.CreateBackupArchiveAsync();
             return result.Success && filePath is not null
-                ? Results.File(filePath, "application/zip", Path.GetFileName(filePath))
+                ? (IResult)new DeleteAfterFileResult(filePath)
                 : ApiReplies.Operation(result);
         });
         app.MapPost("/api/backup/restore", async (IFormFile file, V2rayRuntime runtime, CancellationToken cancellationToken) =>
@@ -198,9 +205,15 @@ public static class WebApiEndpoints
             {
                 return ApiReplies.Operation(OperationView.Fail("backup_file_empty", ApiMessageKeys.BackupArchiveInvalid));
             }
+            if (file.Length > 64L * 1024 * 1024)
+            {
+                return ApiReplies.Operation(OperationView.Fail("backup_archive_too_large", ApiMessageKeys.BackupArchiveInvalid));
+            }
             await using var input = file.OpenReadStream();
             return ApiReplies.Operation(await runtime.RestoreFromUploadAsync(input, cancellationToken), successStatus: StatusCodes.Status202Accepted);
-        }).DisableAntiforgery();
+        }).DisableAntiforgery()
+            .WithMetadata(new RequestSizeLimitAttribute(65L * 1024 * 1024))
+            .WithMetadata(new RequestFormLimitsAttribute { MultipartBodyLengthLimit = 65L * 1024 * 1024 });
     }
 
     private static void MapCore(WebApplication app)
@@ -234,10 +247,7 @@ public static class WebApiEndpoints
 
             await foreach (var message in events.Subscribe(context.RequestAborted))
             {
-                var payload = System.Text.Json.JsonSerializer.Serialize(
-                    message.Data,
-                    message.Data.GetType(),
-                    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+                var payload = SerializeEventData(message.Data);
                 await context.Response.WriteAsync($"event: {message.Type}\ndata: {payload}\n\n", context.RequestAborted);
                 await context.Response.Body.FlushAsync(context.RequestAborted);
             }

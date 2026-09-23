@@ -146,7 +146,7 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("profile_save_failed", ApiMessageKeys.CommonInvalidInput);
         }
 
-        if (wasRunning && _xrayPath is not null)
+        if (wasRunning)
         {
             var restart = await StartCoreAsync(profile.IndexId, CancellationToken.None);
             _events.Publish("profiles-changed", new { subscriptionId = Config.SubIndexId });
@@ -186,7 +186,7 @@ public sealed partial class V2rayRuntime
         {
             _ = await ConfigHandler.GetDefaultServer(Config);
             await ConfigHandler.SaveConfig(Config);
-            if (wasRunning && !string.IsNullOrEmpty(Config.IndexId) && _xrayPath is not null)
+            if (wasRunning && !string.IsNullOrEmpty(Config.IndexId))
             {
                 var restart = await StartCoreAsync(null, CancellationToken.None);
                 _events.Publish("profiles-changed", new { subscriptionId = Config.SubIndexId });
@@ -357,6 +357,7 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> StartSpeedTestAsync(SpeedTestRequest request, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var action = request.Action == ESpeedActionType.FastRealping ? ESpeedActionType.Realping : request.Action;
         var profiles = request.ProfileIds is { Length: > 0 }
             ? await AppManager.Instance.GetProfileItemsOrderedByIndexIds(request.ProfileIds)
@@ -368,37 +369,54 @@ public sealed partial class V2rayRuntime
 
         if (action != ESpeedActionType.Tcping
             && profiles.Where(item => !item.ConfigType.IsComplexType())
-                .Any(item => AppManager.Instance.GetCoreType(item, item.ConfigType) != ECoreType.Xray))
+                .Any(item => AppManager.Instance.GetCoreType(item, item.ConfigType) is not (ECoreType.Xray or ECoreType.sing_box)))
         {
             return OperationView.Fail("speedtest_core_unsupported", ApiMessageKeys.SpeedTestUnsupportedCore);
         }
 
-        _speedtestService ??= new SpeedtestService(Config, result =>
+        lock (_speedtestGate)
         {
-            int? delay = int.TryParse(result.Delay, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var parsedDelay)
-                ? parsedDelay
-                : null;
-            decimal? speed = decimal.TryParse(result.Speed, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var parsedSpeed)
-                ? parsedSpeed
-                : null;
-            _events.Publish("speedtest-result", new
+            if (_speedtestTask is { IsCompleted: false })
             {
-                code = ApiMessageKeys.SpeedTestResult,
-                messageKey = ApiMessageKeys.SpeedTestResult,
-                indexId = result.IndexId,
-                delay,
-                speed,
-                ipInfo = result.IpInfo,
-                rawResult = delay is null && speed is null ? (result.Delay ?? result.Speed) : null,
-            });
-            if (!string.IsNullOrEmpty(result.IndexId))
-            {
-                AddLog("speedtest", $"{result.IndexId}: delay={result.Delay}, speed={result.Speed}");
+                return OperationView.Fail("speedtest_busy", ApiMessageKeys.SpeedTestBusy);
             }
-            return Task.CompletedTask;
-        });
-
-        _speedtestTask = Task.Run(() => _speedtestService.RunLoop(action, profiles, cancellationToken), cancellationToken);
+            var speedtestService = _speedtestService ??= CreateSpeedtestService();
+            var speedtestCancellation = new CancellationTokenSource();
+            _speedtestCancellation = speedtestCancellation;
+            _speedtestTask = Task.Run(async () =>
+            {
+                try
+                {
+                    using var requested = CancellationTokenSource.CreateLinkedTokenSource(_operations.ShutdownToken, speedtestCancellation.Token);
+                    await using var operation = await _operations.EnterOperationAsync(requested.Token);
+                    operation.Token.ThrowIfCancellationRequested();
+                    await speedtestService.RunLoop(action, profiles, operation.Token);
+                }
+                catch (OperationCanceledException) when (_operations.IsStopping)
+                {
+                    // Expected during graceful service shutdown.
+                }
+                catch (OperationCanceledException) when (speedtestCancellation.IsCancellationRequested)
+                {
+                    // Expected when the caller stops the active speed test.
+                }
+                catch (Exception ex)
+                {
+                    AddLog("speedtest", ex.Message);
+                }
+                finally
+                {
+                    lock (_speedtestGate)
+                    {
+                        if (ReferenceEquals(_speedtestCancellation, speedtestCancellation))
+                        {
+                            _speedtestCancellation = null;
+                        }
+                    }
+                    speedtestCancellation.Dispose();
+                }
+            });
+        }
         _events.Publish("speedtest-started", new
         {
             code = "speedtest_started",
@@ -409,9 +427,38 @@ public sealed partial class V2rayRuntime
         return OperationView.Ok(ApiMessageKeys.SpeedTestStarted, new { action = action.ToString(), profileCount = profiles.Count });
     }
 
+    private SpeedtestService CreateSpeedtestService() => new(Config, result =>
+    {
+        int? delay = int.TryParse(result.Delay, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var parsedDelay)
+            ? parsedDelay
+            : null;
+        decimal? speed = decimal.TryParse(result.Speed, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var parsedSpeed)
+            ? parsedSpeed
+            : null;
+        _events.Publish("speedtest-result", new
+        {
+            code = ApiMessageKeys.SpeedTestResult,
+            messageKey = ApiMessageKeys.SpeedTestResult,
+            indexId = result.IndexId,
+            delay,
+            speed,
+            ipInfo = result.IpInfo,
+            rawResult = delay is null && speed is null ? (result.Delay ?? result.Speed) : null,
+        });
+        if (!string.IsNullOrEmpty(result.IndexId))
+        {
+            AddLog("speedtest", $"{result.IndexId}: delay={result.Delay}, speed={result.Speed}");
+        }
+        return Task.CompletedTask;
+    });
+
     public OperationView StopSpeedTests()
     {
-        _speedtestService?.ExitLoop();
+        lock (_speedtestGate)
+        {
+            _speedtestCancellation?.Cancel();
+            _speedtestService?.ExitLoop();
+        }
         return OperationView.Ok(ApiMessageKeys.CommonCompleted);
     }
 
