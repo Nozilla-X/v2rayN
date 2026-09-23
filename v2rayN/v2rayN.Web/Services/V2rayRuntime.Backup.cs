@@ -25,14 +25,17 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> UpdateWebDavSettingsAsync(WebDavSettingsInput input)
     {
-        Config.WebDavItem.Url = input.Url?.Trim();
-        Config.WebDavItem.UserName = input.UserName?.Trim();
-        if (input.Password is not null)
+        await _mutations.RunAsync(async () =>
         {
-            Config.WebDavItem.Password = input.Password;
-        }
-        Config.WebDavItem.DirName = input.DirName?.Trim();
-        await ConfigHandler.SaveConfig(Config);
+            Config.WebDavItem.Url = input.Url?.Trim();
+            Config.WebDavItem.UserName = input.UserName?.Trim();
+            if (input.Password is not null)
+            {
+                Config.WebDavItem.Password = input.Password;
+            }
+            Config.WebDavItem.DirName = input.DirName?.Trim();
+            await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+        });
         return OperationView.Ok(ApiMessageKeys.WebDavSettingsSaved);
     }
 
@@ -50,9 +53,12 @@ public sealed partial class V2rayRuntime
 
     public async Task<(OperationView Result, string? FilePath)> CreateBackupArchiveAsync()
     {
-        await ConfigHandler.SaveConfig(Config);
-        await ProfileExManager.Instance.SaveTo();
-        await StatisticsManager.Instance.SaveTo();
+        await _mutations.RunAsync(async () =>
+        {
+            await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+            await ProfileExManager.Instance.SaveTo();
+            await StatisticsManager.Instance.SaveTo();
+        });
 
         var archivePath = Utils.GetBackupPath($"backup_{DateTime.UtcNow:yyyyMMddHHmmss}_{Guid.NewGuid():N}.zip");
         var tempRoot = Utils.GetTempPath($"backup_{Utils.GetGuid(false)}");
@@ -182,7 +188,7 @@ public sealed partial class V2rayRuntime
             await ProfileExManager.Instance.SaveTo();
             await StatisticsManager.Instance.SaveTo();
             StatisticsManager.Instance.Close();
-            await ConfigHandler.SaveConfig(Config);
+            await _mutations.RunAsync(() => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)), cancellationToken);
             await SQLiteHelper.Instance.DisposeDbConnectionAsync();
             databaseClosed = true;
 
@@ -263,7 +269,14 @@ public sealed partial class V2rayRuntime
         }
         if (restartTask is not null)
         {
-            await restartTask;
+            try
+            {
+                await restartTask.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch (TimeoutException)
+            {
+                AddLog("web", "Scheduled restart wait timed out; continuing shutdown.");
+            }
         }
     }
 

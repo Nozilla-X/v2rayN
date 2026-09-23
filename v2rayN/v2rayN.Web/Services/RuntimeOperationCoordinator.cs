@@ -7,6 +7,7 @@ namespace v2rayN.Web.Services;
 /// </summary>
 public sealed class RuntimeOperationCoordinator
 {
+    private static readonly TimeSpan DefaultDrainTimeout = TimeSpan.FromSeconds(10);
     private readonly object _sync = new();
     private readonly CancellationTokenSource _shutdown = new();
     private TaskCompletionSource _changed = NewSignal();
@@ -101,7 +102,7 @@ public sealed class RuntimeOperationCoordinator
         }
     }
 
-    public async Task StopAndDrainAsync(CancellationToken cancellationToken)
+    public async Task<bool> StopAndDrainAsync(CancellationToken cancellationToken, TimeSpan? timeout = null)
     {
         lock (_sync)
         {
@@ -109,21 +110,30 @@ public sealed class RuntimeOperationCoordinator
             SignalChange();
         }
 
-        await _shutdown.CancelAsync();
+        using var drainCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        drainCancellation.CancelAfter(timeout ?? DefaultDrainTimeout);
 
-        while (true)
+        try
         {
-            Task waitTask;
-            lock (_sync)
+            await _shutdown.CancelAsync().WaitAsync(drainCancellation.Token);
+            while (true)
             {
-                if (_activeOperations == 0 && !_exclusiveActive && _waitingExclusive == 0)
+                Task waitTask;
+                lock (_sync)
                 {
-                    return;
+                    if (_activeOperations == 0 && !_exclusiveActive && _waitingExclusive == 0)
+                    {
+                        return true;
+                    }
+                    waitTask = _changed.Task;
                 }
-                waitTask = _changed.Task;
-            }
 
-            await waitTask.WaitAsync(cancellationToken);
+                await waitTask.WaitAsync(drainCancellation.Token);
+            }
+        }
+        catch (OperationCanceledException) when (drainCancellation.IsCancellationRequested)
+        {
+            return false;
         }
     }
 

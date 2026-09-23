@@ -2506,24 +2506,49 @@ public static class ConfigHandler
         return item;
     }
 
+    private static async Task<T> RunWithMutationGateAsync<T>(Func<Func<Task>, Task>? mutationGate, Func<Task<T>> mutation)
+    {
+        if (mutationGate is null)
+        {
+            return await mutation();
+        }
+
+        T result = default!;
+        await mutationGate(async () =>
+        {
+            result = await mutation();
+        });
+        return result;
+    }
+
     /// <summary>
     /// Initialize routing rules from built-in or external templates
     /// </summary>
     /// <param name="config">Current configuration</param>
     /// <param name="blImportAdvancedRules">Whether to import advanced rules</param>
+    /// <param name="mutationGate">Optional short-lived gate for applying shared state changes.</param>
     /// <returns>0 if successful</returns>
-    public static async Task<int> InitRouting(Config config, bool blImportAdvancedRules = false)
+    public static Task<int> InitRouting(Config config, bool blImportAdvancedRules = false) =>
+        InitRouting(config, blImportAdvancedRules, mutationGate: null);
+
+    public static async Task<int> InitRouting(
+        Config config,
+        bool blImportAdvancedRules,
+        Func<Func<Task>, Task>? mutationGate)
     {
+        var result = 0;
         if (config.ConstItem.RouteRulesTemplateSourceUrl.IsNullOrEmpty())
         {
-            await InitBuiltinRouting(config, blImportAdvancedRules);
+            result = await InitBuiltinRouting(config, blImportAdvancedRules, mutationGate);
         }
         else
         {
-            await InitExternalRouting(config, blImportAdvancedRules);
+            result = await InitExternalRouting(config, blImportAdvancedRules, mutationGate);
         }
 
-        return 0;
+        // Preserve the legacy return contract for desktop callers. Web supplies a gate and
+        // needs the operation result so a failed short mutation is not reported as success.
+        return mutationGate is null ? 0 : result;
     }
 
     /// <summary>
@@ -2532,28 +2557,36 @@ public static class ConfigHandler
     /// </summary>
     /// <param name="config">Current configuration</param>
     /// <param name="blImportAdvancedRules">Whether to import advanced rules</param>
+    /// <param name="mutationGate">Optional short-lived gate for applying shared state changes.</param>
     /// <returns>0 if successful</returns>
-    public static async Task<int> InitExternalRouting(Config config, bool blImportAdvancedRules = false)
+    public static Task<int> InitExternalRouting(Config config, bool blImportAdvancedRules = false) =>
+        InitExternalRouting(config, blImportAdvancedRules, mutationGate: null);
+
+    public static async Task<int> InitExternalRouting(
+        Config config,
+        bool blImportAdvancedRules,
+        Func<Func<Task>, Task>? mutationGate)
     {
         var downloadHandle = new DownloadService();
         var templateContent = await downloadHandle.TryDownloadString(config.ConstItem.RouteRulesTemplateSourceUrl, true, "");
         if (templateContent.IsNullOrEmpty())
         {
-            return await InitBuiltinRouting(config, blImportAdvancedRules); // fallback
+            return await InitBuiltinRouting(config, blImportAdvancedRules, mutationGate); // fallback
         }
 
         var template = JsonUtils.Deserialize<RoutingTemplate>(templateContent);
         if (template == null)
         {
-            return await InitBuiltinRouting(config, blImportAdvancedRules); // fallback
+            return await InitBuiltinRouting(config, blImportAdvancedRules, mutationGate); // fallback
         }
 
         var items = await AppManager.Instance.RoutingItems();
         var maxSort = items.Count;
-        if (!blImportAdvancedRules && items.Where(t => t.Remarks.StartsWith(template.Version)).ToList().Count > 0)
+        if (!blImportAdvancedRules && items.Where(item => item.Remarks.StartsWith(template.Version)).ToList().Count > 0)
         {
             return 0;
         }
+
         for (var i = 0; i < template.RoutingItems.Length; i++)
         {
             var item = template.RoutingItems[i];
@@ -2577,12 +2610,33 @@ public static class ConfigHandler
             item.Sort = ++maxSort;
             item.Url = string.Empty;
 
-            await AddBatchRoutingRules(item, ruleSetsString);
-
-            //first rule as default at first startup
-            if (!blImportAdvancedRules && i == 0)
+            var result = await RunWithMutationGateAsync(mutationGate, async () =>
             {
-                await SetDefaultRouting(config, item);
+                if (mutationGate is not null)
+                {
+                    var currentItems = await AppManager.Instance.RoutingItems() ?? [];
+                    if (!blImportAdvancedRules && currentItems.Any(existing => existing.Remarks.StartsWith(template.Version, StringComparison.Ordinal)))
+                    {
+                        return 0;
+                    }
+                    maxSort = Math.Max(maxSort, currentItems.Count);
+                    item.Sort = ++maxSort;
+                }
+
+                var saved = await AddBatchRoutingRules(item, ruleSetsString);
+                if (!blImportAdvancedRules && i == 0)
+                {
+                    var selected = await SetDefaultRouting(config, item);
+                    if (mutationGate is not null && saved == 0 && selected != 0)
+                    {
+                        saved = selected;
+                    }
+                }
+                return saved;
+            });
+            if (mutationGate is not null && result != 0)
+            {
+                return result;
             }
         }
 
@@ -2595,70 +2649,96 @@ public static class ConfigHandler
     /// </summary>
     /// <param name="config">Current configuration</param>
     /// <param name="blImportAdvancedRules">Whether to import advanced rules</param>
+    /// <param name="mutationGate">Optional short-lived gate for applying shared state changes.</param>
     /// <returns>0 if successful</returns>
-    public static async Task<int> InitBuiltinRouting(Config config, bool blImportAdvancedRules = false)
+    public static Task<int> InitBuiltinRouting(Config config, bool blImportAdvancedRules = false) =>
+        InitBuiltinRouting(config, blImportAdvancedRules, mutationGate: null);
+
+    public static async Task<int> InitBuiltinRouting(
+        Config config,
+        bool blImportAdvancedRules,
+        Func<Func<Task>, Task>? mutationGate)
     {
-        var ver = "V4-";
-        var items = await AppManager.Instance.RoutingItems();
-
-        //TODO Temporary code to be removed later
-        var lockItem = items?.FirstOrDefault(t => t.Locked == true);
-        if (lockItem != null)
+        return await RunWithMutationGateAsync(mutationGate, async () =>
         {
-            await ConfigHandler.RemoveRoutingItem(lockItem);
-            items = await AppManager.Instance.RoutingItems();
-        }
+            var ver = "V4-";
+            var items = await AppManager.Instance.RoutingItems();
 
-        if (!blImportAdvancedRules && items.Count() > 0) // items.Count(u => u.Remarks.StartsWith(ver)) > 0)
-        {
-            //migrate
             //TODO Temporary code to be removed later
-            if (config.RoutingBasicItem.RoutingIndexId.IsNotEmpty())
+            var lockItem = items?.FirstOrDefault(t => t.Locked == true);
+            if (lockItem != null)
             {
-                var item = items.FirstOrDefault(t => t.Id == config.RoutingBasicItem.RoutingIndexId);
-                if (item != null)
-                {
-                    await SetDefaultRouting(config, item);
-                }
-                config.RoutingBasicItem.RoutingIndexId = string.Empty;
+                await ConfigHandler.RemoveRoutingItem(lockItem);
+                items = await AppManager.Instance.RoutingItems();
             }
 
+            if (!blImportAdvancedRules && items.Count() > 0) // items.Count(u => u.Remarks.StartsWith(ver)) > 0)
+            {
+                //migrate
+                //TODO Temporary code to be removed later
+                if (config.RoutingBasicItem.RoutingIndexId.IsNotEmpty())
+                {
+                    var item = items.FirstOrDefault(t => t.Id == config.RoutingBasicItem.RoutingIndexId);
+                    if (item != null && !item.IsActive)
+                    {
+                        var selected = await SetDefaultRouting(config, item);
+                        if (mutationGate is not null && selected != 0)
+                        {
+                            return -1;
+                        }
+                    }
+                    config.RoutingBasicItem.RoutingIndexId = string.Empty;
+                }
+
+                return 0;
+            }
+
+            var maxSort = items.Count;
+            //Bypass the mainland
+            var item2 = new RoutingItem()
+            {
+                Remarks = $"{ver}绕过大陆(Whitelist)",
+                Url = string.Empty,
+                Sort = maxSort + 1,
+            };
+            if (await AddBatchRoutingRules(item2, EmbedUtils.GetEmbedText(Global.CustomRoutingFileName + "white")) != 0
+                && mutationGate is not null)
+            {
+                return -1;
+            }
+
+            //Blacklist
+            var item3 = new RoutingItem()
+            {
+                Remarks = $"{ver}黑名单(Blacklist)",
+                Url = string.Empty,
+                Sort = maxSort + 2,
+            };
+            if (await AddBatchRoutingRules(item3, EmbedUtils.GetEmbedText(Global.CustomRoutingFileName + "black")) != 0
+                && mutationGate is not null)
+            {
+                return -1;
+            }
+
+            //Global
+            var item1 = new RoutingItem()
+            {
+                Remarks = $"{ver}全局(Global)",
+                Url = string.Empty,
+                Sort = maxSort + 3,
+            };
+            if (await AddBatchRoutingRules(item1, EmbedUtils.GetEmbedText(Global.CustomRoutingFileName + "global")) != 0
+                && mutationGate is not null)
+            {
+                return -1;
+            }
+
+            if (!blImportAdvancedRules && await SetDefaultRouting(config, item2) != 0 && mutationGate is not null)
+            {
+                return -1;
+            }
             return 0;
-        }
-
-        var maxSort = items.Count;
-        //Bypass the mainland
-        var item2 = new RoutingItem()
-        {
-            Remarks = $"{ver}绕过大陆(Whitelist)",
-            Url = string.Empty,
-            Sort = maxSort + 1,
-        };
-        await AddBatchRoutingRules(item2, EmbedUtils.GetEmbedText(Global.CustomRoutingFileName + "white"));
-
-        //Blacklist
-        var item3 = new RoutingItem()
-        {
-            Remarks = $"{ver}黑名单(Blacklist)",
-            Url = string.Empty,
-            Sort = maxSort + 2,
-        };
-        await AddBatchRoutingRules(item3, EmbedUtils.GetEmbedText(Global.CustomRoutingFileName + "black"));
-
-        //Global
-        var item1 = new RoutingItem()
-        {
-            Remarks = $"{ver}全局(Global)",
-            Url = string.Empty,
-            Sort = maxSort + 3,
-        };
-        await AddBatchRoutingRules(item1, EmbedUtils.GetEmbedText(Global.CustomRoutingFileName + "global"));
-
-        if (!blImportAdvancedRules)
-        {
-            await SetDefaultRouting(config, item2);
-        }
-        return 0;
+        });
     }
 
     /// <summary>
@@ -2890,70 +2970,92 @@ public static class ConfigHandler
     /// </summary>
     /// <param name="config">Current configuration</param>
     /// <param name="type">Type of preset (Default, Russia, Iran)</param>
+    /// <param name="mutationGate">Optional short-lived gate for applying shared state changes.</param>
     /// <returns>True if successful</returns>
-    public static async Task<bool> ApplyRegionalPreset(Config config, EPresetType type)
+    public static Task<bool> ApplyRegionalPreset(Config config, EPresetType type) =>
+        ApplyRegionalPreset(config, type, mutationGate: null);
+
+    public static async Task<bool> ApplyRegionalPreset(
+        Config config,
+        EPresetType type,
+        Func<Func<Task>, Task>? mutationGate)
     {
         switch (type)
         {
             case EPresetType.Default:
-                config.ConstItem.GeoSourceUrl = "";
-                config.ConstItem.SrsSourceUrl = "";
-                config.ConstItem.RouteRulesTemplateSourceUrl = "";
+                return await RunWithMutationGateAsync(mutationGate, async () =>
+                {
+                    config.ConstItem.GeoSourceUrl = "";
+                    config.ConstItem.SrsSourceUrl = "";
+                    config.ConstItem.RouteRulesTemplateSourceUrl = "";
 
-                await SQLiteHelper.Instance.DeleteAllAsync<DNSItem>();
-                await InitBuiltinDNS(config);
+                    await SQLiteHelper.Instance.DeleteAllAsync<DNSItem>();
+                    var dnsInitialized = await InitBuiltinDNS(config) == 0;
 
-                config.SimpleDNSItem = InitBuiltinSimpleDNS();
-                break;
+                    config.SimpleDNSItem = InitBuiltinSimpleDNS();
+                    return mutationGate is null || dnsInitialized;
+                });
 
             case EPresetType.Russia:
-                config.ConstItem.GeoSourceUrl = Global.GeoFilesSources[1];
-                config.ConstItem.SrsSourceUrl = Global.SingboxRulesetSources[1];
-                config.ConstItem.RouteRulesTemplateSourceUrl = Global.RoutingRulesSources[1];
+                await RunWithMutationGateAsync(mutationGate, () =>
+                {
+                    config.ConstItem.GeoSourceUrl = Global.GeoFilesSources[1];
+                    config.ConstItem.SrsSourceUrl = Global.SingboxRulesetSources[1];
+                    config.ConstItem.RouteRulesTemplateSourceUrl = Global.RoutingRulesSources[1];
+                    return Task.FromResult(true);
+                });
 
                 var xrayDnsRussia = await GetExternalDNSItem(ECoreType.Xray, Global.DNSTemplateSources[1] + "v2ray.json");
                 var singboxDnsRussia = await GetExternalDNSItem(ECoreType.sing_box, Global.DNSTemplateSources[1] + "sing_box.json");
                 var simpleDnsRussia = await GetExternalSimpleDNSItem(Global.DNSTemplateSources[1] + "simple_dns.json");
-
-                if (simpleDnsRussia == null)
+                return await RunWithMutationGateAsync(mutationGate, async () =>
                 {
-                    xrayDnsRussia.Enabled = true;
-                    singboxDnsRussia.Enabled = true;
-                    config.SimpleDNSItem = InitBuiltinSimpleDNS();
-                }
-                else
-                {
-                    config.SimpleDNSItem = simpleDnsRussia;
-                }
-                await SaveDNSItems(config, xrayDnsRussia);
-                await SaveDNSItems(config, singboxDnsRussia);
-                break;
+                    if (simpleDnsRussia == null)
+                    {
+                        xrayDnsRussia.Enabled = true;
+                        singboxDnsRussia.Enabled = true;
+                        config.SimpleDNSItem = InitBuiltinSimpleDNS();
+                    }
+                    else
+                    {
+                        config.SimpleDNSItem = simpleDnsRussia;
+                    }
+                    var xraySaved = await SaveDNSItems(config, xrayDnsRussia) == 0;
+                    var singboxSaved = await SaveDNSItems(config, singboxDnsRussia) == 0;
+                    return mutationGate is null || (xraySaved && singboxSaved);
+                });
 
             case EPresetType.Iran:
-                config.ConstItem.GeoSourceUrl = Global.GeoFilesSources[2];
-                config.ConstItem.SrsSourceUrl = Global.SingboxRulesetSources[2];
-                config.ConstItem.RouteRulesTemplateSourceUrl = Global.RoutingRulesSources[2];
+                await RunWithMutationGateAsync(mutationGate, () =>
+                {
+                    config.ConstItem.GeoSourceUrl = Global.GeoFilesSources[2];
+                    config.ConstItem.SrsSourceUrl = Global.SingboxRulesetSources[2];
+                    config.ConstItem.RouteRulesTemplateSourceUrl = Global.RoutingRulesSources[2];
+                    return Task.FromResult(true);
+                });
 
                 var xrayDnsIran = await GetExternalDNSItem(ECoreType.Xray, Global.DNSTemplateSources[2] + "v2ray.json");
                 var singboxDnsIran = await GetExternalDNSItem(ECoreType.sing_box, Global.DNSTemplateSources[2] + "sing_box.json");
                 var simpleDnsIran = await GetExternalSimpleDNSItem(Global.DNSTemplateSources[2] + "simple_dns.json");
-
-                if (simpleDnsIran == null)
+                return await RunWithMutationGateAsync(mutationGate, async () =>
                 {
-                    xrayDnsIran.Enabled = true;
-                    singboxDnsIran.Enabled = true;
-                    config.SimpleDNSItem = InitBuiltinSimpleDNS();
-                }
-                else
-                {
-                    config.SimpleDNSItem = simpleDnsIran;
-                }
-                await SaveDNSItems(config, xrayDnsIran);
-                await SaveDNSItems(config, singboxDnsIran);
-                break;
+                    if (simpleDnsIran == null)
+                    {
+                        xrayDnsIran.Enabled = true;
+                        singboxDnsIran.Enabled = true;
+                        config.SimpleDNSItem = InitBuiltinSimpleDNS();
+                    }
+                    else
+                    {
+                        config.SimpleDNSItem = simpleDnsIran;
+                    }
+                    var xraySaved = await SaveDNSItems(config, xrayDnsIran) == 0;
+                    var singboxSaved = await SaveDNSItems(config, singboxDnsIran) == 0;
+                    return mutationGate is null || (xraySaved && singboxSaved);
+                });
         }
 
-        return true;
+        return false;
     }
 
     #endregion Regional Presets

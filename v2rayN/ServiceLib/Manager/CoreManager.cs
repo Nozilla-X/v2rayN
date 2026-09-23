@@ -1,4 +1,4 @@
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("v2rayN.Web.Tests")]
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("ServiceLib.Tests")]
 
 namespace ServiceLib.Manager;
 
@@ -310,15 +310,33 @@ public class CoreManager
         bool isNonWindows,
         bool isLinux,
         bool effectiveUserIsRoot,
-        bool hasEffectiveNetAdmin)
+        bool hasAmbientNetAdmin)
     {
         if (!ShouldRunAsSudo(isTunLaunch, coreType, isNonWindows))
         {
             return false;
         }
 
-        return !isLinux || (!effectiveUserIsRoot && !hasEffectiveNetAdmin);
+        return !isLinux || !CanRunTunCoreWithoutSudo(isLinux, effectiveUserIsRoot, hasAmbientNetAdmin);
     }
+
+    /// <summary>
+    /// Reports whether a non-root Linux process can pass NET_ADMIN to a child core across exec.
+    /// Effective capabilities alone are insufficient; Linux clears them on exec unless the
+    /// capability is ambient (or another explicit file-capability policy applies).
+    /// </summary>
+    public static bool CanRunTunCoreWithoutSudo()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return false;
+        }
+
+        return CanRunTunCoreWithoutSudo(isLinux: true, effectiveUserIsRoot: IsCurrentLinuxRoot(), hasAmbientNetAdmin: HasAmbientNetAdminCapability());
+    }
+
+    internal static bool CanRunTunCoreWithoutSudo(bool isLinux, bool effectiveUserIsRoot, bool hasAmbientNetAdmin) =>
+        isLinux && (effectiveUserIsRoot || hasAmbientNetAdmin);
 
     private static bool ShouldRunAsSudoForCurrentProcess(bool isTunLaunch, ECoreType? coreType)
     {
@@ -338,7 +356,7 @@ public class CoreManager
             isNonWindows,
             isLinux: true,
             effectiveUserIsRoot: IsCurrentLinuxRoot(),
-            hasEffectiveNetAdmin: HasEffectiveNetAdminCapability());
+            hasAmbientNetAdmin: HasAmbientNetAdminCapability());
     }
 
     private static bool IsCurrentLinuxRoot()
@@ -356,22 +374,32 @@ public class CoreManager
     [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "geteuid")]
     private static extern uint GetEffectiveUserId();
 
-    private static bool HasEffectiveNetAdminCapability()
+    internal static bool HasAmbientNetAdminCapability()
     {
         try
         {
-            const ulong capNetAdmin = 1UL << 12;
             var line = File.ReadLines("/proc/self/status")
-                .FirstOrDefault(value => value.StartsWith("CapEff:", StringComparison.Ordinal));
-            var hexadecimal = line?.Split(':', 2).ElementAtOrDefault(1)?.Trim();
-            return ulong.TryParse(hexadecimal, System.Globalization.NumberStyles.HexNumber,
-                       System.Globalization.CultureInfo.InvariantCulture, out var effectiveCapabilities)
-                   && (effectiveCapabilities & capNetAdmin) != 0;
+                .FirstOrDefault(value => value.StartsWith("CapAmb:", StringComparison.Ordinal));
+            return HasAmbientNetAdminCapability(line);
         }
         catch
         {
             return false;
         }
+    }
+
+    internal static bool HasAmbientNetAdminCapability(string? statusLine)
+    {
+        const ulong capNetAdmin = 1UL << 12;
+        if (statusLine is null || !statusLine.StartsWith("CapAmb:", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        var hexadecimal = statusLine.Split(':', 2).ElementAtOrDefault(1)?.Trim();
+        return ulong.TryParse(hexadecimal, System.Globalization.NumberStyles.HexNumber,
+                   System.Globalization.CultureInfo.InvariantCulture, out var ambientCapabilities)
+               && (ambientCapabilities & capNetAdmin) != 0;
     }
 
     private async Task<ProcessService?> RunProcess(CoreInfo? coreInfo, string configPath, bool displayLog, bool mayNeedSudo, bool isTunLaunch = false)

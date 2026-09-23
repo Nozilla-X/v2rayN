@@ -1,6 +1,6 @@
 # v2rayN Headless Web frontend
 
-`v2rayN.Web` is an ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, or system-proxy integration. TUN settings and toggling are available through the Web API/UI; activation depends on host access to `/dev/net/tun` and effective `CAP_NET_ADMIN`. Rootless containers normally lack these capabilities, and the Backend reports TUN as unavailable rather than removing the feature.
+`v2rayN.Web` is an ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, or system-proxy integration. TUN settings and toggling are available through the Web API/UI; direct child-core launch requires host access to `/dev/net/tun` and Linux root or ambient `CAP_NET_ADMIN` (`CapAmb`). An effective capability alone is not sufficient because it normally does not survive `exec`. Rootless containers normally lack these privileges, and the Backend reports TUN as unavailable rather than removing the feature.
 
 The Vue source is in `WebUI/`. The frontend uses TypeScript and `vue-i18n` locale JSON files, and calls the existing Backend/ServiceLib for profile and settings operations. Its primary workspace is a compact, high-density node table.
 
@@ -21,15 +21,13 @@ V2RAYN_WEB_API_KEY='<strong-secret>' \
 ./v2rayN.Web
 ```
 
-The Web test project is kept within this project at `Tests/v2rayN.Web.Tests.csproj`:
+The repeatable verification entry point builds the locale-checked WebUI, runs both Web and ServiceLib tests, and publishes a native `linux-x64` executable:
 
 ```bash
-DOTNET="${DOTNET:-}"
-if [[ -z "$DOTNET" ]]; then
-  if [[ -x .NET/dotnet ]]; then DOTNET=.NET/dotnet; else DOTNET="$(command -v dotnet)"; fi
-fi
-"$DOTNET" test Tests/v2rayN.Web.Tests.csproj --configuration Release
+bash scripts/verify.sh
 ```
+
+The lower-level Web tests are also runnable independently with `dotnet test Tests/v2rayN.Web.Tests.csproj --configuration Release`. `scripts/verify.sh` and `scripts/publish-native.sh` set `NUGET_PACKAGES` themselves so repository-wide NuGet restore behavior remains unchanged.
 
 Open `http://127.0.0.1:5080` and enter the configured API key. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the hosted ServiceLib adapter stops Core and flushes ServiceLib profile/statistics data on shutdown.
 
@@ -91,7 +89,7 @@ sudo systemctl daemon-reload
 sudo systemctl restart v2rayn-web.service
 ```
 
-The backend checks the capability and device access, and `/api/status` reports whether the expected TUN interface was actually created. Run `bash scripts/smoke-test-tun.sh` after selecting a working profile; it temporarily disables the optional legacy-protection pre-Core to test the selected Core's TUN interface directly, then restores both TUN preferences and the Core running state.
+The backend checks ambient capability and device access, and `/api/status` reports whether the expected TUN interface was actually created. Run `bash scripts/smoke-test-tun.sh` after selecting a working profile; it temporarily disables the optional legacy-protection pre-Core to test the selected Core's TUN interface directly, then restores both TUN preferences and the Core running state.
 
 Application/Core messages go to stdout/stderr for journald and are also retained in the ServiceLib log path when file logging is enabled.
 

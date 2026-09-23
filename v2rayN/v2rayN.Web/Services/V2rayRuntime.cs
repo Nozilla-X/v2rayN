@@ -30,6 +30,7 @@ public sealed partial class V2rayRuntime(
     private readonly IConfiguration _configuration = configuration;
     private readonly IHostApplicationLifetime _lifetime = lifetime;
     private readonly RuntimeOperationCoordinator _operations = operations;
+    private readonly RuntimeMutationGate _mutations = new();
     private readonly SemaphoreSlim _coreGate = new(1, 1);
     private readonly object _subscriptionGate = new();
     private readonly object _speedtestGate = new();
@@ -60,25 +61,28 @@ public sealed partial class V2rayRuntime(
             throw new InvalidOperationException("ServiceLib component initialization failed.");
         }
 
-        EnsureInboundDefaults(Config);
-        var proxyPortOverride = _configuration.GetValue<int?>("V2RAYN_WEB_PROXY_PORT");
-        if (proxyPortOverride is <= 0 or > 65535)
+        await _mutations.RunAsync(async () =>
         {
-            throw new InvalidOperationException("V2RAYN_WEB_PROXY_PORT must be a valid TCP/UDP port (1-65535).");
-        }
-        if (proxyPortOverride is int configuredProxyPort)
-        {
-            Config.Inbound[0].LocalPort = configuredProxyPort;
-        }
+            EnsureInboundDefaults(Config);
+            var proxyPortOverride = _configuration.GetValue<int?>("V2RAYN_WEB_PROXY_PORT");
+            if (proxyPortOverride is <= 0 or > 65535)
+            {
+                throw new InvalidOperationException("V2RAYN_WEB_PROXY_PORT must be a valid TCP/UDP port (1-65535).");
+            }
+            if (proxyPortOverride is int configuredProxyPort)
+            {
+                Config.Inbound[0].LocalPort = configuredProxyPort;
+            }
+            if (_configuration.GetValue<bool?>("V2RAYN_WEB_PROXY_LISTEN_ALL") is bool allowProxyFromLan)
+            {
+                Config.Inbound[0].AllowLANConn = allowProxyFromLan;
+            }
+            await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+        });
         if (Config.TunModeItem.EnableTun && !GetTunSettings().CapabilityAvailable)
         {
             AddLog("tun", "tun.capabilityUnavailable");
         }
-        if (_configuration.GetValue<bool?>("V2RAYN_WEB_PROXY_LISTEN_ALL") is bool allowProxyFromLan)
-        {
-            Config.Inbound[0].AllowLANConn = allowProxyFromLan;
-        }
-        await ConfigHandler.SaveConfig(Config);
 
         await ConfigHandler.InitBuiltinDNS(Config);
         await ConfigHandler.InitBuiltinFullConfigTemplate(Config);
@@ -119,7 +123,11 @@ public sealed partial class V2rayRuntime(
     {
         await WaitForScheduledRestartAsync();
         await StopScheduledOperationsAsync();
-        await _operations.StopAndDrainAsync(CancellationToken.None);
+        var drained = await _operations.StopAndDrainAsync(cancellationToken);
+        if (!drained)
+        {
+            AddLog("web", "Shutdown drain timed out; continuing best-effort cleanup.");
+        }
         if (!_initialized)
         {
             return;
@@ -129,19 +137,37 @@ public sealed partial class V2rayRuntime(
             return;
         }
 
+        await RunShutdownStepAsync("core stop", () => CoreManager.Instance.CoreStop());
+        await RunShutdownStepAsync("profile save", () => ProfileExManager.Instance.SaveTo());
+        await RunShutdownStepAsync("statistics save", () => StatisticsManager.Instance.SaveTo());
+        await RunShutdownStepAsync("statistics close", () =>
+        {
+            StatisticsManager.Instance.Close();
+            return Task.CompletedTask;
+        });
+        await RunShutdownStepAsync("configuration save", () => _mutations.RunAsync(
+            () => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)), cancellationToken));
+        await RunShutdownStepAsync("database close", () => SQLiteHelper.Instance.DisposeDbConnectionAsync());
+        AddLog("web", "serviceLib.stopped");
+    }
+
+    private async Task RunShutdownStepAsync(string name, Func<Task> step)
+    {
         try
         {
-            await CoreManager.Instance.CoreStop();
-            await ProfileExManager.Instance.SaveTo();
-            await StatisticsManager.Instance.SaveTo();
-            StatisticsManager.Instance.Close();
-            await ConfigHandler.SaveConfig(Config);
-            await SQLiteHelper.Instance.DisposeDbConnectionAsync();
-            AddLog("web", "serviceLib.stopped");
+            await step().WaitAsync(TimeSpan.FromSeconds(3));
         }
         catch (Exception ex)
         {
-            AddLog("web", ex.Message);
+            AddLog("web", $"Shutdown {name} failed: {ex.Message}");
+        }
+    }
+
+    internal static async Task EnsureConfigSaveSucceededAsync(Func<Task<int>> save)
+    {
+        if (await save() != 0)
+        {
+            throw new IOException("ServiceLib could not persist the configuration.");
         }
     }
 
@@ -159,7 +185,7 @@ public sealed partial class V2rayRuntime(
         }
 
         var item = ToSubItem(input, null);
-        var result = await ConfigHandler.AddSubItem(Config, item);
+        var result = await _mutations.RunAsync(() => ConfigHandler.AddSubItem(Config, item));
         if (result != 0)
         {
             return new(false, "subscription_save_failed", ApiMessageKeys.SubscriptionSaveFailed, null);
@@ -173,22 +199,26 @@ public sealed partial class V2rayRuntime(
 
     public async Task<SubscriptionMutationResult> UpdateSubscriptionAsync(string id, SubscriptionInput input)
     {
-        var existing = await AppManager.Instance.GetSubItem(id);
-        if (existing is null)
-        {
-            return new(false, "subscription_not_found", ApiMessageKeys.SubscriptionNotFound, null);
-        }
         if (!TryValidateSubscription(input, out var code, out var messageKey))
         {
             return new(false, code, messageKey, null);
         }
 
-        var item = ToSubItem(input, existing);
-        item.Id = id;
-        var result = await ConfigHandler.AddSubItem(Config, item);
-        return result == 0
-            ? new(true, "ok", ApiMessageKeys.SubscriptionSaved, ToSubscriptionView(item))
-            : new(false, "subscription_save_failed", ApiMessageKeys.SubscriptionSaveFailed, null);
+        return await _mutations.RunAsync(async () =>
+        {
+            var existing = await AppManager.Instance.GetSubItem(id);
+            if (existing is null)
+            {
+                return new SubscriptionMutationResult(false, "subscription_not_found", ApiMessageKeys.SubscriptionNotFound, null);
+            }
+
+            var item = ToSubItem(input, existing);
+            item.Id = id;
+            var result = await ConfigHandler.AddSubItem(Config, item);
+            return result == 0
+                ? new SubscriptionMutationResult(true, "ok", ApiMessageKeys.SubscriptionSaved, ToSubscriptionView(item))
+                : new SubscriptionMutationResult(false, "subscription_save_failed", ApiMessageKeys.SubscriptionSaveFailed, null);
+        });
     }
 
     public async Task<OperationView> DeleteSubscriptionAsync(string id)
@@ -206,12 +236,18 @@ public sealed partial class V2rayRuntime(
             await StopCoreAsync(CancellationToken.None);
         }
 
-        await ConfigHandler.DeleteSubItem(Config, id);
-        if (removesCurrentProfile)
+        await _mutations.RunAsync(async () =>
         {
-            _ = await ConfigHandler.GetDefaultServer(Config);
-            await ConfigHandler.SaveConfig(Config);
-        }
+            if (await ConfigHandler.DeleteSubItem(Config, id) != 0)
+            {
+                throw new IOException("ServiceLib could not delete the subscription.");
+            }
+            if (removesCurrentProfile)
+            {
+                _ = await ConfigHandler.GetDefaultServer(Config);
+                await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+            }
+        });
 
         AddLog("subscription", ApiMessageKeys.SubscriptionDeleted);
         return OperationView.Ok(ApiMessageKeys.SubscriptionDeleted);
@@ -252,7 +288,17 @@ public sealed partial class V2rayRuntime(
                         _events.Publish("subscription-progress", payload);
                         AddLog("subscription", message);
                         return Task.CompletedTask;
-                    });
+                    }, async processMutation => await _mutations.RunAsync(async () =>
+                    {
+                        var imported = await processMutation();
+                        if (imported)
+                        {
+                            // AddBatchServers currently persists through ServiceLib internally;
+                            // verify that final persistence result before reporting success.
+                            await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+                        }
+                        return imported;
+                    }, operation.Token));
 
                     operation.Token.ThrowIfCancellationRequested();
                     await UpdateSubscriptionTimestampAsync(id);
@@ -444,7 +490,15 @@ public sealed partial class V2rayRuntime(
 
     private async Task<OperationView> StartCoreLockedAsync(ProfileItem? requestedProfile, CancellationToken cancellationToken, bool selectProfile = false)
     {
-        var profile = requestedProfile ?? await ConfigHandler.GetDefaultServer(Config);
+        var profile = requestedProfile ?? await _mutations.RunAsync(async () =>
+        {
+            var selected = await ConfigHandler.GetDefaultServer(Config);
+            if (selected is not null)
+            {
+                await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+            }
+            return selected;
+        });
         if (profile is null)
         {
             return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
@@ -487,9 +541,13 @@ public sealed partial class V2rayRuntime(
             }
         }
 
-        if (selectProfile && await ConfigHandler.SetDefaultServerIndex(Config, profile.IndexId) != 0)
+        if (selectProfile)
         {
-            return OperationView.Fail("profile_select_failed", ApiMessageKeys.ProfileNotFound);
+            await _mutations.RunAsync(async () =>
+            {
+                Config.IndexId = profile.IndexId;
+                await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+            });
         }
 
         var port = Config.Inbound.FirstOrDefault()?.LocalPort ?? 0;
@@ -533,7 +591,15 @@ public sealed partial class V2rayRuntime(
         {
             await CoreManager.Instance.CoreStop();
             _coreStartedAt = null;
-            var profile = await ConfigHandler.GetDefaultServer(Config);
+            var profile = await _mutations.RunAsync(async () =>
+            {
+                var selected = await ConfigHandler.GetDefaultServer(Config);
+                if (selected is not null)
+                {
+                    await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+                }
+                return selected;
+            });
             if (profile is null)
             {
                 return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
@@ -617,7 +683,13 @@ public sealed partial class V2rayRuntime(
             if (item is not null)
             {
                 item.UpdateTime = updateTime;
-                await ConfigHandler.AddSubItem(Config, item);
+            await _mutations.RunAsync(async () =>
+            {
+                if (await ConfigHandler.AddSubItem(Config, item) != 0)
+                {
+                    throw new IOException("ServiceLib could not save the subscription timestamp.");
+                }
+            });
             }
             return;
         }
@@ -627,7 +699,13 @@ public sealed partial class V2rayRuntime(
             if (item.Enabled)
             {
                 item.UpdateTime = updateTime;
-                await ConfigHandler.AddSubItem(Config, item);
+                await _mutations.RunAsync(async () =>
+                {
+                    if (await ConfigHandler.AddSubItem(Config, item) != 0)
+                    {
+                        throw new IOException("ServiceLib could not save the subscription timestamp.");
+                    }
+                });
             }
         }
     }

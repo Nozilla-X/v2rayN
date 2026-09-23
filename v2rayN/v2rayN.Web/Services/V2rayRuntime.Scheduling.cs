@@ -32,12 +32,20 @@ public sealed partial class V2rayRuntime
         {
             if (_scheduledOperationsTask is not null)
             {
-                await _scheduledOperationsTask;
+                await _scheduledOperationsTask.WaitAsync(TimeSpan.FromSeconds(3));
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
             // Expected during graceful service shutdown.
+        }
+        catch (TimeoutException)
+        {
+            AddLog("web", "Scheduled-operation shutdown timed out; continuing best-effort cleanup.");
+        }
+        catch (Exception ex)
+        {
+            AddLog("task", $"Scheduled-operation shutdown failed: {ex.Message}");
         }
         finally
         {
@@ -60,8 +68,11 @@ public sealed partial class V2rayRuntime
                 await RunScheduledStepAsync("save", async token =>
                 {
                     await using var operation = await _operations.EnterOperationAsync(token);
-                    await ConfigHandler.SaveConfig(Config);
-                    await ProfileExManager.Instance.SaveTo();
+                    await _mutations.RunAsync(async () =>
+                    {
+                        await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+                        await ProfileExManager.Instance.SaveTo();
+                    }, operation.Token);
                 }, cancellationToken);
             }
 

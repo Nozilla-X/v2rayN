@@ -19,9 +19,10 @@ public sealed partial class V2rayRuntime
 
     public async Task<ApiEnvelope<CoreUpdateCheckView>> CheckXrayUpdateAsync(bool preRelease, bool useProxy, CancellationToken cancellationToken)
     {
-        await using var operation = await _operations.EnterOperationAsync(cancellationToken);
+        // HTTP calls are protected by the request middleware. Background checks acquire
+        // their own lease at the task boundary and must not nest a shared lease here.
         var result = await new UpdateService(Config, (_, _) => Task.CompletedTask)
-            .CheckHasUpdateOnly(ECoreType.Xray, preRelease, useProxy, operation.Token);
+            .CheckHasUpdateOnly(ECoreType.Xray, preRelease, useProxy, cancellationToken);
         if (!result.Success)
         {
             AddLog("update", result.Msg ?? ApiMessageKeys.XrayUpdateCheckFailed);
@@ -45,10 +46,23 @@ public sealed partial class V2rayRuntime
 
             _xrayUpdateTask = Task.Run(async () =>
             {
+                XrayUpdateStage? stage = null;
                 try
                 {
-                    await using var operation = await _operations.EnterExclusiveAsync(_operations.ShutdownToken);
-                    var result = await UpdateXrayCoreAsync(preRelease, useProxy, operation.Token);
+                    await using (var operation = await _operations.EnterOperationAsync(_operations.ShutdownToken))
+                    {
+                        var staged = await StageXrayCoreUpdateAsync(preRelease, useProxy, operation.Token);
+                        if (staged.Failure is not null)
+                        {
+                            AddLog("update", staged.Failure.MessageKey);
+                            _events.Publish("xray-update-completed", staged.Failure);
+                            return;
+                        }
+                        stage = staged.Stage;
+                    }
+
+                    await using var maintenance = await _operations.EnterExclusiveAsync(_operations.ShutdownToken);
+                    var result = await ApplyXrayCoreUpdateAsync(stage!, maintenance.Token);
                     AddLog("update", result.MessageKey);
                     _events.Publish("xray-update-completed", result);
                 }
@@ -60,6 +74,10 @@ public sealed partial class V2rayRuntime
                 {
                     AddLog("update", $"Xray update failed: {ex.Message}");
                     _events.Publish("xray-update-completed", OperationView.Fail("xray_update_failed", ApiMessageKeys.XrayUpdateFailed));
+                }
+                finally
+                {
+                    CleanupXrayStage(stage);
                 }
             });
         }
@@ -118,29 +136,18 @@ public sealed partial class V2rayRuntime
     private bool IsUpdateRunning() =>
         (_xrayUpdateTask is { IsCompleted: false }) || (_geoUpdateTask is { IsCompleted: false });
 
-    private async Task<OperationView> UpdateXrayCoreAsync(bool preRelease, bool useProxy, CancellationToken cancellationToken)
+    private sealed record XrayUpdateStage(string InstallPath, string ArchivePath, string StagingPath, string VersionOutput);
+
+    private async Task<(XrayUpdateStage? Stage, OperationView? Failure)> StageXrayCoreUpdateAsync(
+        bool preRelease,
+        bool useProxy,
+        CancellationToken cancellationToken)
     {
         var installPath = Path.GetFullPath(Utils.GetBinPath(string.Empty, ECoreType.Xray.ToString()));
-        await _coreGate.WaitAsync(cancellationToken);
         string? archivePath = null;
         string? stagingPath = null;
-        string? backupPath = null;
-        var replaced = false;
-        var stoppedXray = false;
-        var wasXrayRunning = false;
-        ProfileItem? runningProfile = null;
-
         try
         {
-            wasXrayRunning = _coreStartedAt is not null && AppManager.Instance.RunningCoreType == ECoreType.Xray;
-            runningProfile = wasXrayRunning
-                ? await AppManager.Instance.GetProfileItem(Config.IndexId)
-                : null;
-            if (wasXrayRunning && runningProfile is null)
-            {
-                return OperationView.Fail("xray_update_profile_missing", ApiMessageKeys.XrayUpdateFailed);
-            }
-
             // Keep the active Xray listening while ServiceLib checks/downloads through the
             // saved local mixed proxy. A proxy-enabled update must not stop its own proxy.
             var downloadedArchive = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -157,7 +164,7 @@ public sealed partial class V2rayRuntime
             await updateService.CheckUpdateCore(ECoreType.Xray, preRelease, useProxy, cancellationToken);
             if (!downloadedArchive.Task.IsCompletedSuccessfully)
             {
-                return OperationView.Fail("xray_update_download_failed", ApiMessageKeys.XrayUpdateFailed);
+                return (null, OperationView.Fail("xray_update_download_failed", ApiMessageKeys.XrayUpdateFailed));
             }
 
             archivePath = await downloadedArchive.Task;
@@ -165,7 +172,6 @@ public sealed partial class V2rayRuntime
                 ?? throw new InvalidOperationException("The Xray install path has no parent directory.");
             Directory.CreateDirectory(parentDirectory);
             stagingPath = Path.Combine(parentDirectory, $".Xray-stage-{Guid.NewGuid():N}");
-            backupPath = Path.Combine(parentDirectory, $".Xray-backup-{Guid.NewGuid():N}");
             Directory.CreateDirectory(stagingPath);
 
             await ExtractXrayArchiveAsync(archivePath, stagingPath, cancellationToken);
@@ -188,6 +194,37 @@ public sealed partial class V2rayRuntime
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            var stage = new XrayUpdateStage(installPath, archivePath, stagingPath, versionOutput.Trim());
+            archivePath = null;
+            stagingPath = null;
+            return (stage, null);
+        }
+        finally
+        {
+            CleanupXrayStageFiles(archivePath, stagingPath);
+        }
+    }
+
+    private async Task<OperationView> ApplyXrayCoreUpdateAsync(XrayUpdateStage stage, CancellationToken cancellationToken)
+    {
+        await _coreGate.WaitAsync(cancellationToken);
+        string? backupPath = null;
+        var replaced = false;
+        var stoppedXray = false;
+        var wasXrayRunning = false;
+        ProfileItem? runningProfile = null;
+        try
+        {
+            wasXrayRunning = _coreStartedAt is not null && AppManager.Instance.RunningCoreType == ECoreType.Xray;
+            runningProfile = wasXrayRunning
+                ? await AppManager.Instance.GetProfileItem(Config.IndexId)
+                : null;
+            if (wasXrayRunning && runningProfile is null)
+            {
+                return OperationView.Fail("xray_update_profile_missing", ApiMessageKeys.XrayUpdateFailed);
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             if (wasXrayRunning)
             {
                 await CoreManager.Instance.CoreStop();
@@ -195,21 +232,23 @@ public sealed partial class V2rayRuntime
                 stoppedXray = true;
             }
 
-            if (Directory.Exists(installPath))
+            var parentDirectory = Path.GetDirectoryName(stage.InstallPath)
+                ?? throw new InvalidOperationException("The Xray install path has no parent directory.");
+            backupPath = Path.Combine(parentDirectory, $".Xray-backup-{Guid.NewGuid():N}");
+            if (Directory.Exists(stage.InstallPath))
             {
-                Directory.Move(installPath, backupPath);
+                Directory.Move(stage.InstallPath, backupPath);
             }
             try
             {
-                Directory.Move(stagingPath, installPath);
-                stagingPath = null;
+                Directory.Move(stage.StagingPath, stage.InstallPath);
                 replaced = true;
             }
             catch
             {
-                if (Directory.Exists(backupPath) && !Directory.Exists(installPath))
+                if (Directory.Exists(backupPath) && !Directory.Exists(stage.InstallPath))
                 {
-                    Directory.Move(backupPath, installPath);
+                    Directory.Move(backupPath, stage.InstallPath);
                 }
                 throw;
             }
@@ -230,7 +269,7 @@ public sealed partial class V2rayRuntime
                 }
             }
 
-            if (Directory.Exists(backupPath))
+            if (backupPath is not null && Directory.Exists(backupPath))
             {
                 try
                 {
@@ -244,13 +283,13 @@ public sealed partial class V2rayRuntime
             }
 
             return OperationView.Ok(ApiMessageKeys.XrayUpdateCompleted,
-                new { coreRestarted = wasXrayRunning && runningProfile is not null, version = versionOutput.Trim() });
+                new { coreRestarted = wasXrayRunning && runningProfile is not null, version = stage.VersionOutput });
         }
         catch (OperationCanceledException)
         {
             if (replaced || stoppedXray)
             {
-                await RollBackXrayAsync(installPath, backupPath, replaced, wasXrayRunning, runningProfile);
+                await RollBackXrayAsync(stage.InstallPath, backupPath, replaced, wasXrayRunning, runningProfile);
             }
             throw;
         }
@@ -260,39 +299,48 @@ public sealed partial class V2rayRuntime
             var rolledBack = true;
             if (replaced || stoppedXray)
             {
-                rolledBack = await RollBackXrayAsync(installPath, backupPath, replaced, wasXrayRunning, runningProfile);
+                rolledBack = await RollBackXrayAsync(stage.InstallPath, backupPath, replaced, wasXrayRunning, runningProfile);
             }
             return OperationView.Fail("xray_update_failed", ApiMessageKeys.XrayUpdateFailed,
                 new { rolledBack, coreRestarted = wasXrayRunning && rolledBack });
         }
         finally
         {
-            try
+            _coreGate.Release();
+        }
+    }
+
+    private void CleanupXrayStage(XrayUpdateStage? stage)
+    {
+        if (stage is not null)
+        {
+            CleanupXrayStageFiles(stage.ArchivePath, stage.StagingPath);
+        }
+    }
+
+    private void CleanupXrayStageFiles(string? archivePath, string? stagingPath)
+    {
+        try
+        {
+            if (stagingPath is not null && Directory.Exists(stagingPath))
             {
-                if (stagingPath is not null && Directory.Exists(stagingPath))
-                {
-                    Directory.Delete(stagingPath, recursive: true);
-                }
+                Directory.Delete(stagingPath, recursive: true);
             }
-            catch (Exception ex)
+        }
+        catch (Exception ex)
+        {
+            AddLog("update", $"Xray staging cleanup failed: {ex.Message}");
+        }
+        try
+        {
+            if (archivePath is not null && File.Exists(archivePath))
             {
-                AddLog("update", $"Xray staging cleanup failed: {ex.Message}");
+                File.Delete(archivePath);
             }
-            try
-            {
-                if (archivePath is not null && File.Exists(archivePath))
-                {
-                    File.Delete(archivePath);
-                }
-            }
-            catch (Exception ex)
-            {
-                AddLog("update", $"Xray archive cleanup failed: {ex.Message}");
-            }
-            finally
-            {
-                _coreGate.Release();
-            }
+        }
+        catch (Exception ex)
+        {
+            AddLog("update", $"Xray archive cleanup failed: {ex.Message}");
         }
     }
 
