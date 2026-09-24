@@ -485,54 +485,16 @@ public sealed partial class V2rayRuntime(
 
     private async Task<OperationView> StartCoreLockedAsync(ProfileItem? requestedProfile, CancellationToken cancellationToken, bool selectProfile = false)
     {
-        var profile = requestedProfile ?? await _mutations.RunAsync(async () =>
-        {
-            var selected = await ConfigHandler.GetDefaultServer(Config);
-            if (selected is not null)
-            {
-                await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
-            }
-            return selected;
-        });
+        var profile = requestedProfile ?? await GetDefaultProfileAsync();
         if (profile is null)
         {
             return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
         }
 
-        var built = await CoreConfigContextBuilder.BuildAll(Config, profile);
-        var tunRejection = GetTunLaunchRejection(built);
-        if (tunRejection is not null)
+        var preflight = await BuildAndValidateCoreLaunchAsync(profile);
+        if (preflight.Failure is { } preflightFailure)
         {
-            return tunRejection;
-        }
-        if (!built.Success)
-        {
-            foreach (var message in built.CombinedValidatorResult.Errors.Concat(built.CombinedValidatorResult.Warnings))
-            {
-                AddLog("core-validation", message);
-            }
-            return OperationView.Fail("profile_validation_failed", ApiMessageKeys.ProfileInvalid);
-        }
-
-        var requiredCoreTypes = new[]
-            {
-                (ECoreType?)built.MainResult.Context.RunCoreType,
-                built.PreSocksResult?.Context.RunCoreType,
-            }
-            .Where(coreType => coreType.HasValue)
-            .Select(coreType => coreType!.Value)
-            .Distinct()
-            .ToArray();
-        foreach (var coreType in requiredCoreTypes)
-        {
-            var coreInfo = CoreInfoManager.Instance.GetCoreInfo(coreType);
-            var executable = CoreInfoManager.Instance.GetCoreExecFile(coreInfo, out var missingCoreMessage);
-            if (string.IsNullOrEmpty(executable))
-            {
-                AddLog("core", missingCoreMessage);
-                return OperationView.Fail("core_binary_missing", ApiMessageKeys.CoreBinaryMissing,
-                    new { coreType = coreType.ToString() });
-            }
+            return preflightFailure;
         }
 
         if (selectProfile)
@@ -544,6 +506,53 @@ public sealed partial class V2rayRuntime(
             });
         }
 
+        return await LaunchPreflightedCoreLockedAsync(preflight, cancellationToken);
+    }
+
+    private async Task<ProfileItem?> GetDefaultProfileAsync() => await _mutations.RunAsync(async () =>
+    {
+        var selected = await ConfigHandler.GetDefaultServer(Config);
+        if (selected is not null)
+        {
+            await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+        }
+        return selected;
+    });
+
+    private async Task<CoreLaunchPreflightResult> BuildAndValidateCoreLaunchAsync(ProfileItem profile)
+    {
+        var preflight = await CoreLaunchPreflight.BuildAndValidateAsync(Config, profile, coreType =>
+        {
+            var coreInfo = CoreInfoManager.Instance.GetCoreInfo(coreType);
+            var executable = CoreInfoManager.Instance.GetCoreExecFile(coreInfo, out var missingCoreMessage);
+            if (!string.IsNullOrEmpty(executable))
+            {
+                return null;
+            }
+
+            AddLog("core", missingCoreMessage);
+            return OperationView.Fail("core_binary_missing", ApiMessageKeys.CoreBinaryMissing,
+                new { coreType = coreType.ToString() });
+        });
+
+        if (preflight.Failure?.Code == "profile_validation_failed")
+        {
+            foreach (var message in preflight.BuiltContext.CombinedValidatorResult.Errors
+                         .Concat(preflight.BuiltContext.CombinedValidatorResult.Warnings))
+            {
+                AddLog("core-validation", message);
+            }
+        }
+
+        return preflight;
+    }
+
+    private async Task<OperationView> LaunchPreflightedCoreLockedAsync(
+        CoreLaunchPreflightResult preflight,
+        CancellationToken cancellationToken)
+    {
+        var profile = preflight.Profile;
+        var built = preflight.BuiltContext;
         var port = Config.Inbound.FirstOrDefault()?.LocalPort ?? 0;
         if (_coreStartedAt is null && await IsListeningAsync(port, cancellationToken))
         {
@@ -562,9 +571,7 @@ public sealed partial class V2rayRuntime(
     }
 
     internal static OperationView? GetTunLaunchRejection(CoreConfigContextBuilderAllResult built) =>
-        built.MainResult.Context.IsTunEnabled || built.PreSocksResult?.Context.IsTunEnabled == true
-            ? OperationView.Fail("tun_not_supported", ApiMessageKeys.CoreTunNotSupported)
-            : null;
+        CoreLaunchPreflight.GetTunLaunchRejection(built);
 
     public async Task<OperationView> StopCoreAsync(CancellationToken cancellationToken)
     {
@@ -588,24 +595,17 @@ public sealed partial class V2rayRuntime(
         await _coreGate.WaitAsync(cancellationToken);
         try
         {
-            await CoreManager.Instance.CoreStop();
-            _coreStartedAt = null;
-            var profile = await _mutations.RunAsync(async () =>
-            {
-                var selected = await ConfigHandler.GetDefaultServer(Config);
-                if (selected is not null)
-                {
-                    await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
-                }
-                return selected;
-            });
+            var profile = await GetDefaultProfileAsync();
             if (profile is null)
             {
                 return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
             }
 
-            var result = await StartCoreLockedAsync(profile, cancellationToken);
-            return result.Success ? OperationView.Ok(ApiMessageKeys.CoreRestarted, result.Data) : result;
+            return await CoreRestartFlow.ExecuteAsync(
+                () => BuildAndValidateCoreLaunchAsync(profile),
+                () => CoreManager.Instance.CoreStop(),
+                () => _coreStartedAt = null,
+                preflight => LaunchPreflightedCoreLockedAsync(preflight, cancellationToken));
         }
         finally
         {
