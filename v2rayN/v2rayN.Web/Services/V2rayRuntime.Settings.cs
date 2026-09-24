@@ -704,7 +704,7 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> ImportRoutingProfilesAsync()
     {
-        var result = await ConfigHandler.InitRouting(Config, true, mutation => _mutations.RunAsync(mutation));
+        var result = await _mutations.RunAsync(() => ConfigHandler.InitRouting(Config, true));
         _events.Publish("settings-changed", new { section = "routing-profiles", restartRequired = _coreStartedAt is not null });
         return result == 0
             ? OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonCompleted,
@@ -758,21 +758,28 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("regional_preset_invalid", ApiMessageKeys.RegionalPresetInvalid);
         }
-        var success = await ConfigHandler.ApplyRegionalPreset(Config, preset, mutation => _mutations.RunAsync(mutation));
+        var success = await _mutations.RunAsync(async () =>
+        {
+            if (!await ConfigHandler.ApplyRegionalPreset(Config, preset))
+            {
+                return false;
+            }
+
+            if (await ConfigHandler.InitRouting(Config, false) != 0)
+            {
+                return false;
+            }
+
+            await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+            return true;
+        });
         if (success)
         {
-            var routingResult = await ConfigHandler.InitRouting(Config, false, mutation => _mutations.RunAsync(mutation));
-            if (routingResult != 0)
-            {
-                return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
-            }
-            await _mutations.RunAsync(() => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)));
+            _events.Publish("settings-changed", new { section = "regional-preset", preset = preset.ToString(), restartRequired = _coreStartedAt is not null });
+            return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonCompleted,
+                new { preset = preset.ToString(), restartRequired = _coreStartedAt is not null });
         }
-        _events.Publish("settings-changed", new { section = "regional-preset", preset = preset.ToString(), restartRequired = success && _coreStartedAt is not null });
-        return success
-            ? OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonCompleted,
-                new { preset = preset.ToString(), restartRequired = _coreStartedAt is not null })
-            : OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
+        return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
     }
 
     public async Task<OperationView> ClearStatisticsAsync()

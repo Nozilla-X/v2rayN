@@ -260,7 +260,7 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private async Task WaitForScheduledRestartAsync()
+    private async Task WaitForScheduledRestartAsync(CancellationToken cancellationToken)
     {
         Task? restartTask;
         lock (_restartGate)
@@ -269,14 +269,7 @@ public sealed partial class V2rayRuntime
         }
         if (restartTask is not null)
         {
-            try
-            {
-                await restartTask.WaitAsync(TimeSpan.FromSeconds(2));
-            }
-            catch (TimeoutException)
-            {
-                AddLog("web", "Scheduled restart wait timed out; continuing shutdown.");
-            }
+            await restartTask.WaitAsync(cancellationToken);
         }
     }
 

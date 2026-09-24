@@ -1,6 +1,6 @@
 # v2rayN Headless Web frontend
 
-`v2rayN.Web` is an ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, or system-proxy integration. TUN settings and toggling are available through the Web API/UI; direct child-core launch requires host access to `/dev/net/tun` and Linux root or ambient `CAP_NET_ADMIN` (`CapAmb`). An effective capability alone is not sufficient because it normally does not survive `exec`. Rootless containers normally lack these privileges, and the Backend reports TUN as unavailable rather than removing the feature.
+`v2rayN.Web` is an ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, or system-proxy integration. TUN settings and toggling are available through the Web API/UI; direct child-core launch requires host access to `/dev/net/tun`. On Linux, root must have `CAP_NET_ADMIN` in `CapEff`; a non-root process must have it in `CapAmb` so the child Core inherits it across `exec`. Missing or unreadable capability state is treated as unavailable. Rootless containers normally lack these privileges, and the Backend reports TUN as unavailable rather than removing the feature.
 
 The Vue source is in `WebUI/`. The frontend uses TypeScript and `vue-i18n` locale JSON files, and calls the existing Backend/ServiceLib for profile and settings operations. Its primary workspace is a compact, high-density node table.
 
@@ -29,7 +29,9 @@ bash scripts/verify.sh
 
 The lower-level Web tests are also runnable independently with `dotnet test Tests/v2rayN.Web.Tests.csproj --configuration Release`. `scripts/verify.sh` and `scripts/publish-native.sh` set `NUGET_PACKAGES` themselves so repository-wide NuGet restore behavior remains unchanged.
 
-Open `http://127.0.0.1:5080` and enter the configured API key. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the hosted ServiceLib adapter stops Core and flushes ServiceLib profile/statistics data on shutdown.
+Open `http://127.0.0.1:5080` and enter the configured API key. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the Web runtime owns scheduling and performs ordered Core/profile/statistics/config/database cleanup under a 20-second overall shutdown budget. If operation drain or a cleanup step times out or fails, later cleanup is skipped to avoid racing active work or closing SQLite while it may still be in use. The example systemd unit allows 45 seconds as the final process-shutdown fallback.
+
+Subscription interval scheduling is implemented in `Services/V2rayRuntime.Scheduling.cs`; the Web host does not register ServiceLib's desktop `TaskManager`. The Web runtime's `RuntimeMutationGate` serializes its shared configuration and SQLite mutations.
 
 A fresh Web publish contains the management layer but no proxy Core executable. From `v2rayN/v2rayN.Web/`, validate an official Xray release and copy it beside the native publish before enabling Core autostart:
 
@@ -89,7 +91,7 @@ sudo systemctl daemon-reload
 sudo systemctl restart v2rayn-web.service
 ```
 
-The backend checks ambient capability and device access, and `/api/status` reports whether the expected TUN interface was actually created. Run `bash scripts/smoke-test-tun.sh` after selecting a working profile; it temporarily disables the optional legacy-protection pre-Core to test the selected Core's TUN interface directly, then restores both TUN preferences and the Core running state.
+The backend checks `/dev/net/tun` access and the capability matching the service UID: root is checked through `CapEff`, non-root through `CapAmb`. `/api/status` reports whether the expected TUN interface was actually created. Run `bash scripts/smoke-test-tun.sh` after selecting a working profile; it temporarily disables the optional legacy-protection pre-Core to test the selected Core's TUN interface directly, then restores both TUN preferences and the Core running state.
 
 Application/Core messages go to stdout/stderr for journald and are also retained in the ServiceLib log path when file logging is enabled.
 

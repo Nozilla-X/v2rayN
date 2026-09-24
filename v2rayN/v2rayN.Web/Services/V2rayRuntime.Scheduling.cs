@@ -19,40 +19,35 @@ public sealed partial class V2rayRuntime
         _scheduledOperationsTask = Task.Run(() => RunScheduledOperationsAsync(cancellationToken));
     }
 
-    private async Task StopScheduledOperationsAsync()
+    private async Task<bool> StopScheduledOperationsAsync(CancellationToken shutdownToken)
     {
         var cancellation = _scheduledOperationsCancellation;
-        if (cancellation is null)
+        var task = _scheduledOperationsTask;
+        if (cancellation is null || task is null)
         {
-            return;
+            return true;
         }
 
         cancellation.Cancel();
         try
         {
-            if (_scheduledOperationsTask is not null)
-            {
-                await _scheduledOperationsTask.WaitAsync(TimeSpan.FromSeconds(3));
-            }
+            await task.WaitAsync(shutdownToken);
         }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        catch (OperationCanceledException) when (task.IsCompleted && cancellation.IsCancellationRequested)
         {
             // Expected during graceful service shutdown.
         }
-        catch (TimeoutException)
-        {
-            AddLog("web", "Scheduled-operation shutdown timed out; continuing best-effort cleanup.");
-        }
-        catch (Exception ex)
-        {
-            AddLog("task", $"Scheduled-operation shutdown failed: {ex.Message}");
-        }
         finally
         {
-            cancellation.Dispose();
-            _scheduledOperationsCancellation = null;
-            _scheduledOperationsTask = null;
+            if (task.IsCompleted)
+            {
+                cancellation.Dispose();
+                _scheduledOperationsCancellation = null;
+                _scheduledOperationsTask = null;
+            }
         }
+
+        return true;
     }
 
     private async Task RunScheduledOperationsAsync(CancellationToken cancellationToken)

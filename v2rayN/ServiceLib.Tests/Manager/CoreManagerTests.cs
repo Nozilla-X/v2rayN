@@ -29,7 +29,7 @@ public class CoreManagerTests
     }
 
     [Test]
-    public async Task LinuxRootRunsTunCoreDirectly()
+    public async Task LinuxRootWithEffectiveNetAdminRunsTunCoreDirectly()
     {
         await CoreManager.ShouldRunAsSudoAfterLinuxPrivilegeCheck(
             isTunLaunch: true,
@@ -37,7 +37,26 @@ public class CoreManagerTests
             isNonWindows: true,
             isLinux: true,
             effectiveUserIsRoot: true,
+            hasEffectiveNetAdmin: true,
             hasAmbientNetAdmin: false).Should().BeFalse();
+    }
+
+    [Test]
+    public async Task LinuxRootWithoutEffectiveNetAdminFallsBackToSudo()
+    {
+        await CoreManager.ShouldRunAsSudoAfterLinuxPrivilegeCheck(
+            isTunLaunch: true,
+            ECoreType.Xray,
+            isNonWindows: true,
+            isLinux: true,
+            effectiveUserIsRoot: true,
+            hasEffectiveNetAdmin: false,
+            hasAmbientNetAdmin: true).Should().BeTrue();
+        await CoreManager.CanRunTunCoreWithoutSudo(
+            isLinux: true,
+            effectiveUserIsRoot: true,
+            hasEffectiveNetAdmin: false,
+            hasAmbientNetAdmin: true).Should().BeFalse();
     }
 
     [Test]
@@ -49,29 +68,42 @@ public class CoreManagerTests
             isNonWindows: true,
             isLinux: true,
             effectiveUserIsRoot: false,
+            hasEffectiveNetAdmin: false,
             hasAmbientNetAdmin: true).Should().BeFalse();
-        await CoreManager.CanRunTunCoreWithoutSudo(isLinux: true, effectiveUserIsRoot: false, hasAmbientNetAdmin: true)
+        await CoreManager.CanRunTunCoreWithoutSudo(
+                isLinux: true,
+                effectiveUserIsRoot: false,
+                hasEffectiveNetAdmin: false,
+                hasAmbientNetAdmin: true)
             .Should().BeTrue();
     }
 
     [Test]
-    public async Task EffectiveCapabilityWithoutAmbientCapabilityFallsBackToSudo()
+    public async Task NonRootWithOnlyEffectiveNetAdminFallsBackToSudo()
     {
-        // CapEff is deliberately not part of this decision: it does not survive an ordinary exec.
         await CoreManager.ShouldRunAsSudoAfterLinuxPrivilegeCheck(
             isTunLaunch: true,
             ECoreType.Xray,
             isNonWindows: true,
             isLinux: true,
             effectiveUserIsRoot: false,
+            hasEffectiveNetAdmin: true,
             hasAmbientNetAdmin: false).Should().BeTrue();
-        await CoreManager.CanRunTunCoreWithoutSudo(isLinux: true, effectiveUserIsRoot: false, hasAmbientNetAdmin: false)
+        await CoreManager.CanRunTunCoreWithoutSudo(
+                isLinux: true,
+                effectiveUserIsRoot: false,
+                hasEffectiveNetAdmin: true,
+                hasAmbientNetAdmin: false)
             .Should().BeFalse();
     }
 
     [Test]
-    public async Task AmbientCapabilityDetectionReadsCapAmbAndNotCapEff()
+    public async Task CapabilityDetectionReadsTheRequestedStatusFieldAndFailsClosed()
     {
+        await CoreManager.HasEffectiveNetAdminCapability("CapEff:\t0000000000001000").Should().BeTrue();
+        await CoreManager.HasEffectiveNetAdminCapability("CapEff:\t0000000000000000").Should().BeFalse();
+        await CoreManager.HasEffectiveNetAdminCapability("CapAmb:\t0000000000001000").Should().BeFalse();
+        await CoreManager.HasEffectiveNetAdminCapability(null).Should().BeFalse();
         await CoreManager.HasAmbientNetAdminCapability("CapAmb:\t0000000000001000").Should().BeTrue();
         await CoreManager.HasAmbientNetAdminCapability("CapAmb:\t0000000000000000").Should().BeFalse();
         await CoreManager.HasAmbientNetAdminCapability("CapEff:\t0000000000001000").Should().BeFalse();
@@ -87,6 +119,7 @@ public class CoreManagerTests
             isNonWindows: false,
             isLinux: false,
             effectiveUserIsRoot: false,
+            hasEffectiveNetAdmin: false,
             hasAmbientNetAdmin: false).Should().BeFalse();
         await CoreManager.ShouldRunAsSudoAfterLinuxPrivilegeCheck(
             isTunLaunch: true,
@@ -94,6 +127,7 @@ public class CoreManagerTests
             isNonWindows: true,
             isLinux: false,
             effectiveUserIsRoot: false,
+            hasEffectiveNetAdmin: false,
             hasAmbientNetAdmin: false).Should().BeTrue();
     }
 

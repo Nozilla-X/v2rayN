@@ -310,6 +310,7 @@ public class CoreManager
         bool isNonWindows,
         bool isLinux,
         bool effectiveUserIsRoot,
+        bool hasEffectiveNetAdmin,
         bool hasAmbientNetAdmin)
     {
         if (!ShouldRunAsSudo(isTunLaunch, coreType, isNonWindows))
@@ -317,13 +318,16 @@ public class CoreManager
             return false;
         }
 
-        return !isLinux || !CanRunTunCoreWithoutSudo(isLinux, effectiveUserIsRoot, hasAmbientNetAdmin);
+        return !isLinux || !CanRunTunCoreWithoutSudo(
+            isLinux,
+            effectiveUserIsRoot,
+            hasEffectiveNetAdmin,
+            hasAmbientNetAdmin);
     }
 
     /// <summary>
-    /// Reports whether a non-root Linux process can pass NET_ADMIN to a child core across exec.
-    /// Effective capabilities alone are insufficient; Linux clears them on exec unless the
-    /// capability is ambient (or another explicit file-capability policy applies).
+    /// Reports whether a Linux process has NET_ADMIN available to a child core across exec.
+    /// Root must have it in CapEff, while a non-root process must have it in CapAmb.
     /// </summary>
     public static bool CanRunTunCoreWithoutSudo()
     {
@@ -332,11 +336,19 @@ public class CoreManager
             return false;
         }
 
-        return CanRunTunCoreWithoutSudo(isLinux: true, effectiveUserIsRoot: IsCurrentLinuxRoot(), hasAmbientNetAdmin: HasAmbientNetAdminCapability());
+        return CanRunTunCoreWithoutSudo(
+            isLinux: true,
+            effectiveUserIsRoot: IsCurrentLinuxRoot(),
+            hasEffectiveNetAdmin: HasEffectiveNetAdminCapability(),
+            hasAmbientNetAdmin: HasAmbientNetAdminCapability());
     }
 
-    internal static bool CanRunTunCoreWithoutSudo(bool isLinux, bool effectiveUserIsRoot, bool hasAmbientNetAdmin) =>
-        isLinux && (effectiveUserIsRoot || hasAmbientNetAdmin);
+    internal static bool CanRunTunCoreWithoutSudo(
+        bool isLinux,
+        bool effectiveUserIsRoot,
+        bool hasEffectiveNetAdmin,
+        bool hasAmbientNetAdmin) =>
+        isLinux && (effectiveUserIsRoot ? hasEffectiveNetAdmin : hasAmbientNetAdmin);
 
     private static bool ShouldRunAsSudoForCurrentProcess(bool isTunLaunch, ECoreType? coreType)
     {
@@ -356,6 +368,7 @@ public class CoreManager
             isNonWindows,
             isLinux: true,
             effectiveUserIsRoot: IsCurrentLinuxRoot(),
+            hasEffectiveNetAdmin: HasEffectiveNetAdminCapability(),
             hasAmbientNetAdmin: HasAmbientNetAdminCapability());
     }
 
@@ -374,6 +387,22 @@ public class CoreManager
     [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "geteuid")]
     private static extern uint GetEffectiveUserId();
 
+    internal static bool HasEffectiveNetAdminCapability()
+    {
+        try
+        {
+            var line = File.ReadLines("/proc/self/status")
+                .FirstOrDefault(value => value.StartsWith("CapEff:", StringComparison.Ordinal));
+            return HasCapability(line, "CapEff:");
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static bool HasEffectiveNetAdminCapability(string? statusLine) => HasCapability(statusLine, "CapEff:");
+
     internal static bool HasAmbientNetAdminCapability()
     {
         try
@@ -389,17 +418,20 @@ public class CoreManager
     }
 
     internal static bool HasAmbientNetAdminCapability(string? statusLine)
+        => HasCapability(statusLine, "CapAmb:");
+
+    private static bool HasCapability(string? statusLine, string prefix)
     {
         const ulong capNetAdmin = 1UL << 12;
-        if (statusLine is null || !statusLine.StartsWith("CapAmb:", StringComparison.Ordinal))
+        if (statusLine is null || !statusLine.StartsWith(prefix, StringComparison.Ordinal))
         {
             return false;
         }
 
         var hexadecimal = statusLine.Split(':', 2).ElementAtOrDefault(1)?.Trim();
         return ulong.TryParse(hexadecimal, System.Globalization.NumberStyles.HexNumber,
-                   System.Globalization.CultureInfo.InvariantCulture, out var ambientCapabilities)
-               && (ambientCapabilities & capNetAdmin) != 0;
+                   System.Globalization.CultureInfo.InvariantCulture, out var capabilities)
+               && (capabilities & capNetAdmin) != 0;
     }
 
     private async Task<ProcessService?> RunProcess(CoreInfo? coreInfo, string configPath, bool displayLog, bool mayNeedSudo, bool isTunLaunch = false)

@@ -25,6 +25,7 @@ public sealed partial class V2rayRuntime(
     IHostApplicationLifetime lifetime,
     RuntimeOperationCoordinator operations)
 {
+    private static readonly TimeSpan ShutdownBudget = TimeSpan.FromSeconds(20);
     private readonly EventHub _events = events;
     private readonly LogBuffer _logs = logs;
     private readonly IConfiguration _configuration = configuration;
@@ -122,45 +123,70 @@ public sealed partial class V2rayRuntime(
 
     public async Task ShutdownAsync(CancellationToken cancellationToken)
     {
-        await WaitForScheduledRestartAsync();
-        await StopScheduledOperationsAsync();
-        var drained = await _operations.StopAndDrainAsync(cancellationToken);
-        if (!drained)
+        var steps = new List<ShutdownCleanupStep>
         {
-            AddLog("web", "Shutdown drain timed out; continuing best-effort cleanup.");
-        }
-        if (!_initialized)
+            new("scheduled restart", async deadline =>
+            {
+                await WaitForScheduledRestartAsync(deadline.Token);
+                return true;
+            }),
+            new("scheduled operations stop", deadline => StopScheduledOperationsAsync(deadline.Token)),
+            new("operation drain", async deadline =>
+            {
+                var drained = await _operations.StopAndDrainAsync(deadline.Token, deadline.Remaining);
+                if (!drained)
+                {
+                    AddLog("web", "Shutdown operation drain timed out; skipped all Core, state-save, and SQLite cleanup.");
+                }
+                return drained;
+            }),
+        };
+
+        var saveServiceLibState = _initialized && !_restoring;
+        if (saveServiceLibState)
         {
-            return;
-        }
-        if (_restoring)
-        {
-            return;
+            steps.Add(new("Core stop", async _ =>
+            {
+                await CoreManager.Instance.CoreStop();
+                return true;
+            }));
+            steps.Add(new("profile save", async _ =>
+            {
+                await ProfileExManager.Instance.SaveTo();
+                return true;
+            }));
+            steps.Add(new("statistics save", async _ =>
+            {
+                await StatisticsManager.Instance.SaveTo();
+                return true;
+            }));
+            steps.Add(new("statistics close", _ =>
+            {
+                StatisticsManager.Instance.Close();
+                return Task.FromResult(true);
+            }));
+            steps.Add(new("configuration save", async deadline =>
+            {
+                await _mutations.RunAsync(
+                    () => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)),
+                    deadline.Token);
+                return true;
+            }));
+            steps.Add(new("database close", async _ =>
+            {
+                await SQLiteHelper.Instance.DisposeDbConnectionAsync();
+                return true;
+            }));
         }
 
-        await RunShutdownStepAsync("core stop", () => CoreManager.Instance.CoreStop());
-        await RunShutdownStepAsync("profile save", () => ProfileExManager.Instance.SaveTo());
-        await RunShutdownStepAsync("statistics save", () => StatisticsManager.Instance.SaveTo());
-        await RunShutdownStepAsync("statistics close", () =>
+        var completed = await ShutdownCleanupSequence.RunAsync(
+            steps,
+            ShutdownBudget,
+            cancellationToken,
+            message => AddLog("web", message));
+        if (completed && saveServiceLibState)
         {
-            StatisticsManager.Instance.Close();
-            return Task.CompletedTask;
-        });
-        await RunShutdownStepAsync("configuration save", () => _mutations.RunAsync(
-            () => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)), cancellationToken));
-        await RunShutdownStepAsync("database close", () => SQLiteHelper.Instance.DisposeDbConnectionAsync());
-        AddLog("web", "serviceLib.stopped");
-    }
-
-    private async Task RunShutdownStepAsync(string name, Func<Task> step)
-    {
-        try
-        {
-            await step().WaitAsync(TimeSpan.FromSeconds(3));
-        }
-        catch (Exception ex)
-        {
-            AddLog("web", $"Shutdown {name} failed: {ex.Message}");
+            AddLog("web", "serviceLib.stopped");
         }
     }
 

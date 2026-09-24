@@ -179,7 +179,6 @@ public sealed partial class V2rayRuntime
             Directory.CreateDirectory(stagingPath);
 
             await ExtractXrayArchiveAsync(archivePath, stagingPath, cancellationToken);
-            CopyExistingGeoFiles(installPath, stagingPath);
 
             var coreInfo = CoreInfoManager.Instance.GetCoreInfo(ECoreType.Xray)
                 ?? throw new InvalidOperationException("Xray core metadata is unavailable.");
@@ -229,6 +228,9 @@ public sealed partial class V2rayRuntime
             }
 
             cancellationToken.ThrowIfCancellationRequested();
+            CopyLatestGeoFilesForApply(stage.InstallPath, stage.StagingPath);
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (wasXrayRunning)
             {
                 await CoreManager.Instance.CoreStop();
@@ -421,7 +423,7 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private static void CopyExistingGeoFiles(string installPath, string stagingPath)
+    internal static void CopyLatestGeoFilesForApply(string installPath, string stagingPath)
     {
         if (!Directory.Exists(installPath))
         {
