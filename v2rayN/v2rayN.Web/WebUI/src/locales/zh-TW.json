@@ -1,5 +1,29 @@
 {
   "brand": "v2rayN Web",
+  "brandState": {
+    "tun": "TUN 正在執行",
+    "proxy": "代理正在執行",
+    "off": "已關閉"
+  },
+  "setup": {
+    "title": "首次使用，請設定管理金鑰",
+    "description": "設定管理金鑰後即可進入 v2rayN Web。",
+    "managementKey": "管理金鑰",
+    "confirmKey": "確認金鑰",
+    "submit": "設定並進入",
+    "keyTooShort": "管理金鑰至少需要 12 個字元。",
+    "keysDoNotMatch": "兩次輸入的金鑰不一致。",
+    "alreadyConfigured": "管理金鑰已初始化，請重新整理頁面後使用現有金鑰連線。",
+    "setupFailed": "設定管理金鑰失敗，請重試。"
+  },
+  "launcher": {
+    "started": "v2rayN Web 已在背景啟動。\n管理頁面：{url}\n首次使用請在 Web 頁面設定管理金鑰。",
+    "alreadyRunningOpening": "v2rayN Web 已在執行。\n正在開啟管理頁面：{url}",
+    "alreadyRunning": "v2rayN Web 已在執行。\n管理頁面：{url}",
+    "startFailed": "v2rayN Web 啟動失敗；請使用 --foreground 查看詳細記錄。",
+    "existingUnhealthy": "偵測到相同資料目錄的執行個體正在啟動，但尚未就緒；請稍後重試。",
+    "instanceInUse": "相同資料目錄下已有 v2rayN Web 執行個體正在執行。"
+  },
   "localeNames": {
     "zhCN": "简体中文",
     "zhTW": "繁體中文",

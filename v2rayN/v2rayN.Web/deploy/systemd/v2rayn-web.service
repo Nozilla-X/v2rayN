@@ -8,7 +8,7 @@ Type=simple
 User=v2rayn
 Group=v2rayn
 WorkingDirectory=/opt/v2rayn-web
-ExecStart=/opt/v2rayn-web/v2rayN.Web
+ExecStart=/opt/v2rayn-web/v2rayN.Web --foreground
 EnvironmentFile=/etc/v2rayn-web.env
 Environment=ASPNETCORE_URLS=http://0.0.0.0:5080
 Environment=V2RAYN_WEB_AUTOSTART=true

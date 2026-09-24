@@ -9,6 +9,12 @@ type ApiInit = Omit<RequestInit, 'body'> & { body?: unknown }
 const { t, locale } = useI18n()
 const token = ref(localStorage.getItem('v2rayn-web-token') || '')
 const tokenDraft = ref(token.value)
+const setupStatusReady = ref(false)
+const setupRequired = ref(false)
+const setupKey = ref('')
+const setupConfirmKey = ref('')
+const setupSubmitting = ref(false)
+const setupError = ref('')
 const authenticated = ref(false)
 const loading = ref(false)
 const busy = ref(false)
@@ -100,6 +106,11 @@ const listeners = computed(() => status.value?.listeners || [])
 const currentRoute = computed(() => routes.value.find((route) => route.isActive) || null)
 const logTotalPages = computed(() => Math.max(1, Math.ceil(logTotal.value / logPageSize)))
 const runtimeVersion = computed(() => status.value?.runtime?.split('|')[0]?.trim() || '')
+// Desktop NotifyIcon1/2/3 mean ForcedClear/ForcedChange/Unchanged. TUN leaves
+// the system proxy unchanged, while a running Core applies the proxy icon.
+const brandIconMode = computed(() => status.value?.tunInterfaceActive ? 'tun' : status.value?.coreRunning ? 'proxy' : 'off')
+const brandIconSrc = computed(() => ({ tun: '/NotifyIcon3.ico', proxy: '/NotifyIcon2.ico', off: '/NotifyIcon1.ico' })[brandIconMode.value])
+const brandIconTitle = computed(() => t(`brandState.${brandIconMode.value}`))
 const pageTitle = computed(() => {
   const item = navItems.find((entry) => entry.id === activePage.value)
   return item ? t(item.key) : t('nav.nodes')
@@ -222,8 +233,8 @@ async function refreshBase() {
   }
 }
 
-async function connect() {
-  const candidate = tokenDraft.value.trim()
+async function connect(candidateOverride?: string) {
+  const candidate = candidateOverride ?? tokenDraft.value.trim()
   if (!candidate) {
     showNotice(t('auth.tokenRequired'), 'error')
     return
@@ -244,6 +255,50 @@ async function connect() {
     localStorage.removeItem('v2rayn-web-token')
     showError(error)
     if (!notice.value) showNotice(t('auth.connectFailed'), 'error')
+  }
+}
+
+async function configureManagementKey() {
+  setupError.value = ''
+  if (setupKey.value.length < 12) {
+    setupError.value = t('setup.keyTooShort')
+    return
+  }
+  if (setupKey.value !== setupConfirmKey.value) {
+    setupError.value = t('setup.keysDoNotMatch')
+    return
+  }
+
+  setupSubmitting.value = true
+  try {
+    const response = await fetch('/api/setup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: setupKey.value, confirmKey: setupConfirmKey.value }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+      setupError.value = payload.error === 'key_too_short'
+        ? t('setup.keyTooShort')
+        : payload.error === 'keys_do_not_match'
+          ? t('setup.keysDoNotMatch')
+          : payload.error === 'already_configured'
+            ? t('setup.alreadyConfigured')
+            : t('setup.setupFailed')
+      return
+    }
+
+    setupRequired.value = false
+    tokenDraft.value = setupKey.value
+    await connect(setupKey.value)
+    if (authenticated.value) {
+      setupKey.value = ''
+      setupConfirmKey.value = ''
+    }
+  } catch {
+    setupError.value = t('setup.setupFailed')
+  } finally {
+    setupSubmitting.value = false
   }
 }
 
@@ -1119,7 +1174,18 @@ watch(authenticated, (connected) => {
 })
 
 onMounted(async () => {
-  if (!token.value) return
+  try {
+    const response = await fetch('/api/setup/status')
+    if (!response.ok) throw new Error(`${response.status}`)
+    const payload = await response.json()
+    const setupStatus = payload?.data ?? payload
+    setupRequired.value = Boolean(setupStatus?.setupRequired)
+  } catch (error) {
+    showError(error)
+  } finally {
+    setupStatusReady.value = true
+  }
+  if (setupRequired.value || !token.value) return
   tokenDraft.value = token.value
   try {
     await refreshBase()
@@ -1140,8 +1206,24 @@ onUnmounted(() => {
 
 <template>
   <div class="app-shell" @click="contextMenu = null">
+    <section v-if="!setupStatusReady" class="auth-wrap"><p class="muted">{{ t('common.loading') }}</p></section>
+
+    <section v-else-if="setupRequired" class="auth-wrap">
+      <form class="auth-box setup-box" @submit.prevent="configureManagementKey">
+        <div class="auth-title"><img class="brand-glyph" src="/v2rayN.png" alt="" /><div><strong>{{ t('setup.title') }}</strong><small>{{ t('brand') }}</small></div></div>
+        <p>{{ t('setup.description') }}</p>
+        <div class="form-grid">
+          <label>{{ t('setup.managementKey') }}<input v-model="setupKey" type="password" autocomplete="new-password" minlength="12" required /></label>
+          <label>{{ t('setup.confirmKey') }}<input v-model="setupConfirmKey" type="password" autocomplete="new-password" minlength="12" required /></label>
+        </div>
+        <p v-if="setupError" class="setup-error" role="alert">{{ setupError }}</p>
+        <button class="button primary" type="submit" :disabled="setupSubmitting">{{ setupSubmitting ? t('common.working') : t('setup.submit') }}</button>
+      </form>
+    </section>
+
+    <template v-else>
     <header class="app-header">
-      <div class="brand"><span class="brand-glyph">N</span><strong>{{ t('brand') }}</strong></div>
+      <div class="brand"><img class="brand-glyph" :src="brandIconSrc" :title="brandIconTitle" alt="" /><strong>{{ t('brand') }}</strong></div>
       <nav class="main-nav" :aria-label="t('brand')">
         <button v-for="item in navItems" :key="item.id" :class="['nav-tab', { selected: activePage === item.id }]" @click="navigate(item.id)">
           <span class="nav-icon">{{ item.icon }}</span>{{ t(item.key) }}
@@ -1159,8 +1241,8 @@ onUnmounted(() => {
     </header>
 
     <section v-if="!authenticated" class="auth-wrap">
-      <form class="auth-box" @submit.prevent="connect">
-        <div class="auth-title"><span class="brand-glyph">N</span><div><strong>{{ t('auth.title') }}</strong><small>{{ t('brand') }}</small></div></div>
+      <form class="auth-box" @submit.prevent="connect()">
+        <div class="auth-title"><img class="brand-glyph" src="/v2rayN.png" alt="" /><div><strong>{{ t('auth.title') }}</strong><small>{{ t('brand') }}</small></div></div>
         <p>{{ t('auth.hint') }}</p>
         <label class="field-label" for="api-key">{{ t('auth.token') }}</label>
         <div class="inline-field"><input id="api-key" v-model="tokenDraft" type="password" autocomplete="current-password" :placeholder="t('auth.placeholder')" /><button class="button primary" type="submit">{{ t('auth.connect') }}</button></div>
@@ -1407,5 +1489,6 @@ onUnmounted(() => {
     <div v-if="showRouteForm" class="modal-shade" @click.self="showRouteForm = false"><form class="modal-panel" @submit.prevent="saveRoute"><div class="modal-head"><h2>{{ t(editingRouteId ? 'routing.edit' : 'routing.create') }}</h2><button class="tool-button" type="button" @click="showRouteForm = false">×</button></div><div class="form-grid"><label>{{ t('routing.name') }}<input v-model="routeForm.remarks" required /></label><label>{{ t('routing.url') }}<input v-model="routeForm.url" /></label><label>{{ t('routing.domainStrategy') }}<input v-model="routeForm.domainStrategy" /></label><label>{{ t('routing.domainStrategySingbox') }}<input v-model="routeForm.domainStrategy4Singbox" /></label><label>{{ t('routing.ruleCount') }}<input v-model.number="routeForm.ruleNum" type="number" min="0" /></label><label>{{ t('routing.url') }}<input v-model="routeForm.customRulesetPath4Singbox" /></label><label class="check-inline"><input v-model="routeForm.enabled" type="checkbox" />{{ t('common.enabled') }}</label><label class="check-inline"><input v-model="routeForm.locked" type="checkbox" />{{ t('common.enabled') }}</label><label class="wide-field">{{ t('common.rawJson') }}<textarea v-model="routeForm.ruleSet" class="code-area"></textarea></label></div><div class="modal-actions"><button class="button" type="button" @click="showRouteForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></div></form></div>
 
     <div v-if="showExportDialog" class="modal-shade" @click.self="showExportDialog = false"><section class="modal-panel wide-modal"><div class="modal-head"><h2>{{ t('nodes.exportSelected') }}</h2><button class="tool-button" @click="showExportDialog = false">×</button></div><div class="export-options"><label class="check-inline"><input v-model="exportOptions.includeShareUris" type="checkbox" />{{ t('nodes.includeShareUris') }}</label><label class="check-inline"><input v-model="exportOptions.base64ShareUris" type="checkbox" />{{ t('nodes.base64ShareUris') }}</label><label class="check-inline"><input v-model="exportOptions.includeInnerUri" type="checkbox" />{{ t('nodes.includeInnerUri') }}</label><label class="check-inline"><input v-model="exportOptions.includeClientConfig" type="checkbox" />{{ t('nodes.includeClientConfig') }}</label><button class="button compact" @click="exportSelected">{{ t('common.refresh') }}</button></div><textarea v-model="exportContent" class="code-area export-area" spellcheck="false"></textarea><div class="modal-actions"><button class="button" @click="copyExport">{{ t('common.copy') }}</button><button class="button" @click="downloadExport">{{ t('common.download') }}</button><button class="button primary" @click="showExportDialog = false">{{ t('common.close') }}</button></div></section></div>
+    </template>
   </div>
 </template>

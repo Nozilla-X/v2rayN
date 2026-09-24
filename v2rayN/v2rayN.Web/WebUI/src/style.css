@@ -32,7 +32,7 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .app-header { min-height: 47px; display: flex; align-items: stretch; gap: 15px; padding: 0 12px; background: #222; border-bottom: 1px solid #080808; box-shadow: 0 1px #383838; }
 .brand { display: flex; align-items: center; flex: 0 0 auto; gap: 8px; padding-right: 12px; border-right: 1px solid #3a3a3a; font-size: 14px; }
 .brand strong { font-weight: 600; }
-.brand-glyph { width: 25px; height: 25px; display: inline-grid; place-items: center; color: #e9f3fb; border: 1px solid #697f90; border-radius: 3px; background: #344656; font-size: 14px; font-weight: 700; }
+.brand-glyph { width: 25px; height: 25px; display: block; flex: 0 0 25px; object-fit: contain; }
 .main-nav { display: flex; align-items: stretch; gap: 1px; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
 .nav-tab { position: relative; display: inline-flex; align-items: center; gap: 6px; padding: 0 11px; color: #c8c8c8; border: 0; border-bottom: 2px solid transparent; background: transparent; white-space: nowrap; font-size: 12px; }
 .nav-tab:hover { background: #2d2d2d; color: #fff; }
@@ -218,6 +218,8 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .auth-title strong { display: block; color: #eee; font-size: 15px; }
 .auth-title small { display: block; margin-top: 3px; color: #999; font-size: 10px; }
 .auth-box p { margin: 12px 0; color: #aaa; font-size: 11px; line-height: 1.6; }
+.setup-box .form-grid { margin: 12px 0; }
+.setup-error { color: #f0a5a5 !important; }
 .field-label { display: block; margin: 6px 0 4px; color: #c4c4c4; font-size: 10px; }
 .inline-field { display: flex; gap: 6px; }
 .inline-field input { flex: 1; min-width: 0; height: 30px; padding: 0 7px; border: 1px solid #494949; border-radius: 2px; background: #171717; font-size: 11px; }

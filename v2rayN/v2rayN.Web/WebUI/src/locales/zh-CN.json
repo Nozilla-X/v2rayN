@@ -1,5 +1,29 @@
 {
   "brand": "v2rayN Web",
+  "brandState": {
+    "tun": "TUN 正在运行",
+    "proxy": "代理正在运行",
+    "off": "已关闭"
+  },
+  "setup": {
+    "title": "首次使用，请设置管理密钥",
+    "description": "设置管理密钥后即可进入 v2rayN Web。",
+    "managementKey": "管理密钥",
+    "confirmKey": "确认密钥",
+    "submit": "设置并进入",
+    "keyTooShort": "管理密钥至少需要 12 个字符。",
+    "keysDoNotMatch": "两次输入的密钥不一致。",
+    "alreadyConfigured": "管理密钥已初始化，请刷新页面后使用现有密钥连接。",
+    "setupFailed": "设置管理密钥失败，请重试。"
+  },
+  "launcher": {
+    "started": "v2rayN Web 已在后台启动。\n管理页面：{url}\n首次使用请在 Web 页面设置管理密钥。",
+    "alreadyRunningOpening": "v2rayN Web 已在运行。\n正在打开管理页面：{url}",
+    "alreadyRunning": "v2rayN Web 已在运行。\n管理页面：{url}",
+    "startFailed": "v2rayN Web 启动失败；请使用 --foreground 查看详细日志。",
+    "existingUnhealthy": "检测到同一数据目录的实例正在启动，但尚未就绪；请稍后重试。",
+    "instanceInUse": "同一数据目录下已有 v2rayN Web 实例正在运行。"
+  },
   "localeNames": {
     "zhCN": "简体中文",
     "zhTW": "繁體中文",

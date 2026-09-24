@@ -1,5 +1,29 @@
 {
   "brand": "v2rayN Web",
+  "brandState": {
+    "tun": "TUN is running",
+    "proxy": "Proxy is running",
+    "off": "Stopped"
+  },
+  "setup": {
+    "title": "Welcome to v2rayN Web",
+    "description": "Set a management key to continue.",
+    "managementKey": "Management key",
+    "confirmKey": "Confirm key",
+    "submit": "Set up and continue",
+    "keyTooShort": "The management key must be at least 12 characters.",
+    "keysDoNotMatch": "The keys do not match.",
+    "alreadyConfigured": "A management key has already been set. Refresh and connect with the existing key.",
+    "setupFailed": "Could not set the management key. Please try again."
+  },
+  "launcher": {
+    "started": "v2rayN Web is running in the background.\nWeb UI: {url}\nFor first-time use, set your management key in the Web UI.",
+    "alreadyRunningOpening": "v2rayN Web is already running.\nOpening the Web UI: {url}",
+    "alreadyRunning": "v2rayN Web is already running.\nWeb UI: {url}",
+    "startFailed": "v2rayN Web failed to start; run with --foreground to see details.",
+    "existingUnhealthy": "An instance for this data directory is starting but is not ready yet; try again shortly.",
+    "instanceInUse": "A v2rayN Web instance is already using this data directory."
+  },
   "localeNames": {
     "zhCN": "简体中文",
     "zhTW": "繁體中文",

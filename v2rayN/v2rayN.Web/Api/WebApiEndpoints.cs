@@ -17,7 +17,11 @@ public static class WebApiEndpoints
 
     public static void MapWebApi(this WebApplication app)
     {
-        app.MapGet("/api/health", () => ApiReplies.Ok(new { status = "ok" }, "common.health"));
+        app.MapGet("/api/health", (HttpContext context) =>
+        {
+            context.Response.Headers["X-v2rayn-web-instance-pid"] = Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            return ApiReplies.Ok(new { status = "ok" }, "common.health");
+        });
         app.MapGet("/api/status", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetStatusAsync(), "status.loaded"));
         app.MapGet("/api/operations", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetRunningOperationsAsync(), "operations.loaded"));
         app.MapGet("/api/logs", (int? limit, string? filter, V2rayRuntime runtime) =>

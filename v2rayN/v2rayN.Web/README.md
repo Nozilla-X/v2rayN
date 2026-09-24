@@ -17,9 +17,10 @@ NuGet packages are restored into the repository's `.packages/nuget`; npm package
 
 ```bash
 cd publish/linux-x64
-V2RAYN_WEB_API_KEY='<strong-secret>' \
 ./v2rayN.Web
 ```
+
+On Linux, running the native binary directly starts a detached backend, waits for its health endpoint, and opens the WebUI when a desktop session is available. On first run, set a management key in the WebUI. Use `./v2rayN.Web --foreground` for development/debugging; `--background` explicitly selects launcher mode and `--no-open` keeps it from opening a browser. The launcher uses a per-data-directory OS lock, so a second launch opens the existing instance instead of starting another one.
 
 The repeatable verification entry point builds the locale-checked WebUI, runs both Web and ServiceLib tests, and publishes a native `linux-x64` executable:
 
@@ -29,7 +30,7 @@ bash scripts/verify.sh
 
 The lower-level Web tests are also runnable independently with `dotnet test Tests/v2rayN.Web.Tests.csproj --configuration Release`. `scripts/verify.sh` and `scripts/publish-native.sh` set `NUGET_PACKAGES` themselves so repository-wide NuGet restore behavior remains unchanged.
 
-Open `http://127.0.0.1:5080` and enter the configured API key. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the Web runtime owns scheduling and performs ordered Core/profile/statistics/config/database cleanup under a 20-second overall shutdown budget. If operation drain or a cleanup step times out or fails, later cleanup is skipped to avoid racing active work or closing SQLite while it may still be in use. The example systemd unit allows 45 seconds as the final process-shutdown fallback.
+Open `http://127.0.0.1:5080`. When `V2RAYN_WEB_API_KEY` is set, enter that deployment key; otherwise, the first launch provides a loopback-only setup page and saves a PBKDF2 verifier under `guiConfigs/web-auth.json`. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the Web runtime owns scheduling and performs ordered Core/profile/statistics/config/database cleanup under a 20-second overall shutdown budget. If operation drain or a cleanup step times out or fails, later cleanup is skipped to avoid racing active work or closing SQLite while it may still be in use. The example systemd unit allows 45 seconds as the final process-shutdown fallback.
 
 Subscription interval scheduling is implemented in `Services/V2rayRuntime.Scheduling.cs`; the Web host does not register ServiceLib's desktop `TaskManager`. The Web runtime's `RuntimeMutationGate` serializes its shared configuration and SQLite mutations.
 
@@ -52,7 +53,9 @@ cp -a core-bin/xray publish/linux-x64/bin/
 
 For remote access, prefer a trusted LAN/VPN or place v2rayN.Web behind a TLS-enabled reverse proxy. Do not expose the plain HTTP management endpoint directly to the public Internet.
 
-The Backend requires `V2RAYN_WEB_API_KEY`; it does not require any desktop components or Docker socket access.
+`V2RAYN_WEB_API_KEY` is optional for native first-run setup and remains supported for systemd/container deployments. The Backend does not require any desktop components or Docker socket access.
+
+First-run key setup is only accepted over an IPv4/IPv6 loopback connection. If the service will be reached remotely, configure `V2RAYN_WEB_API_KEY` before starting it; forwarding headers are not used to grant setup access.
 
 REST requests use a Bearer authorization header. Only `/api/events` accepts `access_token` in the query string, which is required by the browser's native `EventSource` API.
 
@@ -74,7 +77,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now v2rayn-web.service
 ```
 
-Edit `/etc/v2rayn-web.env` to set a unique `V2RAYN_WEB_API_KEY`. The unit uses `V2RAYN_DATA_HOME=/var/lib/v2rayn-web`, `ASPNETCORE_URLS=http://0.0.0.0:5080`, and `Restart=always`; the latter lets a validated backup restore restart the service after the API requests shutdown.
+Edit `/etc/v2rayn-web.env` to set a unique `V2RAYN_WEB_API_KEY`. The unit uses `V2RAYN_DATA_HOME=/var/lib/v2rayn-web`, `ASPNETCORE_URLS=http://0.0.0.0:5080`, `--foreground`, and `Restart=always`; the latter lets a validated backup restore restart the service after the API requests shutdown.
 
 Check service logs with:
 
@@ -97,7 +100,7 @@ Application/Core messages go to stdout/stderr for journald and are also retained
 
 ## Optional Docker / rootless Podman
 
-The container is a packaging option for the same self-contained publish output. The supplied rootless configuration does not grant TUN capabilities; deployments that need TUN must explicitly provide the device and required host capabilities. From the repository root:
+The container is a packaging option for the same self-contained publish output. Its entrypoint explicitly runs `v2rayN.Web --foreground`. The supplied rootless configuration does not grant TUN capabilities; deployments that need TUN must explicitly provide the device and required host capabilities. From the repository root:
 
 ```bash
 export V2RAYN_WEB_API_KEY='<strong-secret>'
