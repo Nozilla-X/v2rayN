@@ -143,7 +143,9 @@ public sealed partial class V2rayRuntime
 
     private async Task RunScheduledGeoUpdateAsync(CancellationToken cancellationToken)
     {
-        await using var operation = await _operations.EnterExclusiveAsync(cancellationToken);
+        await using var operation = await _operations.EnterExclusiveAsync(
+            cancellationToken,
+            allowReadOnlyObservations: true);
         await new UpdateService(Config, (success, message) =>
         {
             AddLog("update", message);

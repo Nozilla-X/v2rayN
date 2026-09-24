@@ -118,26 +118,20 @@ app.Use(async (context, next) =>
     }
 
     var path = context.Request.Path.Value?.TrimEnd('/') ?? string.Empty;
-    var ownedByBackgroundOperation =
-        (HttpMethods.IsPost(context.Request.Method)
-            && (path is "/api/core/xray/update" or "/api/core/geo/update" or "/api/speedtests"
-                or "/api/subscriptions/update" or "/api/backup/restore" or "/api/backup/webdav/restore"))
-        || (HttpMethods.IsPost(context.Request.Method)
-            && path.StartsWith("/api/subscriptions/", StringComparison.Ordinal)
-            && path.EndsWith("/update", StringComparison.Ordinal));
-
-    if (ownedByBackgroundOperation)
+    var leaseKind = RuntimeRequestOperationPolicy.Classify(context.Request.Method, path);
+    if (leaseKind == RuntimeRequestOperationKind.Background)
     {
         await next();
         return;
     }
 
     var operations = context.RequestServices.GetRequiredService<RuntimeOperationCoordinator>();
-    var exclusive = (HttpMethods.IsGet(context.Request.Method) && path == "/api/backup/download")
-        || (HttpMethods.IsPost(context.Request.Method) && path == "/api/backup/webdav");
-    await using var operation = exclusive
-        ? await operations.EnterExclusiveAsync(context.RequestAborted)
-        : await operations.EnterOperationAsync(context.RequestAborted);
+    await using var operation = leaseKind switch
+    {
+        RuntimeRequestOperationKind.Exclusive => await operations.EnterExclusiveAsync(context.RequestAborted),
+        RuntimeRequestOperationKind.Observation => await operations.EnterObservationAsync(context.RequestAborted),
+        _ => await operations.EnterOperationAsync(context.RequestAborted),
+    };
     context.RequestAborted = operation.Token;
     await next();
 });

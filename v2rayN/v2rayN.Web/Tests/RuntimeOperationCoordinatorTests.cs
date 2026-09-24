@@ -20,7 +20,7 @@ public class RuntimeOperationCoordinatorTests
     }
 
     [Test]
-    public async Task SharedRequestLeaseCanDrainBeforeExclusiveThenAnotherSharedRequest()
+    public async Task RequestUsesItsExistingSharedLeaseWhenAnExclusiveWaiterArrives()
     {
         var coordinator = new RuntimeOperationCoordinator();
         var requestLease = await coordinator.EnterOperationAsync();
@@ -28,8 +28,18 @@ public class RuntimeOperationCoordinatorTests
         await Task.Delay(25);
         await exclusiveTask.IsCompleted.Should().BeFalse();
 
-        // A second HTTP request queues behind the exclusive waiter. The first request owns
-        // and releases its own lease; it must not await another shared lease from inside it.
+        // Runtime work executes under the middleware-owned lease. It must not acquire another
+        // shared lease here: an exclusive waiter would otherwise block this work from finishing
+        // and the outer request could never release its lease.
+        var requestWork = Task.Run(async () =>
+        {
+            requestLease.Token.ThrowIfCancellationRequested();
+            await Task.Yield();
+            return true;
+        });
+        await (await requestWork.WaitAsync(TimeSpan.FromSeconds(2))).Should().BeTrue();
+
+        // A later HTTP request queues behind the exclusive waiter.
         var nextRequestTask = coordinator.EnterOperationAsync().AsTask();
         await Task.Delay(25);
         await nextRequestTask.IsCompleted.Should().BeFalse();
@@ -41,6 +51,35 @@ public class RuntimeOperationCoordinatorTests
         }
         await using var nextRequest = await nextRequestTask.WaitAsync(TimeSpan.FromSeconds(2));
         await nextRequest.Token.IsCancellationRequested.Should().BeFalse();
+    }
+
+    [Test]
+    public async Task ReadOnlyObserversRemainAvailableDuringUpdateMaintenance()
+    {
+        var coordinator = new RuntimeOperationCoordinator();
+        await using var maintenance = await coordinator.EnterExclusiveAsync(allowReadOnlyObservations: true);
+
+        await using var status = await coordinator.EnterObservationAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));
+        await using var operations = await coordinator.EnterObservationAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));
+        await using var logs = await coordinator.EnterObservationAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));
+        var mutation = coordinator.EnterOperationAsync().AsTask();
+
+        await (status.Token.CanBeCanceled && operations.Token.CanBeCanceled && logs.Token.CanBeCanceled).Should().BeTrue();
+        await mutation.IsCompleted.Should().BeFalse();
+        await maintenance.DisposeAsync();
+        await using var mutationLease = await mutation.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Test]
+    public async Task ReadOnlyObserversStillWaitDuringMaintenanceThatDoesNotAllowThem()
+    {
+        var coordinator = new RuntimeOperationCoordinator();
+        await using var maintenance = await coordinator.EnterExclusiveAsync();
+        var observer = coordinator.EnterObservationAsync().AsTask();
+
+        await observer.IsCompleted.Should().BeFalse();
+        await maintenance.DisposeAsync();
+        await using var lease = await observer.WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     [Test]

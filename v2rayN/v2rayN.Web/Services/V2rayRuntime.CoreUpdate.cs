@@ -61,7 +61,9 @@ public sealed partial class V2rayRuntime
                         stage = staged.Stage;
                     }
 
-                    await using var maintenance = await _operations.EnterExclusiveAsync(_operations.ShutdownToken);
+                    await using var maintenance = await _operations.EnterExclusiveAsync(
+                        _operations.ShutdownToken,
+                        allowReadOnlyObservations: true);
                     var result = await ApplyXrayCoreUpdateAsync(stage!, maintenance.Token);
                     AddLog("update", result.MessageKey);
                     _events.Publish("xray-update-completed", result);
@@ -99,7 +101,9 @@ public sealed partial class V2rayRuntime
             {
                 try
                 {
-                    await using var operation = await _operations.EnterExclusiveAsync(_operations.ShutdownToken);
+                    await using var operation = await _operations.EnterExclusiveAsync(
+                        _operations.ShutdownToken,
+                        allowReadOnlyObservations: true);
                     await new UpdateService(Config, (success, message) =>
                     {
                         AddLog("update", message);

@@ -11,10 +11,9 @@ namespace v2rayN.Web.Services;
 
 public sealed partial class V2rayRuntime
 {
-    public Task<WebSettingsView> GetSettingsAsync() => _mutations.RunAsync(() =>
+    public Task<WebSettingsView> GetSettingsAsync()
     {
         var inbound = Config.Inbound[0];
-        EnsureCoreTypeMappings();
         return Task.FromResult(new WebSettingsView(
             new InboundSettingsView(
                 inbound.LocalPort,
@@ -72,7 +71,7 @@ public sealed partial class V2rayRuntime
             Config.RoutingBasicItem.DomainStrategy,
             Config.RoutingBasicItem.DomainStrategy4Singbox,
             Config.CoreTypeItem.Select(item => new CoreTypeMapping(item.ConfigType, item.CoreType)).ToArray()));
-    });
+    }
 
     public async Task<OperationView> UpdateInboundSettingsAsync(InboundSettingsInput input)
     {

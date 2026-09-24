@@ -14,6 +14,7 @@ public sealed class RuntimeOperationCoordinator
     private int _activeOperations;
     private int _waitingExclusive;
     private bool _exclusiveActive;
+    private bool _exclusiveAllowsObservations;
     private bool _stopping;
 
     public CancellationToken ShutdownToken => _shutdown.Token;
@@ -35,12 +36,26 @@ public sealed class RuntimeOperationCoordinator
     }
 
     public ValueTask<Lease> EnterOperationAsync(CancellationToken cancellationToken = default) =>
-        EnterAsync(exclusive: false, cancellationToken);
+        EnterAsync(exclusive: false, allowReadOnlyObservation: false, cancellationToken);
 
-    public ValueTask<Lease> EnterExclusiveAsync(CancellationToken cancellationToken = default) =>
-        EnterAsync(exclusive: true, cancellationToken);
+    /// <summary>
+    /// Acquires a shared lease for an observational request such as status, operations, or logs.
+    /// During selected maintenance windows these requests may also run concurrently with the
+    /// exclusive operation; they must remain read-only and must not access resources being swapped.
+    /// </summary>
+    public ValueTask<Lease> EnterObservationAsync(CancellationToken cancellationToken = default) =>
+        EnterAsync(exclusive: false, allowReadOnlyObservation: true, cancellationToken);
 
-    private async ValueTask<Lease> EnterAsync(bool exclusive, CancellationToken cancellationToken)
+    public ValueTask<Lease> EnterExclusiveAsync(
+        CancellationToken cancellationToken = default,
+        bool allowReadOnlyObservations = false) =>
+        EnterAsync(exclusive: true, allowReadOnlyObservation: false, cancellationToken, allowReadOnlyObservations);
+
+    private async ValueTask<Lease> EnterAsync(
+        bool exclusive,
+        bool allowReadOnlyObservation,
+        CancellationToken cancellationToken,
+        bool allowReadOnlyObservations = false)
     {
         var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _shutdown.Token);
         var waiting = false;
@@ -72,11 +87,23 @@ public sealed class RuntimeOperationCoordinator
                         _waitingExclusive--;
                         waiting = false;
                         _exclusiveActive = true;
+                        _exclusiveAllowsObservations = allowReadOnlyObservations;
                         return new Lease(this, exclusive: true, linked);
                     }
 
                     if (!exclusive && !_exclusiveActive && _waitingExclusive == 0)
                     {
+                        _activeOperations++;
+                        return new Lease(this, exclusive: false, linked);
+                    }
+
+                    if (allowReadOnlyObservation
+                        && _exclusiveActive
+                        && _exclusiveAllowsObservations
+                        && _waitingExclusive == 0)
+                    {
+                        // Count observations as active so shutdown drains them and a subsequent
+                        // exclusive operation cannot begin while one is still running.
                         _activeOperations++;
                         return new Lease(this, exclusive: false, linked);
                     }
@@ -144,6 +171,7 @@ public sealed class RuntimeOperationCoordinator
             if (exclusive)
             {
                 _exclusiveActive = false;
+                _exclusiveAllowsObservations = false;
             }
             else
             {

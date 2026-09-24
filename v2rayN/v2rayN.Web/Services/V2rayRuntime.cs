@@ -64,6 +64,7 @@ public sealed partial class V2rayRuntime(
         await _mutations.RunAsync(async () =>
         {
             EnsureInboundDefaults(Config);
+            EnsureCoreTypeMappings();
             var proxyPortOverride = _configuration.GetValue<int?>("V2RAYN_WEB_PROXY_PORT");
             if (proxyPortOverride is <= 0 or > 65535)
             {
