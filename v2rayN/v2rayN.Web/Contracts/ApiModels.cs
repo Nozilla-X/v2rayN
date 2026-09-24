@@ -147,7 +147,6 @@ public sealed record CoreTypeMapping(EConfigType ConfigType, ECoreType CoreType)
 
 public sealed record WebSettingsView(
     InboundSettingsView Inbound,
-    TunSettingsView Tun,
     CoreSettingsView Core,
     AppSettingsView App,
     SpeedTestSettingsView SpeedTest,
@@ -166,34 +165,6 @@ public sealed record InboundSettingsInput(
     bool NewPort4LAN,
     string? User,
     string? Pass);
-
-public sealed record TunSettingsView(
-    bool Enabled,
-    bool AutoRoute,
-    bool StrictRoute,
-    string? Stack,
-    int Mtu,
-    bool EnableIPv6Address,
-    string? IcmpRouting,
-    bool EnableLegacyProtect,
-    string[] RouteExcludeAddress,
-    string? IPv4Address,
-    string? IPv6Address,
-    bool CapabilityAvailable,
-    string? CapabilityMessageKey);
-
-public sealed record TunSettingsInput(
-    bool Enabled,
-    bool AutoRoute,
-    bool StrictRoute,
-    string? Stack,
-    int Mtu,
-    bool EnableIPv6Address,
-    string? IcmpRouting,
-    bool EnableLegacyProtect,
-    string[]? RouteExcludeAddress,
-    string? IPv4Address,
-    string? IPv6Address);
 
 public sealed record CoreSettingsInput(
     bool LogEnabled,
@@ -247,7 +218,6 @@ public sealed record CoreConfigTemplateView(
     bool Enabled,
     ECoreType CoreType,
     string? Config,
-    string? TunConfig,
     bool? AddProxyOnly,
     string? ProxyDetour);
 
@@ -255,7 +225,6 @@ public sealed record CoreConfigTemplateInput(
     string? Remarks,
     bool Enabled,
     string? Config,
-    string? TunConfig,
     bool? AddProxyOnly,
     string? ProxyDetour);
 
@@ -266,7 +235,6 @@ public sealed record DnsProfileView(
     ECoreType CoreType,
     bool UseSystemHosts,
     string? NormalDNS,
-    string? TunDNS,
     string? DomainStrategy4Freedom,
     string? DomainDNSAddress);
 
@@ -275,7 +243,6 @@ public sealed record DnsProfileInput(
     bool Enabled,
     bool UseSystemHosts,
     string? NormalDNS,
-    string? TunDNS,
     string? DomainStrategy4Freedom,
     string? DomainDNSAddress);
 
@@ -327,6 +294,7 @@ public static class ApiMessageKeys
     public const string CoreStartFailed = "core.startFailed";
     public const string CoreBinaryMissing = "core.binaryMissing";
     public const string CorePortInUse = "core.portInUse";
+    public const string CoreTunNotSupported = "core.tunNotSupported";
     public const string CoreUnsupported = "core.unsupported";
     public const string ProfileNotFound = "profiles.notFound";
     public const string ProfileDetailLoaded = "profiles.detailLoaded";
@@ -418,10 +386,7 @@ public sealed record StatusView(
     int SubscriptionCount,
     DateTimeOffset CheckedAt,
     bool StatisticsEnabled,
-    TrafficView? Traffic,
-    bool TunEnabled,
-    string? TunInterfaceName,
-    bool TunInterfaceActive);
+    TrafficView? Traffic);
 
 public sealed record LogView(DateTimeOffset Timestamp, string Source, string Message);
 

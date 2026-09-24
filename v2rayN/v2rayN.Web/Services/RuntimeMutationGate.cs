@@ -1,8 +1,9 @@
 namespace v2rayN.Web.Services;
 
 /// <summary>
-/// Serializes short mutations of ServiceLib's shared configuration and SQLite state.
-/// Network downloads and other long-running work must happen before entering the gate.
+/// Serializes Web-owned mutations of ServiceLib's shared configuration and SQLite state.
+/// Subscription updates hold the gate across ServiceLib's download/import operation so their
+/// profile, configuration, and timestamp changes remain ordered with other Web mutations.
 /// </summary>
 public sealed class RuntimeMutationGate
 {

@@ -18,7 +18,7 @@ public sealed class WebSessionAuthenticationMiddleware(RequestDelegate next)
         }
 
         var presentedToken = WebSessionService.ExtractPresentedToken(context);
-        if (!sessions.TryValidate(presentedToken, out var session))
+        if (!sessions.TryValidateAndRenew(presentedToken, out var session))
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(

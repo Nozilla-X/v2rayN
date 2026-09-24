@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -68,7 +69,7 @@ public class WebAuthEndpointTests
         await (response.StatusCode == HttpStatusCode.OK).Should().BeTrue();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         var token = document.RootElement.GetProperty("data").GetProperty("token").GetString()!;
-        await sessions.TryValidate(token, out _).Should().BeTrue();
+        await sessions.TryValidateWithoutRenewal(token, out _).Should().BeTrue();
     }
 
     [Test]
@@ -103,7 +104,7 @@ public class WebAuthEndpointTests
         using var setupDocument = JsonDocument.Parse(await setupResponse.Content.ReadAsStringAsync());
         await setupDocument.RootElement.GetProperty("setupRequired").GetBoolean().Should().BeFalse();
         var sessionToken = setupDocument.RootElement.GetProperty("token").GetString()!;
-        await sessions.TryValidate(sessionToken, out _).Should().BeTrue();
+        await sessions.TryValidateWithoutRenewal(sessionToken, out _).Should().BeTrue();
 
         using var protectedRequest = new HttpRequestMessage(HttpMethod.Get, "/api/test/session");
         protectedRequest.Headers.Authorization = new("Bearer", sessionToken);
@@ -205,7 +206,7 @@ public class WebAuthEndpointTests
         await stream.ReadAsync(buffer).AsTask().WaitAsync(TimeSpan.FromSeconds(3));
 
         time.Advance(WebSessionService.SlidingLifetime + TimeSpan.FromSeconds(1));
-        await sessions.TryValidate(session.Token, out _).Should().BeFalse();
+        await sessions.TryValidateWithoutRenewal(session.Token, out _).Should().BeFalse();
         var closed = false;
         try
         {
@@ -216,6 +217,98 @@ public class WebAuthEndpointTests
             closed = true;
         }
         await closed.Should().BeTrue();
+    }
+
+    [Test]
+    public async Task AuthenticatedRestRequestRenewsSessionAfterSixDays()
+    {
+        using var directory = new TemporaryDirectory();
+        var time = new ManualTimeProvider(DateTimeOffset.Parse("2026-05-01T00:00:00Z"));
+        using var sessions = new WebSessionService(time);
+        await using var api = await ApiHarness.StartAsync(
+            new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), ManagementKey),
+            sessions);
+        var session = sessions.CreateSession();
+        time.Advance(TimeSpan.FromDays(6));
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/test/session");
+        request.Headers.Authorization = new("Bearer", session.Token);
+        using var response = await api.Client.SendAsync(request);
+
+        await (response.StatusCode == HttpStatusCode.OK).Should().BeTrue();
+        await sessions.TryValidateWithoutRenewal(session.Token, out var renewed).Should().BeTrue();
+        await (renewed!.LastSeenAt == time.GetUtcNow()).Should().BeTrue();
+        await (renewed.ExpiresAt == time.GetUtcNow() + WebSessionService.SlidingLifetime).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task LoginRejectsOverlongKeyUniformlyAndAcceptsMaximumLengthKey()
+    {
+        using var directory = new TemporaryDirectory();
+        using var sessions = new WebSessionService();
+        var maximumLengthKey = new string('k', WebAuthService.MaximumKeyLength);
+        await using var api = await ApiHarness.StartAsync(
+            new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), maximumLengthKey),
+            sessions);
+
+        using var valid = await api.Client.PostAsJsonAsync("/api/auth/login", new { key = maximumLengthKey });
+        using var overlong = await api.Client.PostAsJsonAsync("/api/auth/login", new { key = maximumLengthKey + "k" });
+        using var empty = await api.Client.PostAsJsonAsync("/api/auth/login", new { key = string.Empty });
+        using var missing = await api.Client.PostAsJsonAsync("/api/auth/login", new { key = (string?)null });
+
+        await (valid.StatusCode == HttpStatusCode.OK).Should().BeTrue();
+        await (overlong.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
+        await (empty.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
+        await (missing.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task OversizedLoginAndSetupBodiesAreRejectedBeforeJsonBinding()
+    {
+        using var directory = new TemporaryDirectory();
+        using var sessions = new WebSessionService();
+        await using var api = await ApiHarness.StartAsync(
+            new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), ManagementKey),
+            sessions);
+        var oversizedJson = new string(' ', checked((int)WebAuthRequestBodyLimitMiddleware.MaximumRequestBodyBytes + 1));
+
+        using var login = await api.Client.PostAsync("/api/auth/login", new StringContent(oversizedJson, Encoding.UTF8, "application/json"));
+        using var setup = await api.Client.PostAsync("/api/setup", new StringContent(oversizedJson, Encoding.UTF8, "application/json"));
+
+        await (login.StatusCode == HttpStatusCode.RequestEntityTooLarge).Should().BeTrue();
+        await (setup.StatusCode == HttpStatusCode.RequestEntityTooLarge).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task SseHeartbeatDoesNotRenewSessionAndExpiryCancelsItsRevocationToken()
+    {
+        var startedAt = DateTimeOffset.Parse("2026-06-01T00:00:00Z");
+        var time = new ManualTimeProvider(startedAt);
+        using var sessions = new WebSessionService(time);
+        var session = sessions.CreateSession();
+        await sessions.TryValidateAndRenew(session.Token, out var snapshot).Should().BeTrue();
+        var context = new DefaultHttpContext();
+        context.Response.Body = Stream.Null;
+
+        for (var minute = 1; minute < 7 * 24 * 60; minute++)
+        {
+            time.Advance(TimeSpan.FromMinutes(1));
+            if (!await WebApiEndpoints.TryWriteSseHeartbeatAsync(context, sessions, session.Token, CancellationToken.None))
+            {
+                throw new InvalidOperationException("SSE heartbeat expired the session before its sliding deadline.");
+            }
+        }
+
+        time.Advance(TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(1));
+        var heartbeatSent = await WebApiEndpoints.TryWriteSseHeartbeatAsync(
+            context,
+            sessions,
+            session.Token,
+            CancellationToken.None);
+
+        await heartbeatSent.Should().BeFalse();
+        await (snapshot!.LastSeenAt == startedAt).Should().BeTrue();
+        await snapshot.RevocationToken.IsCancellationRequested.Should().BeTrue();
     }
 
     private sealed class ApiHarness : IAsyncDisposable
@@ -248,6 +341,7 @@ public class WebAuthEndpointTests
             var app = builder.Build();
             app.UseRouting();
             app.UseRateLimiter();
+            app.UseMiddleware<WebAuthRequestBodyLimitMiddleware>();
             app.UseMiddleware<WebSessionAuthenticationMiddleware>();
             app.MapWebApi();
             app.MapWebAuthEndpoints();

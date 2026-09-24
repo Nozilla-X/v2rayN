@@ -108,6 +108,7 @@ internal static class Program
             options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
 
         var app = builder.Build();
+        app.UseMiddleware<WebAuthRequestBodyLimitMiddleware>();
         app.UseRouting();
         app.UseRateLimiter();
 
@@ -122,8 +123,11 @@ internal static class Program
             catch (BadHttpRequestException exception) when (context.Request.Path.StartsWithSegments("/api") && !context.Response.HasStarted)
             {
                 app.Logger.LogInformation(exception, "Invalid API request.");
-                context.Response.StatusCode = StatusCodes.Status400BadRequest;
-                await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail("request_invalid", ApiMessageKeys.CommonInvalidInput));
+                var isPayloadTooLarge = exception.StatusCode == StatusCodes.Status413PayloadTooLarge;
+                context.Response.StatusCode = isPayloadTooLarge ? StatusCodes.Status413PayloadTooLarge : StatusCodes.Status400BadRequest;
+                await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail(
+                    isPayloadTooLarge ? "payload_too_large" : "request_invalid",
+                    ApiMessageKeys.CommonInvalidInput));
             }
             catch (JsonException exception) when (context.Request.Path.StartsWithSegments("/api") && !context.Response.HasStarted)
             {

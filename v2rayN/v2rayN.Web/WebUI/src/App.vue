@@ -39,7 +39,6 @@ const dnsProfiles = ref<Dict[]>([])
 const templates = ref<Dict[]>([])
 const settings = ref<Dict>({})
 const inboundForm = ref<Dict>({})
-const tunForm = ref<Dict>({})
 const coreForm = ref<Dict>({})
 const appForm = ref<Dict>({})
 const speedForm = ref<Dict>({})
@@ -108,21 +107,14 @@ const listeners = computed(() => status.value?.listeners || [])
 const currentRoute = computed(() => routes.value.find((route) => route.isActive) || null)
 const logTotalPages = computed(() => Math.max(1, Math.ceil(logTotal.value / logPageSize)))
 const runtimeVersion = computed(() => status.value?.runtime?.split('|')[0]?.trim() || '')
-// Desktop NotifyIcon1/2/3 mean ForcedClear/ForcedChange/Unchanged. TUN leaves
-// the system proxy unchanged, while a running Core applies the proxy icon.
-const brandIconMode = computed(() => status.value?.tunInterfaceActive ? 'tun' : status.value?.coreRunning ? 'proxy' : 'off')
-const brandIconSrc = computed(() => ({ tun: '/NotifyIcon3.ico', proxy: '/NotifyIcon2.ico', off: '/NotifyIcon1.ico' })[brandIconMode.value])
+const brandIconMode = computed(() => status.value?.coreRunning ? 'proxy' : 'off')
+const brandIconSrc = computed(() => ({ proxy: '/NotifyIcon2.ico', off: '/NotifyIcon1.ico' })[brandIconMode.value])
 const brandIconTitle = computed(() => t(`brandState.${brandIconMode.value}`))
 const pageTitle = computed(() => {
   const item = navItems.find((entry) => entry.id === activePage.value)
   return item ? t(item.key) : t('nav.nodes')
 })
 const traffic = computed(() => status.value?.traffic || {})
-const tunnelCapabilityMessage = computed(() => {
-  const key = tunForm.value.capabilityMessageKey
-  return key ? translateKey(key) : t('settings.tunUnavailable')
-})
-
 function translateKey(key?: string | null): string {
   if (!key) return t('common.operationDone')
   const translated = t(key)
@@ -406,8 +398,6 @@ async function loadSettings() {
   }))
   const inb = settings.value.inbound || {}
   inboundForm.value = { ...inb, destOverrideText: (inb.destOverride || []).join('\n') }
-  tunForm.value = { ...(settings.value.tun || await data('/api/settings/tun')) }
-  tunForm.value.routeExcludeAddressText = (tunForm.value.routeExcludeAddress || []).join('\n')
   const core = settings.value.core || {}
   coreForm.value = {
     ...core,
@@ -946,7 +936,7 @@ async function saveDnsProfile(profile: Dict) {
       method: 'PUT',
       body: {
         remarks: profile.remarks, enabled: profile.enabled, useSystemHosts: profile.useSystemHosts,
-        normalDNS: profile.normalDNS, tunDNS: profile.tunDNS, domainStrategy4Freedom: profile.domainStrategy4Freedom,
+        normalDNS: profile.normalDNS, domainStrategy4Freedom: profile.domainStrategy4Freedom,
         domainDNSAddress: profile.domainDNSAddress,
       },
     })
@@ -959,7 +949,7 @@ async function saveTemplate(template: Dict) {
     const result = await request(`/api/settings/core-templates/${encodeURIComponent(coreTypeRoute(template.coreType))}`, {
       method: 'PUT', body: {
         remarks: template.remarks, enabled: template.enabled, config: template.config,
-        tunConfig: template.tunConfig, addProxyOnly: template.addProxyOnly, proxyDetour: template.proxyDetour,
+        addProxyOnly: template.addProxyOnly, proxyDetour: template.proxyDetour,
       },
     })
     showNotice(operationMessage(result))
@@ -983,23 +973,6 @@ async function saveInbound() {
     })
     showNotice(operationMessage(result))
     await loadStatus()
-  } catch (error) { showError(error) }
-}
-
-async function saveTun(enabled = tunForm.value.enabled) {
-  try {
-    const result = await request('/api/settings/tun', {
-      method: 'PUT', body: {
-        enabled, autoRoute: tunForm.value.autoRoute, strictRoute: tunForm.value.strictRoute, stack: tunForm.value.stack,
-        mtu: Number(tunForm.value.mtu || 0), enableIPv6Address: tunForm.value.enableIPv6Address,
-        icmpRouting: tunForm.value.icmpRouting, enableLegacyProtect: tunForm.value.enableLegacyProtect,
-        routeExcludeAddress: parseLines(tunForm.value.routeExcludeAddressText || ''),
-        iPv4Address: tunForm.value.iPv4Address || tunForm.value.ipv4Address,
-        iPv6Address: tunForm.value.iPv6Address || tunForm.value.ipv6Address,
-      },
-    })
-    showNotice(operationMessage(result))
-    await Promise.all([loadSettings(), loadStatus()])
   } catch (error) { showError(error) }
 }
 
@@ -1318,9 +1291,6 @@ onUnmounted(() => {
             <option value="">{{ t('common.none') }}</option>
             <option v-for="route in routes" :key="route.id" :value="route.id">{{ route.remarks }}</option>
           </select>
-          <button :class="['tun-toggle', { enabled: status?.tunInterfaceActive }]" :disabled="!tunForm.capabilityAvailable && !status?.tunEnabled" :title="!tunForm.capabilityAvailable ? tunnelCapabilityMessage : status?.tunInterfaceActive ? t('status.tunOn') : t('status.tunConfigured')" @click="saveTun(!status?.tunEnabled)">
-            <span class="toggle-led"></span>{{ status?.tunInterfaceActive ? t('status.tunOn') : status?.tunEnabled ? t('status.tunConfigured') : t('status.tunOff') }}
-          </button>
         </div>
         <div class="core-actions">
           <button class="button compact primary" :disabled="busy || status?.coreRunning" @click="coreAction('start')">▶ {{ t('nodes.start') }}</button>
@@ -1469,7 +1439,7 @@ onUnmounted(() => {
           <div class="page-toolbar"><div class="page-title"><h1>{{ t('dns.title') }}</h1></div><button class="button" @click="loadDns">{{ t('common.refresh') }}</button></div>
           <div class="dns-layout"><section class="subpanel"><div class="subpanel-heading"><h2>{{ t('dns.simple') }}</h2><button class="button compact primary" @click="saveSimpleDns">{{ t('dns.saveSimple') }}</button></div><label class="field-label raw-json-label">{{ t('dns.jsonEditor') }}</label><textarea v-model="simpleDnsRaw" class="code-area dns-code" spellcheck="false"></textarea></section>
             <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('dns.profiles') }}</h2></div><div v-for="profile in dnsProfiles" :key="profile.id" class="dns-profile-block"><div class="dns-profile-head"><strong>{{ profile.coreType }}</strong><label class="check-inline"><input v-model="profile.enabled" type="checkbox" />{{ t('dns.enabled') }}</label></div>
-              <div class="form-grid"><label>{{ t('dns.remarks') }}<input v-model="profile.remarks" /></label><label>{{ t('dns.normalDns') }}<textarea v-model="profile.normalDNS"></textarea></label><label>{{ t('dns.tunDns') }}<textarea v-model="profile.tunDNS"></textarea></label><label>{{ t('dns.domainStrategy') }}<input v-model="profile.domainStrategy4Freedom" /></label><label>{{ t('dns.domainDnsAddress') }}<input v-model="profile.domainDNSAddress" /></label><label class="check-inline"><input v-model="profile.useSystemHosts" type="checkbox" />{{ t('dns.useSystemHosts') }}</label></div><button class="button compact primary" @click="saveDnsProfile(profile)">{{ t('dns.saveCoreDns', { core: profile.coreType }) }}</button>
+              <div class="form-grid"><label>{{ t('dns.remarks') }}<input v-model="profile.remarks" /></label><label>{{ t('dns.normalDns') }}<textarea v-model="profile.normalDNS"></textarea></label><label>{{ t('dns.domainStrategy') }}<input v-model="profile.domainStrategy4Freedom" /></label><label>{{ t('dns.domainDnsAddress') }}<input v-model="profile.domainDNSAddress" /></label><label class="check-inline"><input v-model="profile.useSystemHosts" type="checkbox" />{{ t('dns.useSystemHosts') }}</label></div><button class="button compact primary" @click="saveDnsProfile(profile)">{{ t('dns.saveCoreDns', { core: profile.coreType }) }}</button>
             </div><p v-if="!dnsProfiles.length" class="muted empty-inline">{{ t('common.empty') }}</p></section>
           </div>
         </section>
@@ -1489,10 +1459,6 @@ onUnmounted(() => {
               <label>{{ t('settings.user') }}<input v-model="inboundForm.user" /></label><label>{{ t('settings.pass') }}<input v-model="inboundForm.pass" type="password" /></label>
             </div><button class="button compact primary" @click="saveInbound">{{ t('settings.saveInbound') }}</button></section>
 
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('settings.tun') }}</h2><span :class="['capability-pill', { available: tunForm.capabilityAvailable }]">{{ tunForm.capabilityAvailable ? t('common.enabled') : t('maintenance.capability') }}</span></div>
-              <p v-if="!tunForm.capabilityAvailable" class="capability-message">{{ tunnelCapabilityMessage }}</p>
-              <div class="form-grid two-col"><label class="check-inline"><input v-model="tunForm.enabled" type="checkbox" :disabled="!tunForm.capabilityAvailable && !tunForm.enabled" />{{ t('settings.tunEnabled') }}</label><label class="check-inline"><input v-model="tunForm.autoRoute" type="checkbox" />{{ t('settings.autoRoute') }}</label><label class="check-inline"><input v-model="tunForm.strictRoute" type="checkbox" />{{ t('settings.strictRoute') }}</label><label>{{ t('settings.stack') }}<input v-model="tunForm.stack" /></label><label>{{ t('settings.mtu') }}<input v-model.number="tunForm.mtu" type="number" min="0" max="65535" /></label><label class="check-inline"><input v-model="tunForm.enableIPv6Address" type="checkbox" />{{ t('settings.enableIPv6') }}</label><label>{{ t('settings.icmpRouting') }}<input v-model="tunForm.icmpRouting" /></label><label class="check-inline"><input v-model="tunForm.enableLegacyProtect" type="checkbox" />{{ t('settings.legacyProtect') }}</label><label>{{ t('settings.ipv4Address') }}<input v-model="tunForm.iPv4Address" /></label><label>{{ t('settings.ipv6Address') }}<input v-model="tunForm.iPv6Address" /></label><label class="wide-field">{{ t('settings.routeExcludeAddress') }}<textarea v-model="tunForm.routeExcludeAddressText"></textarea></label></div><button class="button compact primary" :disabled="!tunForm.capabilityAvailable && tunForm.enabled !== status?.tunEnabled" @click="saveTun()">{{ t('settings.saveTun') }}</button></section>
-
             <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('settings.core') }}</h2></div><div class="form-grid two-col">
               <label class="check-inline"><input v-model="coreForm.logEnabled" type="checkbox" />{{ t('settings.logEnabled') }}</label><label>{{ t('settings.loglevel') }}<select v-model="coreForm.loglevel"><option v-for="level in ['debug', 'info', 'warning', 'error', 'none']" :key="level">{{ level }}</option></select></label>
               <label>{{ t('settings.fingerprint') }}<input v-model="coreForm.defFingerprint" /></label><label>{{ t('settings.userAgent') }}<input v-model="coreForm.defUserAgent" /></label><label>{{ t('settings.sendThrough') }}<input v-model="coreForm.sendThrough" /></label><label>{{ t('settings.bindInterface') }}<input v-model="coreForm.bindInterface" /></label>
@@ -1510,7 +1476,7 @@ onUnmounted(() => {
 
         <section v-else-if="activePage === 'templates'" class="page">
           <div class="page-toolbar"><div class="page-title"><h1>{{ t('templates.title') }}</h1></div><button class="button" @click="loadTemplates">{{ t('common.refresh') }}</button></div>
-          <div class="template-grid"><section v-for="template in templates" :key="template.id" class="subpanel template-panel"><div class="subpanel-heading"><h2>{{ template.coreType }}</h2><label class="check-inline"><input v-model="template.enabled" type="checkbox" />{{ t('templates.enabled') }}</label></div><div class="form-grid"><label>{{ t('templates.remarks') }}<input v-model="template.remarks" /></label><label>{{ t('templates.config') }}<textarea v-model="template.config" class="code-area" spellcheck="false"></textarea></label><label>{{ t('templates.tunConfig') }}<textarea v-model="template.tunConfig" class="code-area" spellcheck="false"></textarea></label><label class="check-inline"><input v-model="template.addProxyOnly" type="checkbox" />{{ t('templates.addProxyOnly') }}</label><label>{{ t('templates.proxyDetour') }}<input v-model="template.proxyDetour" /></label></div><button class="button compact primary" @click="saveTemplate(template)">{{ t('templates.save') }}</button></section><p v-if="!templates.length" class="muted empty-inline">{{ t('common.empty') }}</p></div>
+          <div class="template-grid"><section v-for="template in templates" :key="template.id" class="subpanel template-panel"><div class="subpanel-heading"><h2>{{ template.coreType }}</h2><label class="check-inline"><input v-model="template.enabled" type="checkbox" />{{ t('templates.enabled') }}</label></div><div class="form-grid"><label>{{ t('templates.remarks') }}<input v-model="template.remarks" /></label><label>{{ t('templates.config') }}<textarea v-model="template.config" class="code-area" spellcheck="false"></textarea></label><label class="check-inline"><input v-model="template.addProxyOnly" type="checkbox" />{{ t('templates.addProxyOnly') }}</label><label>{{ t('templates.proxyDetour') }}<input v-model="template.proxyDetour" /></label></div><button class="button compact primary" @click="saveTemplate(template)">{{ t('templates.save') }}</button></section><p v-if="!templates.length" class="muted empty-inline">{{ t('common.empty') }}</p></div>
         </section>
 
         <section v-else-if="activePage === 'maintenance'" class="page">

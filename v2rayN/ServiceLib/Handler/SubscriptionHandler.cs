@@ -2,15 +2,7 @@ namespace ServiceLib.Handler;
 
 public static class SubscriptionHandler
 {
-    public static Task UpdateProcess(Config config, string subId, bool blProxy, Func<bool, string, Task> updateFunc) =>
-        UpdateProcess(config, subId, blProxy, updateFunc, mutationGate: null);
-
-    public static async Task UpdateProcess(
-        Config config,
-        string subId,
-        bool blProxy,
-        Func<bool, string, Task> updateFunc,
-        Func<Func<Task<bool>>, Task<bool>>? mutationGate)
+    public static async Task UpdateProcess(Config config, string subId, bool blProxy, Func<bool, string, Task> updateFunc)
     {
         await updateFunc?.Invoke(false, ResUI.MsgUpdateSubscriptionStart);
         var subItem = await AppManager.Instance.SubItems();
@@ -46,8 +38,7 @@ public static class SubscriptionHandler
                 var result = await DownloadAllSubscriptions(config, item, blProxy, downloadHandle);
 
                 // Process download result
-                var processResult = () => ProcessDownloadResult(config, item.Id, result, hashCode, updateFunc);
-                if (await (mutationGate is null ? processResult() : mutationGate(processResult)))
+                if (await ProcessDownloadResult(config, item.Id, result, hashCode, updateFunc))
                 {
                     successCount++;
                 }

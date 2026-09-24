@@ -38,15 +38,22 @@ public class WebAuthRateLimitTests
             var address = server.Features.Get<IServerAddressesFeature>()!.Addresses.Single();
             using var client = new HttpClient { BaseAddress = new Uri(address), Timeout = TimeSpan.FromSeconds(20) };
             var statuses = new List<HttpStatusCode>();
+            int? retryAfterSeconds = null;
 
             for (var attempt = 0; attempt < 6; attempt++)
             {
                 using var response = await client.PostAsJsonAsync("/api/auth/login", new { key = "incorrect-management-key" });
                 statuses.Add(response.StatusCode);
+                if (attempt == 5 && response.Headers.TryGetValues("Retry-After", out var values)
+                    && int.TryParse(values.SingleOrDefault(), out var seconds))
+                {
+                    retryAfterSeconds = seconds;
+                }
             }
 
             await statuses.Take(5).All(status => status == HttpStatusCode.Unauthorized).Should().BeTrue();
             await (statuses[5] == HttpStatusCode.TooManyRequests).Should().BeTrue();
+            await (retryAfterSeconds > 0).Should().BeTrue();
         }
         finally
         {

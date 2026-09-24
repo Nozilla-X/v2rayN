@@ -26,7 +26,6 @@ public sealed partial class V2rayRuntime
                 inbound.NewPort4LAN,
                 inbound.User,
                 inbound.Pass),
-            GetTunSettings(),
             new CoreSettingsView(
                 Config.CoreBasicItem.LogEnabled,
                 Config.CoreBasicItem.Loglevel,
@@ -100,131 +99,6 @@ public sealed partial class V2rayRuntime
         var restartRequired = _coreStartedAt is not null;
         _events.Publish("settings-changed", new { section = "inbound", restartRequired });
         return OperationView.Ok(restartRequired ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved, new { restartRequired });
-    }
-
-    public TunSettingsView GetTunSettings()
-    {
-        var tun = Config.TunModeItem;
-        var capability = GetTunCapability();
-        return new TunSettingsView(
-            tun.EnableTun,
-            tun.AutoRoute,
-            tun.StrictRoute,
-            tun.Stack,
-            tun.Mtu,
-            tun.EnableIPv6Address,
-            tun.IcmpRouting,
-            tun.EnableLegacyProtect,
-            tun.RouteExcludeAddress?.ToArray() ?? [],
-            tun.IPv4Address,
-            tun.IPv6Address,
-            capability.Available,
-            capability.MessageKey);
-    }
-
-    public async Task<OperationView> UpdateTunSettingsAsync(TunSettingsInput input)
-    {
-        var capability = GetTunCapability();
-        if (input.Enabled && !capability.Available)
-        {
-            return OperationView.Fail("tun_capability_unavailable", capability.MessageKey ?? "tun.capabilityUnavailable");
-        }
-        if (input.Mtu is < 0 or > 65535)
-        {
-            return OperationView.Fail("tun_mtu_invalid", ApiMessageKeys.CommonInvalidInput);
-        }
-
-        TunModeItem? oldTun = null;
-        var wasRunning = _coreStartedAt is not null;
-        await _mutations.RunAsync(async () =>
-        {
-            var current = Config.TunModeItem;
-            oldTun = new TunModeItem
-            {
-                EnableTun = current.EnableTun,
-                AutoRoute = current.AutoRoute,
-                StrictRoute = current.StrictRoute,
-                Stack = current.Stack,
-                Mtu = current.Mtu,
-                EnableIPv6Address = current.EnableIPv6Address,
-                IcmpRouting = current.IcmpRouting,
-                EnableLegacyProtect = current.EnableLegacyProtect,
-                RouteExcludeAddress = current.RouteExcludeAddress?.ToList(),
-                IPv4Address = current.IPv4Address,
-                IPv6Address = current.IPv6Address,
-            };
-            Config.TunModeItem = new TunModeItem
-            {
-                EnableTun = input.Enabled,
-                AutoRoute = input.AutoRoute,
-                StrictRoute = input.StrictRoute,
-                Stack = input.Stack?.Trim() ?? string.Empty,
-                Mtu = input.Mtu,
-                EnableIPv6Address = input.EnableIPv6Address,
-                IcmpRouting = input.IcmpRouting?.Trim() ?? string.Empty,
-                EnableLegacyProtect = input.EnableLegacyProtect,
-                RouteExcludeAddress = input.RouteExcludeAddress?.Where(value => !string.IsNullOrWhiteSpace(value)).Select(value => value.Trim()).ToList() ?? [],
-                IPv4Address = input.IPv4Address?.Trim() ?? string.Empty,
-                IPv6Address = input.IPv6Address?.Trim() ?? string.Empty,
-            };
-            try
-            {
-                await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
-            }
-            catch
-            {
-                Config.TunModeItem = oldTun;
-                throw;
-            }
-        });
-
-        if (wasRunning)
-        {
-            var restart = await RestartCoreAsync(CancellationToken.None);
-            if (!restart.Success)
-            {
-                await _mutations.RunAsync(async () =>
-                {
-                    Config.TunModeItem = oldTun!;
-                    await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
-                });
-                await RestartCoreAsync(CancellationToken.None);
-                return restart;
-            }
-        }
-
-        _events.Publish("settings-changed", new { section = "tun", restartRequired = false });
-        return OperationView.Ok(ApiMessageKeys.CommonSaved, new { enabled = input.Enabled, coreRestarted = wasRunning });
-    }
-
-    private static (bool Available, string? MessageKey) GetTunCapability()
-    {
-        if (!OperatingSystem.IsLinux())
-        {
-            return (false, "tun.unsupportedPlatform");
-        }
-        if (!File.Exists("/dev/net/tun"))
-        {
-            return (false, "tun.deviceUnavailable");
-        }
-
-        try
-        {
-            using var device = new FileStream("/dev/net/tun", FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite);
-            if (CoreManager.CanRunTunCoreWithoutSudo())
-            {
-                return (true, null);
-            }
-            return (false, "tun.netAdminRequired");
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return (false, "tun.devicePermissionDenied");
-        }
-        catch (IOException)
-        {
-            return (false, "tun.deviceUnavailable");
-        }
     }
 
     public async Task<OperationView> UpdateCoreSettingsAsync(CoreSettingsInput input)
@@ -404,7 +278,7 @@ public sealed partial class V2rayRuntime
     public async Task<IReadOnlyList<DnsProfileView>> GetDnsProfilesAsync() =>
         (await AppManager.Instance.DNSItems() ?? [])
             .Select(item => new DnsProfileView(item.Id, item.Remarks, item.Enabled, item.CoreType, item.UseSystemHosts,
-                item.NormalDNS, item.TunDNS, item.DomainStrategy4Freedom, item.DomainDNSAddress))
+                item.NormalDNS, item.DomainStrategy4Freedom, item.DomainDNSAddress))
             .ToArray();
 
     public async Task<OperationView> UpdateDnsProfileAsync(ECoreType coreType, DnsProfileInput input)
@@ -424,7 +298,7 @@ public sealed partial class V2rayRuntime
                 CoreType = coreType,
                 UseSystemHosts = input.UseSystemHosts,
                 NormalDNS = input.NormalDNS,
-                TunDNS = input.TunDNS,
+                TunDNS = current.TunDNS,
                 DomainStrategy4Freedom = input.DomainStrategy4Freedom,
                 DomainDNSAddress = input.DomainDNSAddress,
             };
@@ -714,7 +588,7 @@ public sealed partial class V2rayRuntime
 
     public async Task<IReadOnlyList<CoreConfigTemplateView>> GetFullConfigTemplatesAsync() =>
         (await AppManager.Instance.FullConfigTemplateItem() ?? [])
-            .Select(item => new CoreConfigTemplateView(item.Id, item.Remarks, item.Enabled, item.CoreType, item.Config, item.TunConfig, item.AddProxyOnly, item.ProxyDetour))
+            .Select(item => new CoreConfigTemplateView(item.Id, item.Remarks, item.Enabled, item.CoreType, item.Config, item.AddProxyOnly, item.ProxyDetour))
             .ToArray();
 
     public async Task<OperationView> SaveFullConfigTemplateAsync(ECoreType coreType, CoreConfigTemplateInput input)
@@ -733,7 +607,7 @@ public sealed partial class V2rayRuntime
                 Enabled = input.Enabled,
                 CoreType = coreType,
                 Config = input.Config,
-                TunConfig = input.TunConfig,
+                TunConfig = current.TunConfig,
                 AddProxyOnly = input.AddProxyOnly,
                 ProxyDetour = input.ProxyDetour,
             };

@@ -139,9 +139,6 @@ public static class WebApiEndpoints
         app.MapGet("/api/settings", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetSettingsAsync(), "settings.loaded"));
         app.MapPut("/api/settings/inbound", async (InboundSettingsInput input, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.UpdateInboundSettingsAsync(input)));
-        app.MapGet("/api/settings/tun", (V2rayRuntime runtime) => ApiReplies.Ok(runtime.GetTunSettings(), "settings.tunLoaded"));
-        app.MapPut("/api/settings/tun", async (TunSettingsInput input, V2rayRuntime runtime) =>
-            ApiReplies.Operation(await runtime.UpdateTunSettingsAsync(input), failureStatus: StatusCodes.Status409Conflict));
         app.MapPut("/api/settings/core", async (CoreSettingsInput input, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.UpdateCoreSettingsAsync(input)));
         app.MapPut("/api/settings/application", async (AppSettingsInput input, V2rayRuntime runtime) =>
@@ -276,14 +273,10 @@ public static class WebApiEndpoints
                             break;
                         }
 
-                        if (!sessions.TryValidate(sessionToken, out _))
+                        if (!await TryWriteSseHeartbeatAsync(context, sessions, sessionToken, cancellationToken))
                         {
-                            await WriteUnauthorizedSseResponseAsync(context);
                             break;
                         }
-
-                        await context.Response.WriteAsync(": keep-alive\n\n", cancellationToken);
-                        await context.Response.Body.FlushAsync(cancellationToken);
                         nextHeartbeat = heartbeat.WaitForNextTickAsync(cancellationToken).AsTask();
                         continue;
                     }
@@ -305,6 +298,23 @@ public static class WebApiEndpoints
                 await WriteUnauthorizedSseResponseAsync(context);
             }
         });
+    }
+
+    internal static async Task<bool> TryWriteSseHeartbeatAsync(
+        HttpContext context,
+        WebSessionService sessions,
+        string sessionToken,
+        CancellationToken cancellationToken)
+    {
+        if (!sessions.TryValidateWithoutRenewal(sessionToken, out _))
+        {
+            await WriteUnauthorizedSseResponseAsync(context);
+            return false;
+        }
+
+        await context.Response.WriteAsync(": keep-alive\n\n", cancellationToken);
+        await context.Response.Body.FlushAsync(cancellationToken);
+        return true;
     }
 
     private static async Task WriteUnauthorizedSseResponseAsync(HttpContext context)

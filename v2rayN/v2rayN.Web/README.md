@@ -1,6 +1,6 @@
 # v2rayN Headless Web frontend
 
-`v2rayN.Web` is an ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, or system-proxy integration. TUN settings and toggling are available through the Web API/UI; direct child-core launch requires host access to `/dev/net/tun`. On Linux, root must have `CAP_NET_ADMIN` in `CapEff`; a non-root process must have it in `CapAmb` so the child Core inherits it across `exec`. Missing or unreadable capability state is treated as unavailable. Rootless containers normally lack these privileges, and the Backend reports TUN as unavailable rather than removing the feature.
+`v2rayN.Web` is an ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, or system-proxy integration. **v2rayN.Web currently does not expose TUN. TUN is intentionally deferred from the initial headless Web frontend.** If a shared or restored configuration has TUN enabled, Web refuses to start that Core configuration without changing the saved setting; use the desktop frontend to disable TUN before starting Core from Web.
 
 The Vue source is in `WebUI/`. The frontend uses TypeScript and `vue-i18n` locale JSON files, and calls the existing Backend/ServiceLib for profile and settings operations. Its primary workspace is a compact, high-density node table.
 
@@ -30,7 +30,7 @@ bash scripts/verify.sh
 
 The lower-level Web tests are also runnable independently with `dotnet test Tests/v2rayN.Web.Tests.csproj --configuration Release`. `scripts/verify.sh` and `scripts/publish-native.sh` set `NUGET_PACKAGES` themselves so repository-wide NuGet restore behavior remains unchanged.
 
-Open `http://127.0.0.1:5080`. First Run setup or sign-in uses the Management Key (`V2RAYN_WEB_API_KEY` in environment-based deployments). The key is sent only in the login/setup JSON body, is never stored in browser storage, URLs, logs, or EventSource data, and a locally created key is stored only as a PBKDF2 verifier in `guiConfigs/web-auth.json`. Login exchanges it for an in-memory Session Token; REST and SSE use only that token. Sessions slide after activity with a 7-day idle expiration and a 30-day absolute expiration. Sessions are not persisted and become invalid after a Backend restart. Login attempts are rate-limited per remote IP. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the Web runtime owns scheduling and performs ordered Core/profile/statistics/config/database cleanup under a 20-second overall shutdown budget. If operation drain or a cleanup step times out or fails, later cleanup is skipped to avoid racing active work or closing SQLite while it may still be in use. The example systemd unit allows 45 seconds as the final process-shutdown fallback.
+Open `http://127.0.0.1:5080`. First Run setup or sign-in uses the Management Key (`V2RAYN_WEB_API_KEY` in environment-based deployments). The key is sent only in the login/setup JSON body, is never stored in browser storage, URLs, logs, or EventSource data, and a locally created key is stored only as a PBKDF2 verifier in `guiConfigs/web-auth.json`. PBKDF2 is used only for setup and Management Key login; authenticated REST and SSE requests use the Session Token. Login exchanges the Management Key for a random 256-bit Session Token; only its SHA-256 digest is stored in memory by the Backend. Sessions slide after authenticated client-request activity with a 7-day idle expiration and a 30-day absolute expiration. “Idle” means no authenticated REST request or SSE handshake, not lack of human mouse/keyboard input; WebUI status/profile polling counts as activity. Server-generated SSE heartbeats do not renew the session. Sessions are not persisted and become invalid after a Backend restart. Login attempts are rate-limited per remote IP. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the Web runtime owns scheduling and performs ordered Core/profile/statistics/config/database cleanup under a 20-second overall shutdown budget. If operation drain or a cleanup step times out or fails, later cleanup is skipped to avoid racing active work or closing SQLite while it may still be in use. The example systemd unit allows 45 seconds as the final process-shutdown fallback.
 
 Subscription interval scheduling is implemented in `Services/V2rayRuntime.Scheduling.cs`; the Web host does not register ServiceLib's desktop `TaskManager`. The Web runtime's `RuntimeMutationGate` serializes its shared configuration and SQLite mutations.
 
@@ -85,22 +85,11 @@ Check service logs with:
 journalctl -u v2rayn-web.service -f
 ```
 
-TUN runs Core directly as the service user; the Web host does not invoke `sudo` or request a password. To grant the systemd service TUN access, install the optional drop-in:
-
-```bash
-sudo install -D -m 644 deploy/systemd/v2rayn-web-tun.conf \
-  /etc/systemd/system/v2rayn-web.service.d/10-tun.conf
-sudo systemctl daemon-reload
-sudo systemctl restart v2rayn-web.service
-```
-
-The backend checks `/dev/net/tun` access and the capability matching the service UID: root is checked through `CapEff`, non-root through `CapAmb`. `/api/status` reports whether the expected TUN interface was actually created. Run `bash scripts/smoke-test-tun.sh` after selecting a working profile; it temporarily disables the optional legacy-protection pre-Core to test the selected Core's TUN interface directly, then restores both TUN preferences and the Core running state.
-
 Application/Core messages go to stdout/stderr for journald and are also retained in the ServiceLib log path when file logging is enabled.
 
 ## Optional Docker / rootless Podman
 
-The container is a packaging option for the same self-contained publish output. Its entrypoint explicitly runs `v2rayN.Web --foreground`. The supplied rootless configuration does not grant TUN capabilities; deployments that need TUN must explicitly provide the device and required host capabilities. From the repository root:
+The container is a packaging option for the same self-contained publish output. Its entrypoint explicitly runs `v2rayN.Web --foreground`. It does not require additional network-device access or Linux capabilities. From the repository root:
 
 ```bash
 export V2RAYN_WEB_API_KEY='<strong-secret>'
@@ -118,14 +107,6 @@ bash scripts/bootstrap-xray.sh /path/to/Xray-linux-64.zip
 docker compose -f compose.yaml up -d --build
 ```
 
-The bootstrap helper extracts and runs `xray -version` before placing it at `core-bin/xray/xray`. For a rootful Docker deployment that needs TUN, merge the capability/device overlay:
-
-```bash
-docker compose -f compose.yaml -f compose.tun.yaml up -d --build
-```
-
-That overlay runs the service with only `NET_ADMIN` in its capability set and maps `/dev/net/tun`. Rootless Podman typically cannot provide the host TUN capability; run `bash scripts/smoke-test-tun.sh` against the deployed instance and confirm it reports a created interface before relying on it. The script requires `curl` and `jq` on the machine where it runs.
-
 ## API and feature map
 
-See [`FEATURE-MAP.md`](FEATURE-MAP.md) for the original WPF/Avalonia feature → ServiceLib → Backend API → Web page mapping, including TUN capability behavior and the desktop-only system-proxy exclusion.
+See [`FEATURE-MAP.md`](FEATURE-MAP.md) for the original WPF/Avalonia feature → ServiceLib → Backend API → Web page mapping, including the intentionally deferred TUN scope and the desktop-only system-proxy exclusion.

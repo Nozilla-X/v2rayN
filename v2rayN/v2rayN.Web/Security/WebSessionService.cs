@@ -54,7 +54,13 @@ public sealed class WebSessionService : IDisposable
         }
     }
 
-    public bool TryValidate(string? token, out WebSessionSnapshot? session)
+    public bool TryValidateAndRenew(string? token, out WebSessionSnapshot? session) =>
+        TryValidateSessionCore(token, renew: true, out session);
+
+    public bool TryValidateWithoutRenewal(string? token, out WebSessionSnapshot? session) =>
+        TryValidateSessionCore(token, renew: false, out session);
+
+    private bool TryValidateSessionCore(string? token, bool renew, out WebSessionSnapshot? session)
     {
         session = null;
         if (_disposed || !TryGetDigest(token, out var digest))
@@ -67,8 +73,22 @@ public sealed class WebSessionService : IDisposable
             var now = _timeProvider.GetUtcNow();
             if (now >= current.ExpiresAt || now >= current.AbsoluteExpiresAt)
             {
-                TryRemove(digest, current);
-                return false;
+                if (TryRemove(digest, current))
+                {
+                    return false;
+                }
+                continue;
+            }
+
+            if (!renew)
+            {
+                session = new WebSessionSnapshot(
+                    current.CreatedAt,
+                    current.LastSeenAt,
+                    current.ExpiresAt,
+                    current.AbsoluteExpiresAt,
+                    current.Revoked.Token);
+                return true;
             }
 
             var renewed = current with

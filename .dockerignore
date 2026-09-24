@@ -2,6 +2,7 @@
 .packages
 **/bin
 **/obj
+**/.NET
 **/node_modules
 **/dist
 **/publish

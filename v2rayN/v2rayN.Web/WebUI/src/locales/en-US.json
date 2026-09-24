@@ -1,7 +1,6 @@
 {
   "brand": "v2rayN Web",
   "brandState": {
-    "tun": "TUN is running",
     "proxy": "Proxy is running",
     "off": "Stopped"
   },
@@ -301,7 +300,6 @@
     "title": "DNS",
     "simple": "Simple DNS",
     "profiles": "Core DNS profiles",
-    "tunDns": "TUN DNS",
     "useSystemHosts": "Use system Hosts",
     "addCommonHosts": "Add common Hosts",
     "fakeIp": "FakeIP",
@@ -336,7 +334,6 @@
   "settings": {
     "title": "Settings",
     "inbound": "Inbound and listeners",
-    "tun": "TUN",
     "core": "Core options",
     "application": "General",
     "speedtest": "Speed tests",
@@ -352,19 +349,6 @@
     "newLanPort": "Use separate LAN port",
     "user": "Username",
     "pass": "Password",
-    "tunCapability": "TUN capability",
-    "tunEnabled": "Enable TUN",
-    "tunUnavailable": "TUN requirements are unavailable in this runtime",
-    "autoRoute": "Auto route",
-    "strictRoute": "Strict route",
-    "stack": "Stack",
-    "mtu": "MTU",
-    "enableIPv6": "Enable IPv6 address",
-    "icmpRouting": "ICMP routing",
-    "legacyProtect": "Legacy protection",
-    "routeExcludeAddress": "Excluded routes (one per line)",
-    "ipv4Address": "IPv4 address",
-    "ipv6Address": "IPv6 address",
     "logEnabled": "Core logging",
     "loglevel": "Log level",
     "fingerprint": "Default TLS fingerprint",
@@ -406,7 +390,6 @@
     "mappingConfigType": "Config type",
     "mappingCoreType": "Core type",
     "saveInbound": "Save inbound settings",
-    "saveTun": "Save TUN settings",
     "saveCore": "Save Core settings",
     "saveApplication": "Save general settings",
     "saveSpeedtest": "Save speed settings",
@@ -422,8 +405,7 @@
     "invalidRoutingStrategy": "Invalid routing strategy",
     "invalidRegionalPreset": "Invalid regional preset",
     "regionalPresetFailed": "Failed to apply regional preset",
-    "loaded": "Settings loaded",
-    "tunLoaded": "TUN settings loaded"
+    "loaded": "Settings loaded"
   },
   "templates": {
     "title": "Core / Full Config templates",
@@ -431,7 +413,6 @@
     "remarks": "Template name",
     "enabled": "Enable template",
     "config": "General config template",
-    "tunConfig": "TUN config template",
     "addProxyOnly": "Add proxy outbound only",
     "proxyDetour": "Proxy detour",
     "save": "Save template"
@@ -501,11 +482,7 @@
     "offline": "Backend offline",
     "coreRunning": "Core running",
     "coreStopped": "Core stopped",
-    "statisticsOff": "Statistics disabled",
-    "tunOn": "TUN enabled",
-    "tunConfigured": "TUN configured; interface is not running",
-    "tunOff": "TUN disabled",
-    "tunUnavailable": "TUN capability unavailable"
+    "statisticsOff": "Statistics disabled"
   },
   "errors": {
     "notFound": "Resource not found",
@@ -519,6 +496,7 @@
     "stopped": "Core stopped",
     "restarted": "Core restarted",
     "startFailed": "Failed to start Core",
+    "tunNotSupported": "TUN is enabled in the current configuration, but v2rayN Web does not support it yet. Disable TUN in the desktop app before starting the Core.",
     "binaryMissing": "Xray executable not found",
     "portInUse": "Proxy listener port is already in use",
     "unsupported": "This configuration requires an unsupported Core",
@@ -565,13 +543,6 @@
     "geoStarted": "Geo update started",
     "geoBusy": "Geo update already running",
     "geoProgress": "Updating Geo data"
-  },
-  "tun": {
-    "capabilityUnavailable": "Host does not have TUN capability",
-    "unsupportedPlatform": "Web TUN capability check is unavailable on this platform",
-    "deviceUnavailable": "Usable /dev/net/tun device not found",
-    "devicePermissionDenied": "Process cannot access /dev/net/tun",
-    "netAdminRequired": "CAP_NET_ADMIN is required; rootless containers usually do not have it"
   },
   "coreTemplates": {
     "loaded": "Core templates loaded"

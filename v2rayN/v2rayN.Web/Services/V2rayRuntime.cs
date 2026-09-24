@@ -81,11 +81,6 @@ public sealed partial class V2rayRuntime(
             }
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
-        if (Config.TunModeItem.EnableTun && !GetTunSettings().CapabilityAvailable)
-        {
-            AddLog("tun", "tun.capabilityUnavailable");
-        }
-
         await ConfigHandler.InitBuiltinDNS(Config);
         await ConfigHandler.InitBuiltinFullConfigTemplate(Config);
         if ((await AppManager.Instance.RoutingItems() ?? []).Count == 0)
@@ -94,8 +89,7 @@ public sealed partial class V2rayRuntime(
         }
         await ProfileExManager.Instance.Init();
         await CertPemManager.Instance.Init(Config);
-        // CoreManager keeps the platform's normal sudo fallback, but starts TUN directly
-        // when this process already has the required Linux privilege.
+        // ServiceLib remains unchanged; this frontend rejects generated launch contexts that enable TUN.
         await CoreManager.Instance.Init(Config, OnCoreMessageAsync);
         if (Config.GuiItem.EnableStatistics || Config.GuiItem.DisplayRealTimeSpeed)
         {
@@ -302,33 +296,27 @@ public sealed partial class V2rayRuntime(
                 try
                 {
                     await using var operation = await _operations.EnterOperationAsync(operationToken);
-                    await SubscriptionHandler.UpdateProcess(Config, id, useProxy, (success, message) =>
+                    await _mutations.RunAsync(async () =>
                     {
-                        var payload = new
+                        await SubscriptionHandler.UpdateProcess(Config, id, useProxy, (success, message) =>
                         {
-                            subscriptionId = id,
-                            success,
-                            code = success ? "ok" : "subscription_update_progress",
-                            messageKey = success ? ApiMessageKeys.SubscriptionSaved : ApiMessageKeys.SubscriptionUpdateProgress,
-                            rawLog = message,
-                        };
-                        _events.Publish("subscription-progress", payload);
-                        AddLog("subscription", message);
-                        return Task.CompletedTask;
-                    }, async processMutation => await _mutations.RunAsync(async () =>
-                    {
-                        var imported = await processMutation();
-                        if (imported)
-                        {
-                            // AddBatchServers currently persists through ServiceLib internally;
-                            // verify that final persistence result before reporting success.
-                            await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
-                        }
-                        return imported;
-                    }, operation.Token));
+                            var payload = new
+                            {
+                                subscriptionId = id,
+                                success,
+                                code = success ? "ok" : "subscription_update_progress",
+                                messageKey = success ? ApiMessageKeys.SubscriptionSaved : ApiMessageKeys.SubscriptionUpdateProgress,
+                                rawLog = message,
+                            };
+                            _events.Publish("subscription-progress", payload);
+                            AddLog("subscription", message);
+                            return Task.CompletedTask;
+                        });
 
-                    operation.Token.ThrowIfCancellationRequested();
-                    await UpdateSubscriptionTimestampAsync(id);
+                        operation.Token.ThrowIfCancellationRequested();
+                        await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+                        await UpdateSubscriptionTimestampLockedAsync(id);
+                    }, operation.Token);
                     _events.Publish("profiles-changed", new { subscriptionId = id });
                 }
                 catch (OperationCanceledException) when (_operations.IsStopping || operationToken.IsCancellationRequested)
@@ -434,23 +422,6 @@ public sealed partial class V2rayRuntime(
             }
         }
         var listening = listeners.FirstOrDefault()?.Listening ?? false;
-        var tunLaunchActive = Config.TunModeItem.EnableTun && _coreStartedAt is not null && listening;
-        var expectedTunInterfaceName = tunLaunchActive
-            ? AppManager.Instance.RunningCoreType switch
-            {
-                ECoreType.Xray => "xray_tun",
-                ECoreType.sing_box => "singbox_tun",
-                ECoreType.mihomo => "tun0",
-                _ => null,
-            }
-            : null;
-        var activeTunInterfaceName = !tunLaunchActive
-            ? null
-            : new[] { expectedTunInterfaceName, "xray_tun", "singbox_tun", "tun0" }
-                .Distinct(StringComparer.Ordinal)
-                .Where(name => name is not null)
-                .FirstOrDefault(name => IsNetworkInterfacePresent(name!));
-        var tunInterfaceName = activeTunInterfaceName ?? expectedTunInterfaceName;
         return new StatusView(
             _coreStartedAt is not null && listening,
             _coreStartedAt is not null && listening
@@ -470,10 +441,7 @@ public sealed partial class V2rayRuntime(
                 _latestTraffic.ProxyUp,
                 _latestTraffic.ProxyDown,
                 _latestTraffic.DirectUp,
-                _latestTraffic.DirectDown),
-            Config.TunModeItem.EnableTun,
-            tunInterfaceName,
-            activeTunInterfaceName is not null);
+                _latestTraffic.DirectDown));
     }
 
     public async Task<OperationView> SelectProfileAsync(string profileId, CancellationToken cancellationToken)
@@ -532,6 +500,11 @@ public sealed partial class V2rayRuntime(
         }
 
         var built = await CoreConfigContextBuilder.BuildAll(Config, profile);
+        var tunRejection = GetTunLaunchRejection(built);
+        if (tunRejection is not null)
+        {
+            return tunRejection;
+        }
         if (!built.Success)
         {
             foreach (var message in built.CombinedValidatorResult.Errors.Concat(built.CombinedValidatorResult.Warnings))
@@ -539,12 +512,6 @@ public sealed partial class V2rayRuntime(
                 AddLog("core-validation", message);
             }
             return OperationView.Fail("profile_validation_failed", ApiMessageKeys.ProfileInvalid);
-        }
-        if (Config.TunModeItem.EnableTun && !GetTunSettings().CapabilityAvailable)
-        {
-            var capability = GetTunSettings();
-            return OperationView.Fail("tun_capability_unavailable",
-                capability.CapabilityMessageKey ?? "tun.capabilityUnavailable");
         }
 
         var requiredCoreTypes = new[]
@@ -593,6 +560,11 @@ public sealed partial class V2rayRuntime(
         _events.Publish("status", await GetStatusAsync());
         return operation;
     }
+
+    internal static OperationView? GetTunLaunchRejection(CoreConfigContextBuilderAllResult built) =>
+        built.MainResult.Context.IsTunEnabled || built.PreSocksResult?.Context.IsTunEnabled == true
+            ? OperationView.Fail("tun_not_supported", ApiMessageKeys.CoreTunNotSupported)
+            : null;
 
     public async Task<OperationView> StopCoreAsync(CancellationToken cancellationToken)
     {
@@ -701,7 +673,8 @@ public sealed partial class V2rayRuntime(
         return Task.CompletedTask;
     }
 
-    private async Task UpdateSubscriptionTimestampAsync(string subscriptionId)
+    // The subscription update owns the mutation gate while calling this helper.
+    private async Task UpdateSubscriptionTimestampLockedAsync(string subscriptionId)
     {
         var updateTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         if (subscriptionId.Length > 0)
@@ -710,13 +683,10 @@ public sealed partial class V2rayRuntime(
             if (item is not null)
             {
                 item.UpdateTime = updateTime;
-            await _mutations.RunAsync(async () =>
-            {
                 if (await ConfigHandler.AddSubItem(Config, item) != 0)
                 {
                     throw new IOException("ServiceLib could not save the subscription timestamp.");
                 }
-            });
             }
             return;
         }
@@ -726,13 +696,10 @@ public sealed partial class V2rayRuntime(
             if (item.Enabled)
             {
                 item.UpdateTime = updateTime;
-                await _mutations.RunAsync(async () =>
+                if (await ConfigHandler.AddSubItem(Config, item) != 0)
                 {
-                    if (await ConfigHandler.AddSubItem(Config, item) != 0)
-                    {
-                        throw new IOException("ServiceLib could not save the subscription timestamp.");
-                    }
-                });
+                    throw new IOException("ServiceLib could not save the subscription timestamp.");
+                }
             }
         }
     }
@@ -874,16 +841,4 @@ public sealed partial class V2rayRuntime(
         }
     }
 
-    private static bool IsNetworkInterfacePresent(string name)
-    {
-        try
-        {
-            return System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
-                .Any(networkInterface => string.Equals(networkInterface.Name, name, StringComparison.Ordinal));
-        }
-        catch (System.Net.NetworkInformation.NetworkInformationException)
-        {
-            return false;
-        }
-    }
 }

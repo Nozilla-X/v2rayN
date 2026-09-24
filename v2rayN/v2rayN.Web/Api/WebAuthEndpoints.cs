@@ -9,7 +9,9 @@ public static class WebAuthEndpoints
     {
         app.MapPost("/api/auth/login", (WebLoginRequest request, WebAuthService auth, WebSessionService sessions) =>
         {
-            if (!auth.ValidateManagementKey(request.Key))
+            if (string.IsNullOrEmpty(request.Key)
+                || request.Key.Length > WebAuthService.MaximumKeyLength
+                || !auth.ValidateManagementKey(request.Key))
             {
                 return Results.Json(
                     ApiEnvelope<object>.Fail("unauthorized", ApiMessageKeys.CommonUnauthorized),
