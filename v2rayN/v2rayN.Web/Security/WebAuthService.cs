@@ -1,4 +1,3 @@
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -12,8 +11,10 @@ public sealed class WebAuthService
     private const int SaltLength = 16;
     private const int VerifierLength = 32;
     public const int MinimumKeyLength = 12;
+    public const int MaximumKeyLength = 4096;
 
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly byte[] DummySalt = RandomNumberGenerator.GetBytes(SaltLength);
 
     private readonly string _configPath;
     private readonly string? _environmentKey;
@@ -34,38 +35,40 @@ public sealed class WebAuthService
 
     public bool SetupRequired => _environmentKey is null && _storedAuth is null;
 
-    public bool ValidateKey(string? suppliedKey)
+    public bool ValidateManagementKey(string? suppliedKey)
     {
-        if (string.IsNullOrEmpty(suppliedKey))
-        {
-            return false;
-        }
+        var key = suppliedKey ?? string.Empty;
 
         if (_environmentKey is not null)
         {
+            DeriveAndDiscard(key, DummySalt, Pbkdf2Iterations);
+            if (string.IsNullOrEmpty(suppliedKey))
+            {
+                return false;
+            }
             return FixedTimeEquals(_environmentKey, suppliedKey);
         }
 
         var stored = _storedAuth;
         if (stored is null)
         {
+            DeriveAndDiscard(key, DummySalt, Pbkdf2Iterations);
             return false;
         }
 
         var salt = Convert.FromBase64String(stored.Salt);
         var expected = Convert.FromBase64String(stored.KeyVerifier);
-        var supplied = DeriveVerifier(suppliedKey, salt, stored.Iterations);
+        var supplied = DeriveVerifier(key, salt, stored.Iterations);
         return CryptographicOperations.FixedTimeEquals(expected, supplied);
     }
 
     public async Task<WebSetupResult> SetupAsync(
         string? key,
         string? confirmKey,
-        IPAddress? remoteAddress,
-        bool forwardedAddressHeaderPresent = false,
+        bool setupAccessAllowed,
         CancellationToken cancellationToken = default)
     {
-        if (!IsLoopbackAddress(remoteAddress) || forwardedAddressHeaderPresent)
+        if (!setupAccessAllowed)
         {
             return WebSetupResult.Forbidden;
         }
@@ -73,6 +76,10 @@ public sealed class WebAuthService
         if (key is null || key.Length < MinimumKeyLength)
         {
             return WebSetupResult.KeyTooShort;
+        }
+        if (key.Length > MaximumKeyLength)
+        {
+            return WebSetupResult.KeyTooLong;
         }
 
         if (!string.Equals(key, confirmKey, StringComparison.Ordinal))
@@ -118,9 +125,6 @@ public sealed class WebAuthService
         }
     }
 
-    public static bool IsLoopbackAddress(IPAddress? remoteAddress) =>
-        remoteAddress is not null && IPAddress.IsLoopback(remoteAddress);
-
     private static bool FixedTimeEquals(string expected, string actual)
     {
         var expectedBytes = Encoding.UTF8.GetBytes(expected);
@@ -129,13 +133,29 @@ public sealed class WebAuthService
             && CryptographicOperations.FixedTimeEquals(expectedBytes, actualBytes);
     }
 
-    private static byte[] DeriveVerifier(string key, byte[] salt, int iterations) =>
-        Rfc2898DeriveBytes.Pbkdf2(
-            Encoding.UTF8.GetBytes(key),
-            salt,
-            iterations,
-            HashAlgorithmName.SHA256,
-            VerifierLength);
+    private static byte[] DeriveVerifier(string key, byte[] salt, int iterations)
+    {
+        var password = Encoding.UTF8.GetBytes(key);
+        try
+        {
+            return Rfc2898DeriveBytes.Pbkdf2(
+                password,
+                salt,
+                iterations,
+                HashAlgorithmName.SHA256,
+                VerifierLength);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(password);
+        }
+    }
+
+    private static void DeriveAndDiscard(string key, byte[] salt, int iterations)
+    {
+        var derived = DeriveVerifier(key, salt, iterations);
+        CryptographicOperations.ZeroMemory(derived);
+    }
 
     private static StoredWebAuth LoadStoredAuth(string path)
     {
@@ -215,6 +235,7 @@ public enum WebSetupResult
     Created,
     Forbidden,
     KeyTooShort,
+    KeyTooLong,
     KeysDoNotMatch,
     AlreadyConfigured,
 }

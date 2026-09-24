@@ -11,7 +11,9 @@
     "managementKey": "管理密钥",
     "confirmKey": "确认密钥",
     "submit": "设置并进入",
+    "localOnly": "首次初始化只能在运行 v2rayN Web 的本机完成。请在服务器上打开 http://127.0.0.1:5080。",
     "keyTooShort": "管理密钥至少需要 12 个字符。",
+    "keyTooLong": "管理密钥不能超过 4096 个字符。",
     "keysDoNotMatch": "两次输入的密钥不一致。",
     "alreadyConfigured": "管理密钥已初始化，请刷新页面后使用现有密钥连接。",
     "setupFailed": "设置管理密钥失败，请重试。"
@@ -30,16 +32,18 @@
     "enUS": "English"
   },
   "auth": {
-    "title": "连接 Web Backend",
-    "hint": "输入部署时设置的 API 访问令牌。令牌只保存在当前浏览器。",
-    "token": "API 访问令牌",
-    "placeholder": "输入访问令牌",
-    "connect": "连接",
-    "disconnect": "断开",
-    "connected": "Backend 已连接",
-    "waiting": "等待连接",
-    "connectFailed": "连接失败，请检查 API 访问令牌和 Backend 地址",
-    "tokenRequired": "请输入 Web API 访问令牌"
+    "title": "登录 v2rayN Web",
+    "hint": "输入管理密钥登录。密钥仅用于登录，不会保存在浏览器中。",
+    "token": "管理密钥",
+    "placeholder": "输入管理密钥",
+    "connect": "登录",
+    "disconnect": "退出登录",
+    "connected": "已登录",
+    "waiting": "未登录",
+    "connectFailed": "连接失败，请检查 Web Backend 地址",
+    "tokenRequired": "请输入管理密钥",
+    "loginFailed": "管理密钥无效。",
+    "rateLimited": "登录尝试过多，请稍后重试。"
   },
   "nav": {
     "nodes": "节点",
@@ -519,7 +523,7 @@
   "errors": {
     "notFound": "未找到请求的资源",
     "invalidInput": "输入内容无效",
-    "unauthorized": "访问令牌无效或已过期",
+    "unauthorized": "会话已失效，请重新登录。",
     "routeNotFound": "API 路径不存在",
     "internal": "Backend 内部错误"
   },

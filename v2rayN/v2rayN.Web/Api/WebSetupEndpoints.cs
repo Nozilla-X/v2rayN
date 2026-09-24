@@ -6,33 +6,45 @@ public static class WebSetupEndpoints
 {
     public static void MapWebSetupEndpoints(this WebApplication app)
     {
-        app.MapGet("/api/setup/status", (WebAuthService auth) => Results.Ok(new
+        app.MapGet("/api/setup/status", (HttpContext context, WebAuthService auth) => Results.Ok(new
         {
             setupRequired = auth.SetupRequired,
             environmentKeyConfigured = auth.EnvironmentKeyConfigured,
+            setupAllowedFromThisRequest = WebSetupAccessPolicy.IsAllowed(
+                context.Connection.RemoteIpAddress,
+                context.Request.Host.Host,
+                WebSetupAccessPolicy.HasForwardedHeaders(context.Request.Headers)),
         }));
 
-        app.MapPost("/api/setup", async (WebSetupRequest request, HttpContext context, WebAuthService auth) =>
+        app.MapPost("/api/setup", async (WebSetupRequest request, HttpContext context, WebAuthService auth, WebSessionService sessions) =>
         {
+            var setupAccessAllowed = WebSetupAccessPolicy.IsAllowed(
+                context.Connection.RemoteIpAddress,
+                context.Request.Host.Host,
+                WebSetupAccessPolicy.HasForwardedHeaders(context.Request.Headers));
             var result = await auth.SetupAsync(
                 request.Key,
                 request.ConfirmKey,
-                context.Connection.RemoteIpAddress,
-                context.Request.Headers.ContainsKey("Forwarded")
-                    || context.Request.Headers.ContainsKey("X-Forwarded-For")
-                    || context.Request.Headers.ContainsKey("X-Real-IP"),
+                setupAccessAllowed,
                 context.RequestAborted);
 
             return result switch
             {
-                WebSetupResult.Created => Results.Ok(new { setupRequired = false }),
+                WebSetupResult.Created => CreateSetupResponse(sessions),
                 WebSetupResult.Forbidden => Results.Json(new { error = "loopback_required" }, statusCode: StatusCodes.Status403Forbidden),
                 WebSetupResult.KeyTooShort => Results.BadRequest(new { error = "key_too_short", minimumLength = WebAuthService.MinimumKeyLength }),
+                WebSetupResult.KeyTooLong => Results.BadRequest(new { error = "key_too_long", maximumLength = WebAuthService.MaximumKeyLength }),
                 WebSetupResult.KeysDoNotMatch => Results.BadRequest(new { error = "keys_do_not_match" }),
                 WebSetupResult.AlreadyConfigured => Results.Conflict(new { error = "already_configured" }),
                 _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
             };
-        });
+        }).RequireRateLimiting(WebAuthRateLimiting.SetupPolicy);
+    }
+
+    private static IResult CreateSetupResponse(WebSessionService sessions)
+    {
+        var session = sessions.CreateSession();
+        return Results.Ok(new { setupRequired = false, token = session.Token, expiresAt = session.ExpiresAt });
     }
 
     public sealed record WebSetupRequest(string? Key, string? ConfirmKey);

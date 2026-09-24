@@ -1,7 +1,5 @@
 using System.Collections;
 using System.Globalization;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using ServiceLib;
@@ -14,7 +12,7 @@ using v2rayN.Web.Services;
 
 internal static class Program
 {
-    private const string ApiKeyEnvironmentVariable = "V2RAYN_WEB_API_KEY";
+    private const string ManagementKeyEnvironmentVariable = "V2RAYN_WEB_API_KEY";
 
     public static async Task<int> Main(string[] args)
     {
@@ -79,7 +77,7 @@ internal static class Program
     private static async Task<int> RunWebHostAsync(string[] args)
     {
         var configPath = Utils.GetConfigPath("web-auth.json");
-        var webAuth = new WebAuthService(configPath, Environment.GetEnvironmentVariable(ApiKeyEnvironmentVariable));
+        var webAuth = new WebAuthService(configPath, Environment.GetEnvironmentVariable(ManagementKeyEnvironmentVariable));
         var applicationBase = AppContext.BaseDirectory;
         var webRoot = Path.Combine(applicationBase, "wwwroot");
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions
@@ -88,6 +86,9 @@ internal static class Program
             ContentRootPath = applicationBase,
             WebRootPath = Directory.Exists(webRoot) ? webRoot : null,
         });
+        // The framework request-start log includes the query string. EventSource uses
+        // access_token, so suppress those request lifecycle logs to avoid logging sessions.
+        builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
         if (string.IsNullOrWhiteSpace(builder.Configuration[Microsoft.AspNetCore.Hosting.WebHostDefaults.ServerUrlsKey])
             && string.IsNullOrWhiteSpace(builder.Configuration["http_ports"]))
         {
@@ -101,43 +102,16 @@ internal static class Program
         builder.Services.AddHostedService<V2rayHostedService>(services =>
             new V2rayHostedService(services.GetRequiredService<V2rayRuntime>()));
         builder.Services.AddSingleton(webAuth);
+        builder.Services.AddSingleton<WebSessionService>();
+        builder.Services.AddRateLimiter(WebAuthRateLimiting.Configure);
         builder.Services.ConfigureHttpJsonOptions(options =>
             options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
 
         var app = builder.Build();
+        app.UseRouting();
+        app.UseRateLimiter();
 
-        app.Use(async (context, next) =>
-        {
-            var path = context.Request.Path;
-            var isApi = path.StartsWithSegments("/api");
-            var isPublicApi = path == "/api/health"
-                || path == "/api/setup/status"
-                || path == "/api/setup";
-            if (!isApi || isPublicApi)
-            {
-                await next();
-                return;
-            }
-
-            var suppliedKey = context.Request.Headers.Authorization.ToString();
-            if (suppliedKey.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            {
-                suppliedKey = suppliedKey[7..].Trim();
-            }
-            else if (path == "/api/events")
-            {
-                suppliedKey = context.Request.Query["access_token"].ToString();
-            }
-
-            if (webAuth.SetupRequired || !webAuth.ValidateKey(suppliedKey))
-            {
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail("unauthorized", ApiMessageKeys.CommonUnauthorized));
-                return;
-            }
-
-            await next();
-        });
+        app.UseMiddleware<WebSessionAuthenticationMiddleware>();
 
         app.Use(async (context, next) =>
         {
@@ -174,7 +148,8 @@ internal static class Program
             if (!context.Request.Path.StartsWithSegments("/api")
                 || context.Request.Path == "/api/health"
                 || context.Request.Path == "/api/events"
-                || context.Request.Path.StartsWithSegments("/api/setup"))
+                || context.Request.Path.StartsWithSegments("/api/setup")
+                || context.Request.Path.StartsWithSegments("/api/auth"))
             {
                 await next();
                 return;
@@ -200,6 +175,7 @@ internal static class Program
         });
 
         app.MapWebApi();
+        app.MapWebAuthEndpoints();
         app.MapWebSetupEndpoints();
         app.MapFallback("/api/{**path}", () =>
             Results.NotFound(ApiEnvelope<object>.Fail("route_not_found", ApiMessageKeys.CommonRouteNotFound)));

@@ -8,9 +8,10 @@ type ApiInit = Omit<RequestInit, 'body'> & { body?: unknown }
 
 const { t, locale } = useI18n()
 const token = ref(localStorage.getItem('v2rayn-web-token') || '')
-const tokenDraft = ref(token.value)
+const managementKeyDraft = ref('')
 const setupStatusReady = ref(false)
 const setupRequired = ref(false)
+const setupAllowedFromRequest = ref(false)
 const setupKey = ref('')
 const setupConfirmKey = ref('')
 const setupSubmitting = ref(false)
@@ -75,6 +76,7 @@ const logPanel = ref<HTMLElement | null>(null)
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
 let eventSource: EventSource | undefined
+let sessionValidationInFlight = false
 
 const navItems = [
   { id: 'nodes', key: 'nav.nodes', icon: '▦' },
@@ -154,10 +156,7 @@ async function request(path: string, init: ApiInit = {}): Promise<Dict> {
   }
   const response = await fetch(path, { ...init, headers, body })
   if (response.status === 401) {
-    authenticated.value = false
-    closeEvents()
-    token.value = ''
-    localStorage.removeItem('v2rayn-web-token')
+    clearSession()
   }
   const payload = response.status === 204 ? null : await response.json().catch(() => null)
   if (!response.ok || payload?.success === false) {
@@ -233,26 +232,49 @@ async function refreshBase() {
   }
 }
 
-async function connect(candidateOverride?: string) {
-  const candidate = candidateOverride ?? tokenDraft.value.trim()
-  if (!candidate) {
+async function login() {
+  const managementKey = managementKeyDraft.value
+  if (!managementKey) {
     showNotice(t('auth.tokenRequired'), 'error')
     return
   }
-  token.value = candidate
+
+  try {
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: managementKey }),
+    })
+    const payload = await response.json().catch(() => ({}))
+    if (response.status === 429) {
+      showNotice(t('auth.rateLimited'), 'error')
+      return
+    }
+    if (!response.ok || payload?.success !== true || !payload?.data?.token) {
+      showNotice(t('auth.loginFailed'), 'error')
+      return
+    }
+
+    managementKeyDraft.value = ''
+    await connectWithSession(payload.data.token)
+  } catch {
+    showNotice(t('auth.connectFailed'), 'error')
+  }
+}
+
+async function connectWithSession(sessionToken: string) {
+  token.value = sessionToken
   try {
     await refreshBase()
     if (authenticated.value) {
-      localStorage.setItem('v2rayn-web-token', candidate)
+      localStorage.setItem('v2rayn-web-token', sessionToken)
       openEvents()
       await Promise.all([loadSettings(), loadRouting(), loadPageData()])
       await loadLogs()
       showNotice(t('auth.connected'))
     }
   } catch (error) {
-    authenticated.value = false
-    token.value = ''
-    localStorage.removeItem('v2rayn-web-token')
+    clearSession()
     showError(error)
     if (!notice.value) showNotice(t('auth.connectFailed'), 'error')
   }
@@ -262,6 +284,10 @@ async function configureManagementKey() {
   setupError.value = ''
   if (setupKey.value.length < 12) {
     setupError.value = t('setup.keyTooShort')
+    return
+  }
+  if (setupKey.value.length > 4096) {
+    setupError.value = t('setup.keyTooLong')
     return
   }
   if (setupKey.value !== setupConfirmKey.value) {
@@ -280,6 +306,8 @@ async function configureManagementKey() {
     if (!response.ok) {
       setupError.value = payload.error === 'key_too_short'
         ? t('setup.keyTooShort')
+        : payload.error === 'key_too_long'
+          ? t('setup.keyTooLong')
         : payload.error === 'keys_do_not_match'
           ? t('setup.keysDoNotMatch')
           : payload.error === 'already_configured'
@@ -289,12 +317,14 @@ async function configureManagementKey() {
     }
 
     setupRequired.value = false
-    tokenDraft.value = setupKey.value
-    await connect(setupKey.value)
-    if (authenticated.value) {
-      setupKey.value = ''
-      setupConfirmKey.value = ''
+    const sessionToken = payload.token
+    setupKey.value = ''
+    setupConfirmKey.value = ''
+    if (!sessionToken) {
+      setupError.value = t('setup.setupFailed')
+      return
     }
+    await connectWithSession(sessionToken)
   } catch {
     setupError.value = t('setup.setupFailed')
   } finally {
@@ -302,16 +332,24 @@ async function configureManagementKey() {
   }
 }
 
-function disconnect() {
+function clearSession() {
   closeEvents()
   token.value = ''
-  tokenDraft.value = ''
   localStorage.removeItem('v2rayn-web-token')
   authenticated.value = false
   status.value = null
   profiles.value = []
   groups.value = []
   subscriptions.value = []
+}
+
+async function disconnect() {
+  try {
+    await request('/api/auth/logout', { method: 'POST' })
+  } catch {
+    // Clear the local session even when the backend is already unavailable.
+  }
+  clearSession()
 }
 
 function openEvents() {
@@ -339,7 +377,15 @@ function openEvents() {
     })
   }
   eventSource.onerror = () => {
-    if (eventSource?.readyState === EventSource.CLOSED) showNotice(t('common.unknownError'), 'error')
+    if (!token.value || sessionValidationInFlight) return
+    sessionValidationInFlight = true
+    void request('/api/status')
+      .catch(() => {
+        if (token.value && eventSource?.readyState === EventSource.CLOSED) {
+          showNotice(t('common.unknownError'), 'error')
+        }
+      })
+      .finally(() => { sessionValidationInFlight = false })
   }
 }
 
@@ -1161,7 +1207,10 @@ watch(activePage, async () => {
   }
 })
 
-watch(locale, (value) => localStorage.setItem('v2rayn-web-locale', value))
+watch(locale, (value) => {
+  localStorage.setItem('v2rayn-web-locale', value)
+  document.documentElement.lang = value
+}, { immediate: true })
 watch(authenticated, (connected) => {
   clearInterval(refreshTimer)
   if (connected) {
@@ -1180,13 +1229,13 @@ onMounted(async () => {
     const payload = await response.json()
     const setupStatus = payload?.data ?? payload
     setupRequired.value = Boolean(setupStatus?.setupRequired)
+    setupAllowedFromRequest.value = Boolean(setupStatus?.setupAllowedFromThisRequest)
   } catch (error) {
     showError(error)
   } finally {
     setupStatusReady.value = true
   }
   if (setupRequired.value || !token.value) return
-  tokenDraft.value = token.value
   try {
     await refreshBase()
     if (authenticated.value) {
@@ -1208,13 +1257,20 @@ onUnmounted(() => {
   <div class="app-shell" @click="contextMenu = null">
     <section v-if="!setupStatusReady" class="auth-wrap"><p class="muted">{{ t('common.loading') }}</p></section>
 
+    <section v-else-if="setupRequired && !setupAllowedFromRequest" class="auth-wrap">
+      <div class="auth-box setup-box">
+        <div class="auth-title"><img class="brand-glyph" src="/v2rayN.png" alt="" /><div><strong>{{ t('setup.title') }}</strong><small>{{ t('brand') }}</small></div></div>
+        <p>{{ t('setup.localOnly') }}</p>
+      </div>
+    </section>
+
     <section v-else-if="setupRequired" class="auth-wrap">
       <form class="auth-box setup-box" @submit.prevent="configureManagementKey">
         <div class="auth-title"><img class="brand-glyph" src="/v2rayN.png" alt="" /><div><strong>{{ t('setup.title') }}</strong><small>{{ t('brand') }}</small></div></div>
         <p>{{ t('setup.description') }}</p>
         <div class="form-grid">
-          <label>{{ t('setup.managementKey') }}<input v-model="setupKey" type="password" autocomplete="new-password" minlength="12" required /></label>
-          <label>{{ t('setup.confirmKey') }}<input v-model="setupConfirmKey" type="password" autocomplete="new-password" minlength="12" required /></label>
+          <label>{{ t('setup.managementKey') }}<input v-model="setupKey" type="password" autocomplete="new-password" minlength="12" maxlength="4096" required /></label>
+          <label>{{ t('setup.confirmKey') }}<input v-model="setupConfirmKey" type="password" autocomplete="new-password" minlength="12" maxlength="4096" required /></label>
         </div>
         <p v-if="setupError" class="setup-error" role="alert">{{ setupError }}</p>
         <button class="button primary" type="submit" :disabled="setupSubmitting">{{ setupSubmitting ? t('common.working') : t('setup.submit') }}</button>
@@ -1241,11 +1297,11 @@ onUnmounted(() => {
     </header>
 
     <section v-if="!authenticated" class="auth-wrap">
-      <form class="auth-box" @submit.prevent="connect()">
+      <form class="auth-box" @submit.prevent="login()">
         <div class="auth-title"><img class="brand-glyph" src="/v2rayN.png" alt="" /><div><strong>{{ t('auth.title') }}</strong><small>{{ t('brand') }}</small></div></div>
         <p>{{ t('auth.hint') }}</p>
-        <label class="field-label" for="api-key">{{ t('auth.token') }}</label>
-        <div class="inline-field"><input id="api-key" v-model="tokenDraft" type="password" autocomplete="current-password" :placeholder="t('auth.placeholder')" /><button class="button primary" type="submit">{{ t('auth.connect') }}</button></div>
+        <label class="field-label" for="management-key">{{ t('auth.token') }}</label>
+        <div class="inline-field"><input id="management-key" v-model="managementKeyDraft" type="password" autocomplete="current-password" :placeholder="t('auth.placeholder')" /><button class="button primary" type="submit">{{ t('auth.connect') }}</button></div>
       </form>
     </section>
 

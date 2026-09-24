@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${V2RAYN_WEB_API_KEY:?Set V2RAYN_WEB_API_KEY}"
+: "${V2RAYN_WEB_API_KEY:?Set V2RAYN_WEB_API_KEY management key}"
 base_url="${V2RAYN_WEB_URL:-http://127.0.0.1:5080}"
 base_url="${base_url%/}"
-api_key="$V2RAYN_WEB_API_KEY"
+login_response="$(jq -cn '{key: env.V2RAYN_WEB_API_KEY}' | curl --fail --silent --show-error \
+  -H 'Content-Type: application/json' \
+  --data-binary @- \
+  "$base_url/api/auth/login")"
+session_token="$(jq -er '.data.token' <<<"$login_response")"
+unset login_response
+unset V2RAYN_WEB_API_KEY
 temp_dir="$(mktemp -d)"
 settings_file="$temp_dir/tun.json"
 was_running=false
@@ -14,7 +20,7 @@ original_legacy_protect=""
 
 api() {
   curl --fail --silent --show-error \
-    -H "Authorization: Bearer $api_key" \
+    -H "Authorization: Bearer $session_token" \
     -H 'Content-Type: application/json' "$@"
 }
 

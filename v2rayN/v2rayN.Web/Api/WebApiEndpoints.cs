@@ -2,6 +2,7 @@ using ServiceLib.Enums;
 using ServiceLib.Models.Entities;
 using Microsoft.AspNetCore.Mvc;
 using v2rayN.Web.Contracts;
+using v2rayN.Web.Security;
 using v2rayN.Web.Services;
 
 namespace v2rayN.Web.Api;
@@ -243,18 +244,80 @@ public static class WebApiEndpoints
 
     private static void MapEvents(WebApplication app)
     {
-        app.MapGet("/api/events", async (HttpContext context, EventHub events) =>
+        app.MapGet("/api/events", async (HttpContext context, EventHub events, WebSessionService sessions) =>
         {
+            var sessionToken = WebSessionService.ExtractPresentedToken(context);
+            var revoked = context.Items.TryGetValue(WebSessionService.RevocationTokenContextKey, out var revocationToken)
+                && revocationToken is CancellationToken revocationCancellation
+                    ? revocationCancellation
+                    : CancellationToken.None;
+            using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                context.RequestAborted,
+                revoked);
+            var cancellationToken = linkedCancellation.Token;
+
             context.Response.ContentType = "text/event-stream";
             context.Response.Headers["Cache-Control"] = "no-cache";
             context.Response.Headers["X-Accel-Buffering"] = "no";
 
-            await foreach (var message in events.Subscribe(context.RequestAborted))
+            using var heartbeat = new PeriodicTimer(TimeSpan.FromMinutes(1));
+            await using var subscription = events.Subscribe(cancellationToken).GetAsyncEnumerator(cancellationToken);
+            var nextEvent = subscription.MoveNextAsync().AsTask();
+            var nextHeartbeat = heartbeat.WaitForNextTickAsync(cancellationToken).AsTask();
+            try
             {
-                var payload = SerializeEventData(message.Data);
-                await context.Response.WriteAsync($"event: {message.Type}\ndata: {payload}\n\n", context.RequestAborted);
-                await context.Response.Body.FlushAsync(context.RequestAborted);
+                while (!cancellationToken.IsCancellationRequested)
+                {
+                    var completed = await Task.WhenAny(nextEvent, nextHeartbeat);
+                    if (completed == nextHeartbeat)
+                    {
+                        if (!await nextHeartbeat)
+                        {
+                            break;
+                        }
+
+                        if (!sessions.TryValidate(sessionToken, out _))
+                        {
+                            await WriteUnauthorizedSseResponseAsync(context);
+                            break;
+                        }
+
+                        await context.Response.WriteAsync(": keep-alive\n\n", cancellationToken);
+                        await context.Response.Body.FlushAsync(cancellationToken);
+                        nextHeartbeat = heartbeat.WaitForNextTickAsync(cancellationToken).AsTask();
+                        continue;
+                    }
+
+                    if (!await nextEvent)
+                    {
+                        break;
+                    }
+
+                    var message = subscription.Current;
+                    var payload = SerializeEventData(message.Data);
+                    await context.Response.WriteAsync($"event: {message.Type}\ndata: {payload}\n\n", cancellationToken);
+                    await context.Response.Body.FlushAsync(cancellationToken);
+                    nextEvent = subscription.MoveNextAsync().AsTask();
+                }
+            }
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested || revoked.IsCancellationRequested)
+            {
+                await WriteUnauthorizedSseResponseAsync(context);
             }
         });
+    }
+
+    private static async Task WriteUnauthorizedSseResponseAsync(HttpContext context)
+    {
+        if (context.Response.HasStarted || context.RequestAborted.IsCancellationRequested)
+        {
+            return;
+        }
+
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(
+            ApiEnvelope<object>.Fail("unauthorized", ApiMessageKeys.CommonUnauthorized),
+            context.RequestAborted);
     }
 }

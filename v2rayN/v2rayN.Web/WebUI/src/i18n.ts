@@ -25,6 +25,8 @@ const initialLocale = availableLocales.includes(savedLocale as (typeof available
   ? savedLocale as (typeof availableLocales)[number]
   : detectBrowserLocale()
 
+if (typeof document !== 'undefined') document.documentElement.lang = initialLocale
+
 export default createI18n({
   legacy: false,
   locale: initialLocale,

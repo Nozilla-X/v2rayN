@@ -1,4 +1,3 @@
-using System.Net;
 using System.Text.Json;
 using v2rayN.Web.Security;
 
@@ -16,7 +15,7 @@ public class WebAuthServiceTests
 
         await auth.SetupRequired.Should().BeTrue();
         await auth.EnvironmentKeyConfigured.Should().BeFalse();
-        await auth.ValidateKey(ManagementKey).Should().BeFalse();
+        await auth.ValidateManagementKey(ManagementKey).Should().BeFalse();
     }
 
     [Test]
@@ -28,8 +27,8 @@ public class WebAuthServiceTests
 
         await auth.SetupRequired.Should().BeFalse();
         await auth.EnvironmentKeyConfigured.Should().BeTrue();
-        await auth.ValidateKey(ManagementKey).Should().BeTrue();
-        await auth.ValidateKey("a-different-management-key").Should().BeFalse();
+        await auth.ValidateManagementKey(ManagementKey).Should().BeTrue();
+        await auth.ValidateManagementKey("a-different-management-key").Should().BeFalse();
         await File.Exists(path).Should().BeFalse();
     }
 
@@ -40,12 +39,12 @@ public class WebAuthServiceTests
         var path = Path.Combine(directory.Path, "guiConfigs", "web-auth.json");
         var auth = new WebAuthService(path, null);
 
-        var result = await auth.SetupAsync(ManagementKey, ManagementKey, IPAddress.Loopback);
+        var result = await auth.SetupAsync(ManagementKey, ManagementKey, setupAccessAllowed: true);
 
         await (result == WebSetupResult.Created).Should().BeTrue();
         await auth.SetupRequired.Should().BeFalse();
-        await auth.ValidateKey(ManagementKey).Should().BeTrue();
-        await auth.ValidateKey("not-the-management-key").Should().BeFalse();
+        await auth.ValidateManagementKey(ManagementKey).Should().BeTrue();
+        await auth.ValidateManagementKey("not-the-management-key").Should().BeFalse();
 
         var persisted = await File.ReadAllTextAsync(path);
         await persisted.Contains(ManagementKey, StringComparison.Ordinal).Should().BeFalse();
@@ -65,8 +64,9 @@ public class WebAuthServiceTests
         using var directory = new TemporaryDirectory();
         var auth = new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), null);
 
-        await ((await auth.SetupAsync("short", "short", IPAddress.Loopback)) == WebSetupResult.KeyTooShort).Should().BeTrue();
-        await ((await auth.SetupAsync(ManagementKey, "a-different-key", IPAddress.Loopback)) == WebSetupResult.KeysDoNotMatch).Should().BeTrue();
+        await ((await auth.SetupAsync("short", "short", setupAccessAllowed: true)) == WebSetupResult.KeyTooShort).Should().BeTrue();
+        await ((await auth.SetupAsync(new string('x', WebAuthService.MaximumKeyLength + 1), new string('x', WebAuthService.MaximumKeyLength + 1), setupAccessAllowed: true)) == WebSetupResult.KeyTooLong).Should().BeTrue();
+        await ((await auth.SetupAsync(ManagementKey, "a-different-key", setupAccessAllowed: true)) == WebSetupResult.KeysDoNotMatch).Should().BeTrue();
         await auth.SetupRequired.Should().BeTrue();
     }
 
@@ -76,57 +76,19 @@ public class WebAuthServiceTests
         using var directory = new TemporaryDirectory();
         var auth = new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), null);
 
-        await ((await auth.SetupAsync(ManagementKey, ManagementKey, IPAddress.Loopback)) == WebSetupResult.Created).Should().BeTrue();
-        await ((await auth.SetupAsync("a-second-management-key", "a-second-management-key", IPAddress.Loopback)) == WebSetupResult.AlreadyConfigured).Should().BeTrue();
-        await auth.ValidateKey(ManagementKey).Should().BeTrue();
-        await auth.ValidateKey("a-second-management-key").Should().BeFalse();
+        await ((await auth.SetupAsync(ManagementKey, ManagementKey, setupAccessAllowed: true)) == WebSetupResult.Created).Should().BeTrue();
+        await ((await auth.SetupAsync("a-second-management-key", "a-second-management-key", setupAccessAllowed: true)) == WebSetupResult.AlreadyConfigured).Should().BeTrue();
+        await auth.ValidateManagementKey(ManagementKey).Should().BeTrue();
+        await auth.ValidateManagementKey("a-second-management-key").Should().BeFalse();
     }
 
     [Test]
-    public async Task SetupRejectsNonLoopbackRemoteAddressEvenWhenForwardingHeadersAreNotRelevant()
-    {
-        using var directory = new TemporaryDirectory();
-        var auth = new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), null);
-        var remoteAddress = IPAddress.Parse("192.0.2.20");
-
-        await WebAuthService.IsLoopbackAddress(remoteAddress).Should().BeFalse();
-        await ((await auth.SetupAsync(ManagementKey, ManagementKey, remoteAddress)) == WebSetupResult.Forbidden).Should().BeTrue();
-        await auth.SetupRequired.Should().BeTrue();
-    }
-
-    [Test]
-    public async Task IPv4LoopbackIsAllowedForSetup()
+    public async Task SetupRejectsWhenRequestAccessPolicyDeniesIt()
     {
         using var directory = new TemporaryDirectory();
         var auth = new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), null);
 
-        await WebAuthService.IsLoopbackAddress(IPAddress.Loopback).Should().BeTrue();
-        await ((await auth.SetupAsync(ManagementKey, ManagementKey, IPAddress.Loopback)) == WebSetupResult.Created).Should().BeTrue();
-    }
-
-    [Test]
-    public async Task IPv6LoopbackIsAllowedForSetup()
-    {
-        using var directory = new TemporaryDirectory();
-        var auth = new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), null);
-
-        await WebAuthService.IsLoopbackAddress(IPAddress.IPv6Loopback).Should().BeTrue();
-        await ((await auth.SetupAsync(ManagementKey, ManagementKey, IPAddress.IPv6Loopback)) == WebSetupResult.Created).Should().BeTrue();
-    }
-
-    [Test]
-    public async Task ForwardedClientAddressHeadersCannotGrantSetupAccess()
-    {
-        using var directory = new TemporaryDirectory();
-        var auth = new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), null);
-
-        var result = await auth.SetupAsync(
-            ManagementKey,
-            ManagementKey,
-            IPAddress.Loopback,
-            forwardedAddressHeaderPresent: true);
-
-        await (result == WebSetupResult.Forbidden).Should().BeTrue();
+        await ((await auth.SetupAsync(ManagementKey, ManagementKey, setupAccessAllowed: false)) == WebSetupResult.Forbidden).Should().BeTrue();
         await auth.SetupRequired.Should().BeTrue();
     }
 
@@ -136,11 +98,11 @@ public class WebAuthServiceTests
         using var directory = new TemporaryDirectory();
         var path = Path.Combine(directory.Path, "guiConfigs", "web-auth.json");
         var firstInstance = new WebAuthService(path, null);
-        await ((await firstInstance.SetupAsync(ManagementKey, ManagementKey, IPAddress.Loopback)) == WebSetupResult.Created).Should().BeTrue();
+        await ((await firstInstance.SetupAsync(ManagementKey, ManagementKey, setupAccessAllowed: true)) == WebSetupResult.Created).Should().BeTrue();
 
         var restartedInstance = new WebAuthService(path, null);
         await restartedInstance.SetupRequired.Should().BeFalse();
-        await restartedInstance.ValidateKey(ManagementKey).Should().BeTrue();
+        await restartedInstance.ValidateManagementKey(ManagementKey).Should().BeTrue();
     }
 
     private sealed class TemporaryDirectory : IDisposable

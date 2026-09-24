@@ -11,7 +11,9 @@
     "managementKey": "管理金鑰",
     "confirmKey": "確認金鑰",
     "submit": "設定並進入",
+    "localOnly": "首次初始化只能在執行 v2rayN Web 的本機完成。請在伺服器上開啟 http://127.0.0.1:5080。",
     "keyTooShort": "管理金鑰至少需要 12 個字元。",
+    "keyTooLong": "管理金鑰不能超過 4096 個字元。",
     "keysDoNotMatch": "兩次輸入的金鑰不一致。",
     "alreadyConfigured": "管理金鑰已初始化，請重新整理頁面後使用現有金鑰連線。",
     "setupFailed": "設定管理金鑰失敗，請重試。"
@@ -30,16 +32,18 @@
     "enUS": "English"
   },
   "auth": {
-    "title": "連線至 Web Backend",
-    "hint": "輸入此部署設定的 API 存取權杖。權杖只會儲存在目前瀏覽器。",
-    "token": "API 存取權杖",
-    "placeholder": "輸入存取權杖",
-    "connect": "連線",
-    "disconnect": "中斷連線",
-    "connected": "Backend 已連線",
-    "waiting": "等待連線",
-    "connectFailed": "連線失敗，請檢查 API 權杖與 Backend 位址",
-    "tokenRequired": "請輸入 Web API 存取權杖"
+    "title": "登入 v2rayN Web",
+    "hint": "輸入管理金鑰登入。金鑰僅用於登入，不會儲存在瀏覽器中。",
+    "token": "管理金鑰",
+    "placeholder": "輸入管理金鑰",
+    "connect": "登入",
+    "disconnect": "登出",
+    "connected": "已登入",
+    "waiting": "未登入",
+    "connectFailed": "連線失敗，請檢查 Web Backend 位址",
+    "tokenRequired": "請輸入管理金鑰",
+    "loginFailed": "管理金鑰無效。",
+    "rateLimited": "登入嘗試過多，請稍後重試。"
   },
   "nav": {
     "nodes": "節點",
@@ -595,7 +599,7 @@
   "errors": {
     "invalidInput": "输入内容无效",
     "notFound": "未找到请求的资源",
-    "unauthorized": "访问令牌无效或已过期",
+    "unauthorized": "工作階段已失效，請重新登入。",
     "routeNotFound": "API 路径不存在",
     "internal": "Backend 内部错误"
   }

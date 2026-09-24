@@ -11,7 +11,9 @@
     "managementKey": "Management key",
     "confirmKey": "Confirm key",
     "submit": "Set up and continue",
+    "localOnly": "First-run setup can only be completed on the machine running v2rayN Web. Open http://127.0.0.1:5080 on that machine.",
     "keyTooShort": "The management key must be at least 12 characters.",
+    "keyTooLong": "The management key cannot exceed 4096 characters.",
     "keysDoNotMatch": "The keys do not match.",
     "alreadyConfigured": "A management key has already been set. Refresh and connect with the existing key.",
     "setupFailed": "Could not set the management key. Please try again."
@@ -30,16 +32,18 @@
     "enUS": "English"
   },
   "auth": {
-    "title": "Connect to Web Backend",
-    "hint": "Enter the API access token configured for this deployment. The token stays in this browser.",
-    "token": "API access token",
-    "placeholder": "Enter access token",
-    "connect": "Connect",
-    "disconnect": "Disconnect",
-    "connected": "Backend connected",
-    "waiting": "Waiting for connection",
-    "connectFailed": "Connection failed. Check the API token and Backend address",
-    "tokenRequired": "Enter the Web API access token"
+    "title": "Sign in to v2rayN Web",
+    "hint": "Enter your management key to sign in. The key is not stored in this browser.",
+    "token": "Management key",
+    "placeholder": "Enter management key",
+    "connect": "Sign in",
+    "disconnect": "Sign out",
+    "connected": "Signed in",
+    "waiting": "Not signed in",
+    "connectFailed": "Connection failed. Check the Web Backend address.",
+    "tokenRequired": "Enter the management key",
+    "loginFailed": "Invalid management key.",
+    "rateLimited": "Too many sign-in attempts. Try again later."
   },
   "nav": {
     "nodes": "Nodes",
@@ -506,7 +510,7 @@
   "errors": {
     "notFound": "Resource not found",
     "invalidInput": "Invalid input",
-    "unauthorized": "Invalid or expired token",
+    "unauthorized": "Session expired or invalid. Sign in again.",
     "routeNotFound": "API route not found",
     "internal": "Backend error"
   },
