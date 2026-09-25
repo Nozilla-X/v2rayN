@@ -1,6 +1,23 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import AppHeader from './components/AppHeader.vue'
+import ConnectionStrip from './components/ConnectionStrip.vue'
+import NoticeBar from './components/NoticeBar.vue'
+import RuntimeStrip from './components/RuntimeStrip.vue'
+import DnsPage from './components/pages/DnsPage.vue'
+import LogsPage from './components/pages/LogsPage.vue'
+import MaintenancePage from './components/pages/MaintenancePage.vue'
+import NodesPage from './components/pages/NodesPage.vue'
+import RoutingPage from './components/pages/RoutingPage.vue'
+import SettingsPage from './components/pages/SettingsPage.vue'
+import SubscriptionsPage from './components/pages/SubscriptionsPage.vue'
+import TemplatesPage from './components/pages/TemplatesPage.vue'
+import ExportModal from './components/modals/ExportModal.vue'
+import ImportProfilesModal from './components/modals/ImportProfilesModal.vue'
+import ProfileModal from './components/modals/ProfileModal.vue'
+import RouteModal from './components/modals/RouteModal.vue'
+import SubscriptionModal from './components/modals/SubscriptionModal.vue'
 
 type Dict = Record<string, any>
 type ApiError = Error & { messageKey?: string; code?: string }
@@ -71,7 +88,6 @@ const editingRouteId = ref('')
 const contextMenu = ref<Dict | null>(null)
 const profileModalError = ref('')
 const subscriptionUseProxy = ref(false)
-const logPanel = ref<HTMLElement | null>(null)
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
 let eventSource: EventSource | undefined
@@ -115,6 +131,43 @@ const pageTitle = computed(() => {
   return item ? t(item.key) : t('nav.nodes')
 })
 const traffic = computed(() => status.value?.traffic || {})
+
+const headerState = reactive({ navItems, brandIconSrc, brandIconTitle, activePage, subscriptions, authenticated, locale, loading })
+const runtimeStripState = reactive({ status, currentProfile, activeRoutingId, routes, busy })
+const connectionStripState = reactive({ listeners, traffic, status, runtimeVersion })
+const noticeState = reactive({ notice, noticeKind })
+
+const nodesPageState = reactive({ filteredProfiles, profiles, selectedGroup, groups, filter, selectedIds, allVisibleSelected, operations, testActions })
+const subscriptionsPageState = reactive({ subscriptions, subscriptionUseProxy, selectedGroup })
+const routingPageState = reactive({ routes, activeRoutingId, currentRoute, routingForm, routingRules, rulesRaw, ruleImportText, appendRules })
+const dnsPageState = reactive({ simpleDnsRaw, dnsProfiles })
+const settingsPageState = reactive({ inboundForm, coreForm, appForm, speedForm, settings, coreTypes })
+const templatesPageState = reactive({ templates })
+const maintenancePageState = reactive({ xrayUpdate, operations, status, webdavForm })
+const logsPageState = reactive({ logTotal, logFilter, logs, logPage, logTotalPages })
+
+const headerActions = { navigate, refreshBase, disconnect }
+const runtimeStripActions = { activateRoute, coreAction }
+const connectionStripActions = { listenerDescription, formatBytes }
+const nodesPageActions = { openAddProfile, openImportProfiles, updateSubscriptions, subscriptionUpdateMessageKey, startSpeedTest, runProfileAction, stopSpeedTests, changeGroup, generateGroups, loadProfiles, toggleAllVisible, toggleProfile, sortProfiles, selectProfile, formatDelay, formatBytes, moveSelectedToGroup, moveSelected, moveSelectedPosition, exportSelected, openContext }
+const subscriptionsPageActions = { formatDate, subscriptionUpdateMessageKey, updateSubscriptions, openAddSubscription, updateSubscription, shareSubscription, openEditSubscription, deleteSubscription }
+const routingPageActions = { importRoutingProfiles, openAddRoute, loadRules, openEditRoute, deleteRoute, applyPreset, saveRoutingStrategies, addRoutingRule, copyRoutingRules, saveRoutingRules, moveRoutingRule, removeRoutingRule, importRoutingRules }
+const dnsPageActions = { loadDns, saveSimpleDns, saveDnsProfile }
+const settingsPageActions = { saveInbound, saveCoreSettings, saveAppSettings, saveSpeedSettings, saveCoreTypes }
+const templatesPageActions = { loadTemplates, saveTemplate }
+const maintenancePageActions = { checkXrayUpdate, updateXray, updateGeo, clearStatistics, saveWebdav, webdavAction, downloadBackup, uploadRestore, loadOperations, loadMaintenance }
+const logsPageActions = { loadLogs, clearLogs, changeLogPage }
+
+const profileModalState = reactive({ showProfileForm, profileForm, profileAdvancedJson, profileModalError, editingProfileId, protocolTypes, coreTypes })
+const profileModalActions = { saveProfile }
+const importProfilesModalState = reactive({ showImportForm, importForm, groups })
+const importProfilesModalActions = { importProfiles, readImportFile, pasteImport }
+const subscriptionModalState = reactive({ showSubscriptionForm, subscriptionForm, editingSubscriptionId, coreTypes })
+const subscriptionModalActions = { saveSubscription }
+const routeModalState = reactive({ showRouteForm, routeForm, editingRouteId })
+const routeModalActions = { saveRoute }
+const exportModalState = reactive({ showExportDialog, exportOptions, exportContent })
+const exportModalActions = { exportSelected, copyExport, downloadExport }
 function translateKey(key?: string | null): string {
   if (!key) return t('common.operationDone')
   const translated = t(key)
@@ -1256,24 +1309,7 @@ onUnmounted(() => {
     </section>
 
     <template v-else>
-    <header class="app-header">
-      <div class="brand"><img class="brand-glyph" :src="brandIconSrc" :title="brandIconTitle" alt="" /><strong>{{ t('brand') }}</strong></div>
-      <nav class="main-nav" :aria-label="t('brand')">
-        <button v-for="item in navItems" :key="item.id" :class="['nav-tab', { selected: activePage === item.id }]" @click="navigate(item.id)">
-          <span class="nav-icon">{{ item.icon }}</span>{{ t(item.key) }}
-          <span v-if="item.id === 'subscriptions'" class="nav-badge">{{ subscriptions.length }}</span>
-        </button>
-      </nav>
-      <div class="header-right">
-        <span :class="['connection-tag', { online: authenticated }]">{{ authenticated ? t('auth.connected') : t('auth.waiting') }}</span>
-        <select v-model="locale" class="locale-select" :aria-label="t('brand')">
-          <option value="zh-CN">{{ t('localeNames.zhCN') }}</option><option value="zh-TW">{{ t('localeNames.zhTW') }}</option><option value="en-US">{{ t('localeNames.enUS') }}</option>
-        </select>
-        <button v-if="authenticated" class="tool-button" :title="t('common.refresh')" :disabled="loading" @click="refreshBase">⟳</button>
-        <button v-if="authenticated" class="tool-button" @click="disconnect">{{ t('auth.disconnect') }}</button>
-      </div>
-    </header>
-
+      <AppHeader :state="headerState" :actions="headerActions" />
     <section v-if="!authenticated" class="auth-wrap">
       <form class="auth-box" @submit.prevent="login()">
         <div class="auth-title"><img class="brand-glyph" src="/v2rayN.png" alt="" /><div><strong>{{ t('auth.title') }}</strong><small>{{ t('brand') }}</small></div></div>
@@ -1282,240 +1318,30 @@ onUnmounted(() => {
         <div class="inline-field"><input id="management-key" v-model="managementKeyDraft" type="password" autocomplete="current-password" :placeholder="t('auth.placeholder')" /><button class="button primary" type="submit">{{ t('auth.connect') }}</button></div>
       </form>
     </section>
-
-    <template v-else>
-      <section class="runtime-strip">
-        <div class="runtime-main">
-          <span :class="['status-led', { on: status?.coreRunning }]"></span>
-          <strong>{{ status?.coreRunning ? (status.coreType || t('nodes.core')) : t('nodes.stopped') }}</strong>
-          <span class="runtime-separator"></span>
-          <span>{{ t('nodes.current') }}:</span><b class="current-runtime-name">{{ currentProfile?.remarks || status?.currentProfileName || t('nodes.noneCurrent') }}</b>
-          <span class="runtime-separator"></span>
-          <label class="compact-select-label">{{ t('coreToolbar.route') }}</label>
-          <select v-model="activeRoutingId" class="compact-select route-select" @change="activateRoute(activeRoutingId)">
-            <option value="">{{ t('common.none') }}</option>
-            <option v-for="route in routes" :key="route.id" :value="route.id">{{ route.remarks }}</option>
-          </select>
-        </div>
-        <div class="core-actions">
-          <button class="button compact primary" :disabled="busy || status?.coreRunning" @click="coreAction('start')">▶ {{ t('nodes.start') }}</button>
-          <button class="button compact" :disabled="busy || !status?.coreRunning" @click="coreAction('restart')">↻ {{ t('nodes.restart') }}</button>
-          <button class="button compact danger" :disabled="busy || !status?.coreRunning" @click="coreAction('stop')">■ {{ t('nodes.stop') }}</button>
-        </div>
-      </section>
-
-      <section class="connection-strip">
-        <div class="listener-list">
-          <strong>{{ t('nodes.listener') }}</strong>
-          <span v-for="listener in listeners" :key="listener.name" class="listener-item">
-            <i :class="['status-led', { on: listener.listening }]"></i>{{ listener.name === 'lan' ? t('nodes.lan') : t('nodes.local') }} {{ listenerDescription(listener) }}
-          </span>
-          <span v-if="!listeners.length" class="muted">{{ t('coreToolbar.noListener') }}</span>
-        </div>
-        <div class="traffic-list">
-          <strong>{{ t('nodes.traffic') }}</strong>
-          <span>↑ {{ t('nodes.proxyUp') }} <b>{{ formatBytes(traffic.proxyUp) }}/s</b></span>
-          <span>↓ {{ t('nodes.proxyDown') }} <b>{{ formatBytes(traffic.proxyDown) }}/s</b></span>
-          <span class="muted">{{ t('nodes.directUp') }} {{ formatBytes(traffic.directUp) }}/s · {{ t('nodes.directDown') }} {{ formatBytes(traffic.directDown) }}/s</span>
-        </div>
-        <span v-if="status && !status.statisticsEnabled" class="stats-hint">{{ t('coreToolbar.statsDisabled') }}</span>
-        <span v-if="runtimeVersion" class="runtime-version">{{ runtimeVersion }}</span>
-      </section>
-
-      <div v-if="notice" :class="['notice-bar', noticeKind]" role="status">{{ notice }}<button class="tool-button" @click="notice = ''">×</button></div>
-
-      <main class="workspace">
-        <section v-if="activePage === 'nodes'" class="page nodes-page">
-          <div class="page-toolbar">
-            <div class="page-title"><h1>{{ t('nodes.title') }}</h1><span class="count-tag">{{ filteredProfiles.length }}</span></div>
-            <div class="toolbar-main">
-              <button class="button primary" @click="openAddProfile">＋ {{ t('nodes.addNode') }}</button>
-              <button class="button" @click="openImportProfiles">{{ t('common.import') }}</button>
-              <button class="button" @click="updateSubscriptions(selectedGroup || null, false)">{{ t(subscriptionUpdateMessageKey(selectedGroup || null, false)) }}</button>
-              <select class="compact-select test-select" @change="($event.target as HTMLSelectElement).value && startSpeedTest(($event.target as HTMLSelectElement).value)">
-                <option value="">{{ t('nodes.test') }}…</option>
-                <option v-for="action in testActions" :key="action.id" :value="action.id">{{ t(action.key) }}</option>
-              </select>
-              <button class="button" @click="runProfileAction('test-group')">{{ t('nodes.testGroup') }}</button>
-              <button class="button" :disabled="!operations.includes('speedtest')" @click="stopSpeedTests">{{ t('nodes.stopTest') }}</button>
-            </div>
-          </div>
-
-          <div class="group-toolbar">
-            <span class="toolbar-label">{{ t('nodes.group') }}</span>
-            <div class="group-chips">
-              <button v-for="group in groups" :key="group.id || 'all'" :class="['group-chip', { selected: selectedGroup === group.id }]" @click="changeGroup(group.id)">
-                {{ group.name || t('common.allGroups') }}<small>{{ group.profileCount }}</small>
-              </button>
-            </div>
-            <div class="group-generation"><button class="link-button" :disabled="!selectedGroup" :title="!selectedGroup ? t('nodes.groupGenerationSelectSubscription') : ''" @click="generateGroups(false)">{{ t('nodes.generateAllGroups') }}</button><button class="link-button" :disabled="!selectedGroup || !profiles.length" :title="!selectedGroup ? t('nodes.groupGenerationSelectSubscription') : !profiles.length ? t('nodes.noProfile') : ''" @click="generateGroups(true)">{{ t('nodes.generateRegionGroups') }}</button></div>
-            <label class="search-box"><span>⌕</span><input v-model="filter" :placeholder="t('nodes.filterPlaceholder')" @keyup.enter="loadProfiles" /><button v-if="filter" class="clear-search" :aria-label="t('common.close')" @click="filter = ''; loadProfiles()">×</button></label>
-          </div>
-
-          <div v-if="selectedIds.length" class="bulk-toolbar">
-            <strong>{{ t('common.selected', { count: selectedIds.length }) }}</strong>
-            <button class="button compact" @click="runProfileAction('copy')">{{ t('nodes.copySelected') }}</button>
-            <button class="button compact" @click="exportSelected">{{ t('nodes.exportSelected') }}</button>
-            <select class="compact-select" @change="($event.target as HTMLSelectElement).value !== '' && moveSelectedToGroup(($event.target as HTMLSelectElement).value)">
-              <option value="">{{ t('nodes.moveGroup') }}…</option>
-              <option v-for="group in groups" :key="group.id || 'all-target'" :value="group.id">{{ group.name || t('common.allGroups') }}</option>
-            </select>
-            <div class="button-group">
-              <button class="button compact" :title="t('nodes.top')" @click="moveSelected('top')">⇈</button><button class="button compact" :title="t('nodes.up')" @click="moveSelected('up')">↑</button><button class="button compact" :title="t('nodes.down')" @click="moveSelected('down')">↓</button><button class="button compact" :title="t('nodes.bottom')" @click="moveSelected('bottom')">⇊</button><button class="button compact" :title="t('nodes.position')" @click="moveSelectedPosition">#</button>
-            </div>
-            <button class="button compact danger" @click="runProfileAction('delete')">{{ t('nodes.deleteSelected') }}</button>
-            <button class="tool-button" @click="selectedIds = []">×</button>
-          </div>
-
-          <div class="table-wrap">
-            <table class="profile-table">
-              <thead><tr>
-                <th class="check-cell"><input type="checkbox" :checked="allVisibleSelected" :aria-label="t('common.selected', { count: filteredProfiles.length })" @change="toggleAllVisible" /></th>
-                <th><button class="sort-button" @click="sortProfiles('ConfigType')">{{ t('nodes.type') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('Remarks')">{{ t('nodes.remarks') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('Address')">{{ t('nodes.address') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('Port')">{{ t('nodes.port') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('Network')">{{ t('nodes.network') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('StreamSecurity')">{{ t('nodes.tls') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('SubRemarks')">{{ t('nodes.groupColumn') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('DelayVal')">{{ t('nodes.delay') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('SpeedVal')">{{ t('nodes.speed') }}</button></th>
-                <th>{{ t('nodes.ip') }}</th>
-                <th><button class="sort-button" @click="sortProfiles('TodayUp')">↑ {{ t('nodes.todayUp') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('TodayDown')">↓ {{ t('nodes.todayDown') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('TotalUp')">↑ {{ t('nodes.totalUp') }}</button></th>
-                <th><button class="sort-button" @click="sortProfiles('TotalDown')">↓ {{ t('nodes.totalDown') }}</button></th>
-                <th class="actions-cell">{{ t('nodes.actions') }}</th>
-              </tr></thead>
-              <tbody>
-                <tr v-for="profile in filteredProfiles" :key="profile.indexId" :class="{ current: profile.isCurrent, selected: selectedIds.includes(profile.indexId) }" @dblclick="selectProfile(profile)" @contextmenu="openContext($event, profile)">
-                  <td class="check-cell"><input type="checkbox" :checked="selectedIds.includes(profile.indexId)" :aria-label="profile.remarks || profile.address" @change="toggleProfile(profile.indexId)" @click.stop /></td>
-                  <td :data-label="t('nodes.type')"><span class="protocol-code">{{ profile.protocol }}</span></td>
-                  <td class="remark-cell" :data-label="t('nodes.remarks')"><span v-if="profile.isCurrent" class="current-marker" :title="t('nodes.current')">●</span><span class="remark-text" :title="profile.remarks">{{ profile.remarks || '—' }}</span></td>
-                  <td class="address-cell" :data-label="t('nodes.address')" :title="profile.address">{{ profile.address }}</td>
-                  <td class="number-cell" :data-label="t('nodes.port')">{{ profile.port }}</td>
-                  <td :data-label="t('nodes.network')">{{ profile.network || '—' }}</td>
-                  <td :data-label="t('nodes.tls')">{{ profile.streamSecurity || '—' }}</td>
-                  <td class="group-cell" :data-label="t('nodes.groupColumn')" :title="profile.subscriptionName">{{ profile.subscriptionName || t('common.none') }}</td>
-                  <td :data-label="t('nodes.delay')" :class="['number-cell', 'delay-cell', { bad: profile.delay < 0 }]">{{ formatDelay(profile.delay) }}</td>
-                  <td class="number-cell" :data-label="t('nodes.speed')">{{ profile.speed ? `${profile.speed} MB/s` : '—' }}</td>
-                  <td class="ip-cell" :data-label="t('nodes.ip')" :title="profile.ipInfo">{{ profile.ipInfo || '—' }}</td>
-                  <td class="number-cell" :data-label="t('nodes.todayUp')">{{ formatBytes(profile.todayUp) }}</td><td class="number-cell" :data-label="t('nodes.todayDown')">{{ formatBytes(profile.todayDown) }}</td>
-                  <td class="number-cell" :data-label="t('nodes.totalUp')">{{ formatBytes(profile.totalUp) }}</td><td class="number-cell" :data-label="t('nodes.totalDown')">{{ formatBytes(profile.totalDown) }}</td>
-                  <td class="row-actions" :data-label="t('nodes.actions')"><button class="link-button" :disabled="profile.isCurrent" @click="selectProfile(profile)">{{ profile.isCurrent ? t('nodes.current') : t('nodes.switch') }}</button><button class="link-button" @click="startSpeedTest('tcping', [profile.indexId])">{{ t('nodes.test') }}</button><button class="tool-button row-more" :title="t('nodes.actions')" @click.stop="openContext($event, profile)">⋯</button></td>
-                </tr>
-                <tr v-if="!filteredProfiles.length"><td colspan="16" class="empty-row">{{ profiles.length ? t('common.noResults') : t('nodes.noProfile') }}</td></tr>
-              </tbody>
-            </table>
-          </div>
-          <div class="table-footer"><span>{{ t('nodes.regexHint') }}</span><div class="quick-maintenance"><button class="link-button" @click="runProfileAction('deduplicate')">{{ t('nodes.deduplicate') }}</button><button class="link-button" @click="runProfileAction('remove-invalid')">{{ t('nodes.removeInvalid') }}</button><button class="link-button" @click="loadProfiles">{{ t('common.refresh') }}</button></div></div>
-        </section>
-
-        <section v-else-if="activePage === 'subscriptions'" class="page">
-          <div class="page-toolbar"><div class="page-title"><h1>{{ t('subscriptions.title') }}</h1><span class="count-tag">{{ subscriptions.length }}</span></div><div class="toolbar-main"><label class="check-inline"><input v-model="subscriptionUseProxy" type="checkbox" />{{ t('subscriptions.useProxy') }}</label><button class="button" @click="updateSubscriptions(null, subscriptionUseProxy)">{{ t(subscriptionUpdateMessageKey(null, subscriptionUseProxy)) }}</button><button class="button" @click="updateSubscriptions(selectedGroup || null, subscriptionUseProxy)">{{ t(subscriptionUpdateMessageKey(selectedGroup || null, subscriptionUseProxy)) }}</button><button class="button primary" @click="openAddSubscription">＋ {{ t('subscriptions.addSubscription') }}</button></div></div>
-          <div class="subscription-table-wrap"><table class="data-table subscription-table"><thead><tr><th>{{ t('subscriptions.name') }}</th><th>{{ t('subscriptions.url') }}</th><th>{{ t('common.enabled') }}</th><th>{{ t('subscriptions.interval') }}</th><th>{{ t('subscriptions.updated') }}</th><th>{{ t('subscriptions.userAgent') }}</th><th>{{ t('subscriptions.filter') }}</th><th>{{ t('nodes.actions') }}</th></tr></thead><tbody>
-            <tr v-for="item in subscriptions" :key="item.id"><td class="strong-cell">{{ item.remarks }}</td><td class="url-cell" :title="item.url">{{ item.url }}</td><td>{{ item.enabled ? t('common.enabled') : t('common.disabled') }}</td><td>{{ item.autoUpdateInterval || t('common.none') }}</td><td>{{ item.updateTime ? formatDate(item.updateTime) : t('subscriptions.neverUpdated') }}</td><td>{{ item.userAgent || '—' }}</td><td>{{ item.filter || '—' }}</td><td class="row-actions"><button class="link-button" @click="updateSubscription(item.id)">{{ t(subscriptionUseProxy ? 'subscriptions.updateViaProxy' : 'subscriptions.update') }}</button><button class="link-button" @click="shareSubscription(item)">{{ t('subscriptions.share') }}</button><button class="link-button" @click="openEditSubscription(item)">{{ t('common.edit') }}</button><button class="link-button danger-text" @click="deleteSubscription(item)">{{ t('common.delete') }}</button></td></tr>
-            <tr v-if="!subscriptions.length"><td colspan="8" class="empty-row">{{ t('subscriptions.noSubscriptions') }}</td></tr>
-          </tbody></table></div>
-        </section>
-
-        <section v-else-if="activePage === 'routing'" class="page">
-          <div class="page-toolbar"><div class="page-title"><h1>{{ t('routing.title') }}</h1></div><div class="toolbar-main"><button class="button" @click="importRoutingProfiles">{{ t('routing.importProfiles') }}</button><button class="button primary" @click="openAddRoute">＋ {{ t('routing.create') }}</button></div></div>
-          <div class="split-workspace">
-            <section class="subpanel route-list-panel"><div class="subpanel-heading"><h2>{{ t('routing.profiles') }}</h2><span class="count-tag">{{ routes.length }}</span></div>
-              <div v-for="route in routes" :key="route.id" :class="['route-row', { selected: route.id === activeRoutingId, current: route.isActive }]" @click="activeRoutingId = route.id; loadRules(route.id)">
-                <div class="route-info"><strong>{{ route.remarks }}</strong><small>{{ route.ruleNum }} · {{ route.enabled ? t('common.enabled') : t('common.disabled') }}</small></div><span v-if="route.isActive" class="current-label">{{ t('routing.default') }}</span>
-                <div class="row-actions"><button class="tool-button" :title="t('common.edit')" @click.stop="openEditRoute(route)">✎</button><button class="tool-button danger-text" :title="t('common.delete')" @click.stop="deleteRoute(route)">×</button></div>
-              </div>
-              <p v-if="!routes.length" class="muted empty-inline">{{ t('routing.noRouting') }}</p>
-              <div class="preset-bar"><label>{{ t('routing.regionalPreset') }}</label><button class="link-button" @click="applyPreset('Default')">{{ t('routing.presetDefault') }}</button><button class="link-button" @click="applyPreset('Russia')">{{ t('routing.presetRussia') }}</button><button class="link-button" @click="applyPreset('Iran')">{{ t('routing.presetIran') }}</button></div>
-              <div class="form-grid route-strategies"><label>{{ t('routing.domainStrategy') }}<input v-model="routingForm.domainStrategy" /></label><label>{{ t('routing.domainStrategySingbox') }}<input v-model="routingForm.domainStrategy4Singbox" /></label><button class="button compact primary" @click="saveRoutingStrategies">{{ t('settings.saveRouting') }}</button></div>
-            </section>
-            <section class="subpanel rules-panel"><div class="subpanel-heading"><div><h2>{{ t('routing.rules') }}</h2><small>{{ currentRoute?.remarks || t('common.none') }}</small></div><div class="toolbar-main"><button class="button compact" :disabled="!activeRoutingId" @click="addRoutingRule">＋ {{ t('routing.addRule') }}</button><button class="button compact" :disabled="!activeRoutingId" @click="copyRoutingRules">{{ t('common.copy') }}</button><button class="button compact primary" :disabled="!activeRoutingId" @click="saveRoutingRules">{{ t('routing.saveRules') }}</button></div></div>
-              <div v-if="routingRules.length" class="rules-mini-table"><div v-for="rule in routingRules" :key="rule.id" class="rule-row"><span :class="['rule-state', { off: !rule.enabled }]">{{ rule.enabled ? '●' : '○' }}</span><strong>{{ rule.remarks || rule.type || rule.ruleType || '—' }}</strong><span class="rule-details">{{ rule.domain?.join(', ') || rule.ip?.join(', ') || rule.port || rule.network || '—' }}</span><span class="rule-outbound">{{ rule.outboundTag || '—' }}</span><div class="row-actions"><button class="tool-button" :title="t('routing.moveUp')" @click="moveRoutingRule(rule, 'up')">↑</button><button class="tool-button" :title="t('routing.moveDown')" @click="moveRoutingRule(rule, 'down')">↓</button><button class="tool-button danger-text" :title="t('common.delete')" @click="removeRoutingRule(rule)">×</button></div></div></div>
-              <p v-else class="muted empty-inline">{{ t('common.empty') }}</p>
-              <label class="field-label raw-json-label">{{ t('common.rawJson') }}<small>{{ t('routing.ruleJsonHint') }}</small></label><textarea v-model="rulesRaw" class="code-area rules-json" spellcheck="false"></textarea>
-              <div class="import-rule-row"><textarea v-model="ruleImportText" class="code-area import-rule-input" :placeholder="t('routing.importRules')"></textarea><div class="import-rule-controls"><label class="check-inline"><input v-model="appendRules" type="checkbox" />{{ t('routing.append') }}</label><button class="button" :disabled="!ruleImportText" @click="importRoutingRules">{{ t('common.import') }}</button></div></div>
-            </section>
-          </div>
-        </section>
-
-        <section v-else-if="activePage === 'dns'" class="page">
-          <div class="page-toolbar"><div class="page-title"><h1>{{ t('dns.title') }}</h1></div><button class="button" @click="loadDns">{{ t('common.refresh') }}</button></div>
-          <div class="dns-layout"><section class="subpanel"><div class="subpanel-heading"><h2>{{ t('dns.simple') }}</h2><button class="button compact primary" @click="saveSimpleDns">{{ t('dns.saveSimple') }}</button></div><label class="field-label raw-json-label">{{ t('dns.jsonEditor') }}</label><textarea v-model="simpleDnsRaw" class="code-area dns-code" spellcheck="false"></textarea></section>
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('dns.profiles') }}</h2></div><div v-for="profile in dnsProfiles" :key="profile.id" class="dns-profile-block"><div class="dns-profile-head"><strong>{{ profile.coreType }}</strong><label class="check-inline"><input v-model="profile.enabled" type="checkbox" />{{ t('dns.enabled') }}</label></div>
-              <div class="form-grid"><label>{{ t('dns.remarks') }}<input v-model="profile.remarks" /></label><label>{{ t('dns.normalDns') }}<textarea v-model="profile.normalDNS"></textarea></label><label>{{ t('dns.domainStrategy') }}<input v-model="profile.domainStrategy4Freedom" /></label><label>{{ t('dns.domainDnsAddress') }}<input v-model="profile.domainDNSAddress" /></label><label class="check-inline"><input v-model="profile.useSystemHosts" type="checkbox" />{{ t('dns.useSystemHosts') }}</label></div><button class="button compact primary" @click="saveDnsProfile(profile)">{{ t('dns.saveCoreDns', { core: profile.coreType }) }}</button>
-            </div><p v-if="!dnsProfiles.length" class="muted empty-inline">{{ t('common.empty') }}</p></section>
-          </div>
-        </section>
-
-        <section v-else-if="activePage === 'settings'" class="page settings-page">
-          <div class="page-toolbar"><div class="page-title"><h1>{{ t('settings.title') }}</h1></div><span class="muted">{{ t('settings.restartHint') }}</span></div>
-          <div class="settings-grid">
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('settings.inbound') }}</h2></div><div class="form-grid two-col">
-              <label>{{ t('settings.localPort') }}<input v-model.number="inboundForm.localPort" type="number" min="1" max="65535" /></label>
-              <label class="check-inline"><input v-model="inboundForm.secondLocalPortEnabled" type="checkbox" />{{ t('settings.secondPort') }}</label>
-              <label class="check-inline"><input v-model="inboundForm.udpEnabled" type="checkbox" />{{ t('settings.udp') }}</label>
-              <label class="check-inline"><input v-model="inboundForm.sniffingEnabled" type="checkbox" />{{ t('settings.sniffing') }}</label>
-              <label>{{ t('settings.destOverride') }}<textarea v-model="inboundForm.destOverrideText"></textarea></label>
-              <label class="check-inline"><input v-model="inboundForm.routeOnly" type="checkbox" />{{ t('settings.routeOnly') }}</label>
-              <label class="check-inline"><input v-model="inboundForm.allowLANConn" type="checkbox" />{{ t('settings.allowLan') }}</label>
-              <label class="check-inline"><input v-model="inboundForm.newPort4LAN" type="checkbox" />{{ t('settings.newLanPort') }}</label>
-              <label>{{ t('settings.user') }}<input v-model="inboundForm.user" /></label><label>{{ t('settings.pass') }}<input v-model="inboundForm.pass" type="password" /></label>
-            </div><button class="button compact primary" @click="saveInbound">{{ t('settings.saveInbound') }}</button></section>
-
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('settings.core') }}</h2></div><div class="form-grid two-col">
-              <label class="check-inline"><input v-model="coreForm.logEnabled" type="checkbox" />{{ t('settings.logEnabled') }}</label><label>{{ t('settings.loglevel') }}<select v-model="coreForm.loglevel"><option v-for="level in ['debug', 'info', 'warning', 'error', 'none']" :key="level">{{ level }}</option></select></label>
-              <label>{{ t('settings.fingerprint') }}<input v-model="coreForm.defFingerprint" /></label><label>{{ t('settings.userAgent') }}<input v-model="coreForm.defUserAgent" /></label><label>{{ t('settings.sendThrough') }}<input v-model="coreForm.sendThrough" /></label><label>{{ t('settings.bindInterface') }}<input v-model="coreForm.bindInterface" /></label>
-              <label>{{ t('settings.muxRay') }}<input v-model.number="coreForm.mux4RayConcurrency" type="number" min="0" /></label><label>{{ t('settings.muxXudp') }}<input v-model.number="coreForm.mux4RayXudpConcurrency" type="number" min="0" /></label><label>{{ t('settings.muxXudp443') }}<input v-model="coreForm.mux4RayXudpProxyUDP443" /></label><label>{{ t('settings.muxSboxProtocol') }}<input v-model="coreForm.mux4SboxProtocol" /></label><label>{{ t('settings.muxSboxConnections') }}<input v-model.number="coreForm.mux4SboxMaxConnections" type="number" min="0" /></label><label class="check-inline"><input v-model="coreForm.mux4SboxPadding" type="checkbox" />{{ t('settings.muxSboxPadding') }}</label><label class="check-inline"><input v-model="coreForm.enableCacheFile4Sbox" type="checkbox" />{{ t('settings.cacheSbox') }}</label>
-              <label>{{ t('settings.hy2Up') }}<input v-model.number="coreForm.hy2UpMbps" type="number" min="0" /></label><label>{{ t('settings.hy2Down') }}<input v-model.number="coreForm.hy2DownMbps" type="number" min="0" /></label><label class="check-inline"><input v-model="coreForm.enableFragment" type="checkbox" />{{ t('settings.fragment') }}</label><label class="check-inline"><input v-model="coreForm.enableFinalFragment" type="checkbox" />{{ t('settings.finalFragment') }}</label><label>{{ t('settings.fragmentPackets') }}<input v-model="coreForm.fragmentPackets" /></label><label>{{ t('settings.fragmentMaxSplit') }}<input v-model="coreForm.fragmentMaxSplit" /></label><label>{{ t('settings.fragmentLengths') }}<textarea v-model="coreForm.fragmentLengthsText"></textarea></label><label>{{ t('settings.fragmentDelays') }}<textarea v-model="coreForm.fragmentDelaysText"></textarea></label>
-            </div><button class="button compact primary" @click="saveCoreSettings">{{ t('settings.saveCore') }}</button></section>
-
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('settings.application') }}</h2></div><div class="form-grid two-col"><label class="check-inline"><input v-model="appForm.enableStatistics" type="checkbox" />{{ t('settings.statistics') }}</label><label class="check-inline"><input v-model="appForm.displayRealTimeSpeed" type="checkbox" />{{ t('settings.realtimeSpeed') }}</label><label class="check-inline"><input v-model="appForm.keepOlderDedupl" type="checkbox" />{{ t('settings.keepOlderDedupl') }}</label><label>{{ t('settings.geoAutoUpdate') }}<input v-model.number="appForm.geoAutoUpdateInterval" type="number" min="0" /></label><label>{{ t('settings.rootCertProvider') }}<input v-model="appForm.rootCertProvider" /></label><label>{{ t('settings.geoSourceUrl') }}<input v-model="appForm.geoSourceUrl" /></label><label>{{ t('settings.srsSourceUrl') }}<input v-model="appForm.srsSourceUrl" /></label><label>{{ t('settings.routeRulesSourceUrl') }}<input v-model="appForm.routeRulesTemplateSourceUrl" /></label><label>{{ t('settings.subConvertUrl') }}<input v-model="appForm.subConvertUrl" /></label></div><button class="button compact primary" @click="saveAppSettings">{{ t('settings.saveApplication') }}</button></section>
-
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('settings.speedtest') }}</h2></div><div class="form-grid two-col"><label>{{ t('settings.speedTimeout') }}<input v-model.number="speedForm.speedTestTimeout" type="number" min="1" /></label><label>{{ t('settings.mixedConcurrency') }}<input v-model.number="speedForm.mixedConcurrencyCount" type="number" min="1" /></label><label>{{ t('settings.speedUrl') }}<input v-model="speedForm.speedTestUrl" /></label><label>{{ t('settings.pingUrl') }}<input v-model="speedForm.speedPingTestUrl" /></label><label>{{ t('settings.ipApiUrl') }}<input v-model="speedForm.ipapiUrl" /></label><label>{{ t('settings.udpTarget') }}<input v-model="speedForm.udpTestTarget" /></label><label>{{ t('settings.pageSize') }}<input v-model.number="speedForm.speedTestPageSize" type="number" min="1" /></label><label>{{ t('settings.delayInterval') }}<input v-model.number="speedForm.speedTestDelayInterval" type="number" min="0" /></label></div><button class="button compact primary" @click="saveSpeedSettings">{{ t('settings.saveSpeedtest') }}</button></section>
-
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('settings.coreTypes') }}</h2><button class="button compact primary" @click="saveCoreTypes">{{ t('settings.saveCoreTypes') }}</button></div><div class="mapping-list"><div v-for="mapping in settings.coreTypes || []" :key="mapping.configType" class="mapping-row"><span>{{ mapping.configType }}</span><select v-model="mapping.coreType"><option v-for="core in coreTypes" :key="core" :value="core">{{ core }}</option></select></div></div></section>
-          </div>
-        </section>
-
-        <section v-else-if="activePage === 'templates'" class="page">
-          <div class="page-toolbar"><div class="page-title"><h1>{{ t('templates.title') }}</h1></div><button class="button" @click="loadTemplates">{{ t('common.refresh') }}</button></div>
-          <div class="template-grid"><section v-for="template in templates" :key="template.id" class="subpanel template-panel"><div class="subpanel-heading"><h2>{{ template.coreType }}</h2><label class="check-inline"><input v-model="template.enabled" type="checkbox" />{{ t('templates.enabled') }}</label></div><div class="form-grid"><label>{{ t('templates.remarks') }}<input v-model="template.remarks" /></label><label>{{ t('templates.config') }}<textarea v-model="template.config" class="code-area" spellcheck="false"></textarea></label><label class="check-inline"><input v-model="template.addProxyOnly" type="checkbox" />{{ t('templates.addProxyOnly') }}</label><label>{{ t('templates.proxyDetour') }}<input v-model="template.proxyDetour" /></label></div><button class="button compact primary" @click="saveTemplate(template)">{{ t('templates.save') }}</button></section><p v-if="!templates.length" class="muted empty-inline">{{ t('common.empty') }}</p></div>
-        </section>
-
-        <section v-else-if="activePage === 'maintenance'" class="page">
-          <div class="page-toolbar"><div class="page-title"><h1>{{ t('maintenance.title') }}</h1></div><button class="button" @click="loadMaintenance">{{ t('common.refresh') }}</button></div>
-          <div class="maintenance-grid"><section class="subpanel"><div class="subpanel-heading"><h2>{{ t('maintenance.updates') }}</h2></div><div class="form-grid two-col"><label class="check-inline"><input v-model="xrayUpdate.preRelease" type="checkbox" />{{ t('maintenance.preRelease') }}</label><label class="check-inline"><input v-model="xrayUpdate.useProxy" type="checkbox" />{{ t('maintenance.useProxy') }}</label></div><div class="button-row"><button class="button" @click="checkXrayUpdate">{{ t('maintenance.checkXray') }}</button><button class="button primary" :disabled="operations.includes('xray-update')" @click="updateXray">{{ t('maintenance.updateXray') }}</button><button class="button" :disabled="operations.includes('geo-update')" @click="updateGeo">{{ t('maintenance.updateGeo') }}</button></div><p v-if="xrayUpdate.result" class="operation-result">{{ xrayUpdate.result.updateAvailable ? t('maintenance.updateAvailable', { version: xrayUpdate.result.version }) : t('maintenance.upToDate') }}</p></section>
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('maintenance.statistics') }}</h2></div><p class="muted">{{ t('maintenance.statistics') }} · {{ status?.statisticsEnabled ? t('common.enabled') : t('status.statisticsOff') }}</p><button class="button danger" @click="clearStatistics">{{ t('maintenance.clearStatistics') }}</button></section>
-            <section class="subpanel webdav-panel"><div class="subpanel-heading"><h2>{{ t('maintenance.webdav') }}</h2><span v-if="webdavForm.hasPassword" class="muted">{{ t('maintenance.passwordStored') }}</span></div><div class="form-grid two-col"><label>{{ t('maintenance.webdavUrl') }}<input v-model="webdavForm.url" /></label><label>{{ t('maintenance.webdavDir') }}<input v-model="webdavForm.dirName" /></label><label>{{ t('maintenance.webdavUser') }}<input v-model="webdavForm.userName" /></label><label>{{ t('maintenance.webdavPassword') }}<input v-model="webdavForm.password" type="password" /></label></div><div class="button-row"><button class="button primary" @click="saveWebdav">{{ t('common.save') }}</button><button class="button" @click="webdavAction('check')">{{ t('maintenance.checkWebdav') }}</button><button class="button" @click="webdavAction('backup')">{{ t('maintenance.backupWebdav') }}</button><button class="button danger" @click="webdavAction('restore')">{{ t('maintenance.restoreWebdav') }}</button></div></section>
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('maintenance.backup') }}</h2></div><div class="button-row"><button class="button primary" @click="downloadBackup">{{ t('maintenance.downloadBackup') }}</button><label class="button file-button">{{ t('maintenance.restoreUpload') }}<input type="file" accept=".zip,application/zip" @change="uploadRestore" /></label></div></section>
-            <section class="subpanel"><div class="subpanel-heading"><h2>{{ t('maintenance.operationList') }}</h2><button class="tool-button" @click="loadOperations">⟳</button></div><div v-if="operations.length" class="operation-list"><span v-for="operation in operations" :key="operation" class="operation-pill"><i class="status-led on"></i>{{ operation }}</span></div><p v-else class="muted">{{ t('maintenance.noOperations') }}</p></section>
-          </div>
-        </section>
-
-        <section v-else-if="activePage === 'logs'" class="page logs-page">
-          <div class="page-toolbar"><div class="page-title"><h1>{{ t('logs.title') }}</h1><span class="count-tag">{{ logTotal }}</span></div><div class="toolbar-main"><label class="search-box log-search"><span>⌕</span><input v-model="logFilter" :placeholder="t('logs.filter')" @keyup.enter="loadLogs(1)" /></label><button class="button" @click="loadLogs(1)">{{ t('logs.load') }}</button><button class="button danger" @click="clearLogs">{{ t('logs.clear') }}</button></div></div>
-          <div ref="logPanel" class="log-table-wrap"><table class="data-table log-table"><thead><tr><th>{{ t('logs.time') }}</th><th>{{ t('logs.source') }}</th><th>{{ t('logs.message') }}</th></tr></thead><tbody><tr v-for="(log, index) in logs" :key="`${log.timestamp}-${index}`"><td class="log-time">{{ new Date(log.timestamp).toLocaleTimeString(locale, { hour12: false }) }}</td><td><span class="source-tag">{{ log.source }}</span></td><td class="log-message">{{ log.message }}</td></tr><tr v-if="!logs.length"><td colspan="3" class="empty-row">{{ t('logs.noLogs') }}</td></tr></tbody></table></div>
-          <div class="logs-pagination"><span>{{ t('logs.totalRows', { total: logTotal }) }}</span><div class="pagination-controls"><button class="button compact" :disabled="logPage <= 1" @click="changeLogPage(1)">{{ t('logs.firstPage') }}</button><button class="button compact" :disabled="logPage <= 1" @click="changeLogPage(logPage - 1)">{{ t('logs.previousPage') }}</button><strong>{{ t('logs.pageIndicator', { page: logPage, pages: logTotalPages }) }}</strong><button class="button compact" :disabled="logPage >= logTotalPages" @click="changeLogPage(logPage + 1)">{{ t('logs.nextPage') }}</button><button class="button compact" :disabled="logPage >= logTotalPages" @click="changeLogPage(logTotalPages)">{{ t('logs.lastPage') }}</button></div></div>
-        </section>
-      </main>
-    </template>
-
+      <template v-else>
+        <RuntimeStrip :state="runtimeStripState" :actions="runtimeStripActions" />
+        <ConnectionStrip :state="connectionStripState" :actions="connectionStripActions" />
+        <NoticeBar v-if="notice" :state="noticeState" />
+        <main class="workspace">
+          <NodesPage v-if="activePage === 'nodes'" :state="nodesPageState" :actions="nodesPageActions" />
+          <SubscriptionsPage v-else-if="activePage === 'subscriptions'" :state="subscriptionsPageState" :actions="subscriptionsPageActions" />
+          <RoutingPage v-else-if="activePage === 'routing'" :state="routingPageState" :actions="routingPageActions" />
+          <DnsPage v-else-if="activePage === 'dns'" :state="dnsPageState" :actions="dnsPageActions" />
+          <SettingsPage v-else-if="activePage === 'settings'" :state="settingsPageState" :actions="settingsPageActions" />
+          <TemplatesPage v-else-if="activePage === 'templates'" :state="templatesPageState" :actions="templatesPageActions" />
+          <MaintenancePage v-else-if="activePage === 'maintenance'" :state="maintenancePageState" :actions="maintenancePageActions" />
+          <LogsPage v-else-if="activePage === 'logs'" :state="logsPageState" :actions="logsPageActions" />
+        </main>
+      </template>
     <div v-if="contextMenu" class="context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
       <strong class="context-heading">{{ contextMenu.profile.remarks || contextMenu.profile.address }}</strong>
       <button @click="selectProfile(contextMenu.profile)">{{ t('nodes.switch') }}</button><button @click="startSpeedTest('tcping', [contextMenu.profile.indexId])">{{ t('nodes.tcping') }}</button><button @click="startSpeedTest('realping', [contextMenu.profile.indexId])">{{ t('nodes.realping') }}</button><button @click="openEditProfile(contextMenu.profile)">{{ t('common.edit') }}</button><button @click="runProfileAction('copy', [contextMenu.profile.indexId])">{{ t('common.copy') }}</button><button class="danger-text" @click="runProfileAction('delete', [contextMenu.profile.indexId])">{{ t('common.delete') }}</button>
     </div>
-
-    <div v-if="showProfileForm" class="modal-shade" @click.self="showProfileForm = false"><form class="modal-panel wide-modal" @submit.prevent="saveProfile"><div class="modal-head"><h2>{{ t(editingProfileId ? 'nodes.editNode' : 'nodes.addNode') }}</h2><button class="tool-button" type="button" @click="showProfileForm = false">×</button></div><div class="form-grid three-col"><label>{{ t('nodes.type') }}<select v-model="profileForm.configType"><option v-for="kind in protocolTypes" :key="kind">{{ kind }}</option><option value="PolicyGroup">PolicyGroup</option><option value="ProxyChain">ProxyChain</option></select></label><label>{{ t('nodes.coreType') }}<select v-model="profileForm.coreType"><option v-for="core in coreTypes" :key="core">{{ core }}</option></select></label><label>{{ t('nodes.remarks') }}<input v-model="profileForm.remarks" required /></label><label>{{ t('nodes.address') }}<input v-model="profileForm.address" /></label><label>{{ t('nodes.port') }}<input v-model.number="profileForm.port" type="number" min="0" max="65535" /></label><label>{{ t('nodes.network') }}<input v-model="profileForm.network" /></label><label>{{ t('nodes.password') }}<input v-model="profileForm.password" /></label><label>{{ t('nodes.username') }}<input v-model="profileForm.username" /></label><label>{{ t('nodes.streamSecurity') }}<input v-model="profileForm.streamSecurity" /></label><label>{{ t('nodes.sni') }}<input v-model="profileForm.sni" /></label><label>{{ t('nodes.tls') }}<input v-model="profileForm.alpn" /></label><label>{{ t('nodes.fingerprint') }}<input v-model="profileForm.fingerprint" /></label><label>{{ t('nodes.publicKey') }}<input v-model="profileForm.publicKey" /></label><label>{{ t('nodes.shortId') }}<input v-model="profileForm.shortId" /></label><label class="check-inline"><input v-model="profileForm.allowInsecure" type="checkbox" />{{ t('nodes.allowInsecure') }}</label></div><div class="form-grid two-col extra-json-grid"><label>{{ t('nodes.protoExtra') }}<textarea v-model="profileForm.protoExtraText" class="code-area" spellcheck="false"></textarea></label><label>{{ t('nodes.transportExtra') }}<textarea v-model="profileForm.transportExtraText" class="code-area" spellcheck="false"></textarea></label></div><label class="advanced-profile-label">{{ t('nodes.advancedProfileFields') }}<textarea v-model="profileAdvancedJson" class="code-area advanced-profile-json" spellcheck="false"></textarea></label><p v-if="profileModalError" class="inline-error">{{ profileModalError }}</p><div class="modal-actions"><button class="button" type="button" @click="showProfileForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></div></form></div>
-
-    <div v-if="showImportForm" class="modal-shade" @click.self="showImportForm = false"><form class="modal-panel" @submit.prevent="importProfiles"><div class="modal-head"><h2>{{ t('nodes.importNodes') }}</h2><button class="tool-button" type="button" @click="showImportForm = false">×</button></div><label>{{ t('subscriptions.source') }}<select v-model="importForm.subscriptionId"><option value="">{{ t('common.allGroups') }}</option><option v-for="group in groups.filter((item) => item.id)" :key="group.id" :value="group.id">{{ group.name }}</option></select></label><label>{{ t('nodes.importContent') }}<textarea v-model="importForm.content" class="code-area import-content" required :placeholder="t('nodes.importHint')"></textarea></label><label class="check-inline"><input v-model="importForm.isSubscription" type="checkbox" />{{ t('nodes.isSubscription') }}</label><div class="modal-actions"><label class="button file-button">{{ t('common.openFile') }}<input type="file" accept=".txt,.json,.conf" @change="readImportFile" /></label><button class="button" type="button" @click="pasteImport">{{ t('common.paste') }}</button><button class="button" type="button" @click="showImportForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.import') }}</button></div></form></div>
-
-    <div v-if="showSubscriptionForm" class="modal-shade" @click.self="showSubscriptionForm = false"><form class="modal-panel wide-modal" @submit.prevent="saveSubscription"><div class="modal-head"><h2>{{ t(editingSubscriptionId ? 'subscriptions.editSubscription' : 'subscriptions.addSubscription') }}</h2><button class="tool-button" type="button" @click="showSubscriptionForm = false">×</button></div><div class="form-grid two-col"><label>{{ t('subscriptions.name') }}<input v-model="subscriptionForm.remarks" required /></label><label>{{ t('subscriptions.url') }}<input v-model="subscriptionForm.url" required /></label><label>{{ t('subscriptions.moreUrl') }}<input v-model="subscriptionForm.moreUrl" /></label><label>{{ t('subscriptions.interval') }}<input v-model.number="subscriptionForm.autoUpdateInterval" type="number" min="0" /></label><label>{{ t('subscriptions.userAgent') }}<input v-model="subscriptionForm.userAgent" /></label><label>{{ t('subscriptions.convertTarget') }}<input v-model="subscriptionForm.convertTarget" /></label><label>{{ t('subscriptions.filter') }}<input v-model="subscriptionForm.filter" /></label><label>{{ t('subscriptions.sort') }}<input v-model.number="subscriptionForm.sort" type="number" /></label><label>{{ t('subscriptions.prevProfile') }}<input v-model="subscriptionForm.prevProfile" /></label><label>{{ t('subscriptions.nextProfile') }}<input v-model="subscriptionForm.nextProfile" /></label><label>{{ t('subscriptions.preSocksPort') }}<input v-model.number="subscriptionForm.preSocksPort" type="number" /></label><label>{{ t('subscriptions.customCoreType') }}<select v-model="subscriptionForm.customCoreType"><option :value="null">{{ t('common.none') }}</option><option v-for="core in coreTypes" :key="core" :value="core">{{ core }}</option></select></label><label class="wide-field">{{ t('subscriptions.requestHeaders') }}<textarea v-model="subscriptionForm.requestHeaders"></textarea></label><label class="wide-field">{{ t('subscriptions.memo') }}<textarea v-model="subscriptionForm.memo"></textarea></label><label class="check-inline"><input v-model="subscriptionForm.enabled" type="checkbox" />{{ t('subscriptions.enabled') }}</label></div><div class="modal-actions"><button class="button" type="button" @click="showSubscriptionForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></div></form></div>
-
-    <div v-if="showRouteForm" class="modal-shade" @click.self="showRouteForm = false"><form class="modal-panel" @submit.prevent="saveRoute"><div class="modal-head"><h2>{{ t(editingRouteId ? 'routing.edit' : 'routing.create') }}</h2><button class="tool-button" type="button" @click="showRouteForm = false">×</button></div><div class="form-grid"><label>{{ t('routing.name') }}<input v-model="routeForm.remarks" required /></label><label>{{ t('routing.url') }}<input v-model="routeForm.url" /></label><label>{{ t('routing.domainStrategy') }}<input v-model="routeForm.domainStrategy" /></label><label>{{ t('routing.domainStrategySingbox') }}<input v-model="routeForm.domainStrategy4Singbox" /></label><label>{{ t('routing.ruleCount') }}<input v-model.number="routeForm.ruleNum" type="number" min="0" /></label><label>{{ t('routing.url') }}<input v-model="routeForm.customRulesetPath4Singbox" /></label><label class="check-inline"><input v-model="routeForm.enabled" type="checkbox" />{{ t('common.enabled') }}</label><label class="check-inline"><input v-model="routeForm.locked" type="checkbox" />{{ t('common.enabled') }}</label><label class="wide-field">{{ t('common.rawJson') }}<textarea v-model="routeForm.ruleSet" class="code-area"></textarea></label></div><div class="modal-actions"><button class="button" type="button" @click="showRouteForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></div></form></div>
-
-    <div v-if="showExportDialog" class="modal-shade" @click.self="showExportDialog = false"><section class="modal-panel wide-modal"><div class="modal-head"><h2>{{ t('nodes.exportSelected') }}</h2><button class="tool-button" @click="showExportDialog = false">×</button></div><div class="export-options"><label class="check-inline"><input v-model="exportOptions.includeShareUris" type="checkbox" />{{ t('nodes.includeShareUris') }}</label><label class="check-inline"><input v-model="exportOptions.base64ShareUris" type="checkbox" />{{ t('nodes.base64ShareUris') }}</label><label class="check-inline"><input v-model="exportOptions.includeInnerUri" type="checkbox" />{{ t('nodes.includeInnerUri') }}</label><label class="check-inline"><input v-model="exportOptions.includeClientConfig" type="checkbox" />{{ t('nodes.includeClientConfig') }}</label><button class="button compact" @click="exportSelected">{{ t('common.refresh') }}</button></div><textarea v-model="exportContent" class="code-area export-area" spellcheck="false"></textarea><div class="modal-actions"><button class="button" @click="copyExport">{{ t('common.copy') }}</button><button class="button" @click="downloadExport">{{ t('common.download') }}</button><button class="button primary" @click="showExportDialog = false">{{ t('common.close') }}</button></div></section></div>
+    <ProfileModal v-if="showProfileForm" :state="profileModalState" :actions="profileModalActions" />
+    <ImportProfilesModal v-if="showImportForm" :state="importProfilesModalState" :actions="importProfilesModalActions" />
+    <SubscriptionModal v-if="showSubscriptionForm" :state="subscriptionModalState" :actions="subscriptionModalActions" />
+    <RouteModal v-if="showRouteForm" :state="routeModalState" :actions="routeModalActions" />
+    <ExportModal v-if="showExportDialog" :state="exportModalState" :actions="exportModalActions" />
     </template>
   </div>
 </template>
