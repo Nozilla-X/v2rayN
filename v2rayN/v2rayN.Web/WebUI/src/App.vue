@@ -125,7 +125,7 @@ const subscriptions = useSubscriptions({
 })
 const routing = useRouting({ ...api, t, showNotice, showError, confirm: confirmDestructive, loadStatus: runtime.loadStatus })
 const dns = useDns({ ...api, t, showNotice, showError })
-const settings = useSettings({ ...api, t, showNotice, showError, loadStatus: runtime.loadStatus, coreTypes: profiles.coreTypes, routingForm: routing.routingForm })
+const settings = useSettings({ ...api, t, showNotice, showError, loadStatus: runtime.loadStatus, coreTypes: profiles.coreTypes, routingForm: routing.routingForm, routingOptions: routing.routingOptions })
 const templates = useTemplates({ ...api, showNotice, showError })
 const maintenance = useMaintenance({
   ...api, t, translateKey, showNotice, showError, confirm: confirmDestructive, token: sessionToken,

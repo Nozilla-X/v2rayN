@@ -99,6 +99,10 @@ public sealed partial class V2rayRuntime
             {
                 return OperationView.Fail("profile_not_found", ApiMessageKeys.ProfileNotFound);
             }
+            if (!IsConfigTypeUnchanged(profile, existing))
+            {
+                return OperationView.Fail("profile_config_type_immutable", ApiMessageKeys.ProfileInvalid);
+            }
             profile.IndexId = profileId!;
             profile.Subid = existing.Subid;
             profile.IsSub = existing.IsSub;
@@ -137,9 +141,9 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("profile_complex_type_requires_import", ApiMessageKeys.CommonInvalidInput);
         }
-        else if (!profile.IsValid())
+        else if (!TryValidateProfile(profile, out var code, out var messageKey))
         {
-            return OperationView.Fail("profile_validation_failed", ApiMessageKeys.ProfileInvalid);
+            return OperationView.Fail(code, messageKey);
         }
 
         var wasCurrent = !isNew && profile.IndexId == Config.IndexId;
@@ -170,6 +174,45 @@ public sealed partial class V2rayRuntime
         _events.Publish("profiles-changed", new { subscriptionId = Config.SubIndexId });
         return OperationView.Ok(ApiMessageKeys.ProfileSaved, new { profileId = profile.IndexId, coreRestarted = false });
     }
+
+    internal static bool TryValidateProfile(ProfileItem profile, out string code, out string messageKey)
+    {
+        if (string.IsNullOrEmpty(profile.Remarks)
+            || string.IsNullOrEmpty(profile.Address)
+            || profile.Port <= 0
+            || profile.Port >= Global.MaxPort
+            || (profile.ConfigType is not EConfigType.SOCKS and not EConfigType.HTTP
+                && string.IsNullOrEmpty(profile.Password)))
+        {
+            code = "profile_validation_failed";
+            messageKey = ApiMessageKeys.ProfileInvalid;
+            return false;
+        }
+
+        var protocolExtra = profile.GetProtocolExtra();
+        if (profile.ConfigType == EConfigType.Shadowsocks && string.IsNullOrEmpty(protocolExtra.SsMethod))
+        {
+            code = "profile_validation_failed";
+            messageKey = ApiMessageKeys.ProfileInvalid;
+            return false;
+        }
+
+        if (profile.ConfigType == EConfigType.HTTP
+            && !string.IsNullOrEmpty(protocolExtra.HttpHeaders)
+            && JsonUtils.ParseJson(protocolExtra.HttpHeaders) is null)
+        {
+            code = "profile_http_headers_invalid";
+            messageKey = ApiMessageKeys.ProfileInvalid;
+            return false;
+        }
+
+        code = "ok";
+        messageKey = string.Empty;
+        return true;
+    }
+
+    internal static bool IsConfigTypeUnchanged(ProfileItem input, ProfileItem existing) =>
+        input.ConfigType == existing.ConfigType;
 
     public async Task<OperationView> DeleteProfilesAsync(IEnumerable<string> profileIds)
     {

@@ -9,6 +9,7 @@ export function useSettings(options: ApiServices & {
   loadStatus: () => Promise<void>
   coreTypes: string[]
   routingForm: Ref<Dict>
+  routingOptions: Ref<Dict>
 }) {
   const settings = ref<Dict>({})
   const inboundForm = ref<Dict>({})
@@ -18,12 +19,13 @@ export function useSettings(options: ApiServices & {
 
   async function loadSettings() {
     settings.value = await options.data('/api/settings') || {}
+    options.routingOptions.value = settings.value.options || {}
     settings.value.coreTypes = (settings.value.coreTypes || []).map((mapping: Dict) => ({
       ...mapping,
       coreType: options.canonicalCode(mapping.coreType, options.coreTypes),
     }))
     const inb = settings.value.inbound || {}
-    inboundForm.value = { ...inb, destOverrideText: (inb.destOverride || []).join('\n') }
+    inboundForm.value = { ...inb, destOverride: inb.destOverride || [] }
     const core = settings.value.core || {}
     coreForm.value = {
       ...core,
@@ -42,13 +44,20 @@ export function useSettings(options: ApiServices & {
     return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
   }
 
+  function toggleDestOverride(protocol: string, event: Event) {
+    const selected = new Set<string>(inboundForm.value.destOverride || [])
+    if ((event.target as HTMLInputElement).checked) selected.add(protocol)
+    else selected.delete(protocol)
+    inboundForm.value.destOverride = [...selected]
+  }
+
   async function saveInbound() {
     try {
       const result = await options.request('/api/settings/inbound', {
         method: 'PUT', body: {
           localPort: Number(inboundForm.value.localPort), secondLocalPortEnabled: inboundForm.value.secondLocalPortEnabled,
           udpEnabled: inboundForm.value.udpEnabled, sniffingEnabled: inboundForm.value.sniffingEnabled,
-          destOverride: parseLines(inboundForm.value.destOverrideText || ''), routeOnly: inboundForm.value.routeOnly,
+          destOverride: inboundForm.value.destOverride || [], routeOnly: inboundForm.value.routeOnly,
           allowLANConn: inboundForm.value.allowLANConn, newPort4LAN: inboundForm.value.newPort4LAN,
           user: inboundForm.value.user, pass: inboundForm.value.pass,
         },
@@ -101,13 +110,13 @@ export function useSettings(options: ApiServices & {
   }
 
   async function saveAllSettings() {
-    const { destOverrideText, ...inbound } = inboundForm.value
+    const inbound = inboundForm.value
     const { fragmentLengthsText, fragmentDelaysText, ...core } = coreForm.value
     const sections: Array<{ key: string; path: string; body: Dict }> = [
       {
         key: 'settings.inbound',
         path: '/api/settings/inbound',
-        body: { ...inbound, localPort: Number(inbound.localPort), destOverride: parseLines(destOverrideText || '') },
+        body: { ...inbound, localPort: Number(inbound.localPort), destOverride: inbound.destOverride || [] },
       },
       {
         key: 'settings.core',
@@ -169,5 +178,5 @@ export function useSettings(options: ApiServices & {
 
   const settingsPageState = reactive({ inboundForm, coreForm, appForm, speedForm, settings, coreTypes: options.coreTypes })
 
-  return { settings, inboundForm, coreForm, appForm, speedForm, loadSettings, settingsPageState, settingsPageActions: { saveInbound, saveCoreSettings, saveAppSettings, saveSpeedSettings, saveCoreTypes, saveAllSettings } }
+  return { settings, inboundForm, coreForm, appForm, speedForm, loadSettings, settingsPageState, settingsPageActions: { saveInbound, saveCoreSettings, saveAppSettings, saveSpeedSettings, saveCoreTypes, saveAllSettings, toggleDestOverride } }
 }

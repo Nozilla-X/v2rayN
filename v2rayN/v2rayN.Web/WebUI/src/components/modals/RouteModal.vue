@@ -29,7 +29,7 @@ const { onModalKeydown } = useModalFocus(dialog)
           </div>
         </fieldset>
         <fieldset class="editor-section"><legend>{{ t('routing.domainStrategy') }}</legend>
-          <div class="form-grid two-col"><label>{{ t('routing.domainStrategy') }}<input v-model="state.routeForm.domainStrategy" list="route-domain-strategies" /><datalist id="route-domain-strategies"><option v-for="strategy in ['AsIs', 'UseIP', 'UseIPv4v6', 'UseIPv6v4', 'UseIPv4', 'UseIPv6']" :key="strategy" :value="strategy" /></datalist></label><label>{{ t('routing.domainStrategySingbox') }}<input v-model="state.routeForm.domainStrategy4Singbox" /></label></div>
+          <div class="form-grid two-col"><label>{{ t('routing.domainStrategy') }}<select v-model="state.routeForm.domainStrategy"><option v-for="strategy in state.routingOptions?.routingProfileDomainStrategies || []" :key="strategy || 'none'" :value="strategy">{{ strategy || t('common.none') }}</option></select></label><label>{{ t('routing.domainStrategySingbox') }}<select v-model="state.routeForm.domainStrategy4Singbox"><option v-for="strategy in state.routingOptions?.routingProfileDomainStrategies4Singbox || []" :key="strategy || 'none'" :value="strategy">{{ strategy || t('common.none') }}</option></select></label></div>
         </fieldset>
       </div>
       <footer class="modal-actions"><button class="button" type="button" @click="state.showRouteForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></footer>

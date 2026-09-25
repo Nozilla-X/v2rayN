@@ -12,6 +12,7 @@ export function useRouting(options: ApiServices & {
   const activeRoutingId = ref('')
   const selectedRoutingId = ref('')
   const routes = ref<Dict[]>([])
+  const routingOptions = ref<Dict>({})
   const routingRules = ref<Dict[]>([])
   const selectedRouteIds = ref<string[]>([])
   const selectedRuleIds = ref<string[]>([])
@@ -331,12 +332,12 @@ export function useRouting(options: ApiServices & {
     } catch (error) { options.showError(error) }
   }
 
-  const routingPageState = reactive({ routes, activeRoutingId, selectedRoutingId, currentRoute, selectedRoute, routingForm, routingRules, rulesRaw, ruleImportText, appendRules, selectedRouteIds, selectedRuleIds })
-  const routeModalState = reactive({ showRouteForm, routeForm, editingRouteId })
+  const routingPageState = reactive({ routes, activeRoutingId, selectedRoutingId, currentRoute, selectedRoute, routingForm, routingRules, rulesRaw, ruleImportText, appendRules, selectedRouteIds, selectedRuleIds, routingOptions })
+  const routeModalState = reactive({ showRouteForm, routeForm, editingRouteId, routingOptions })
   const ruleModalState = reactive({ showRuleForm, ruleForm, ruleAdvancedJson, ruleModalError, editingRuleId })
 
   return {
-    activeRoutingId, selectedRoutingId, routes, routingForm, showRouteForm, loadRouting, loadRules, routingPageState, routeModalState, ruleModalState,
+    activeRoutingId, selectedRoutingId, routes, routingForm, routingOptions, showRouteForm, loadRouting, loadRules, routingPageState, routeModalState, ruleModalState,
     activateRoute,
     routingPageActions: { importRoutingProfiles, openAddRoute, loadRules, selectRoutingProfile, openEditRoute, deleteRoute, deleteSelectedRoutes, toggleAllRoutes, activateRoute, applyPreset, saveRoutingStrategies, addRoutingRule, openEditRoutingRule, saveRoutingRule, toggleAllRules, deleteSelectedRules, exportSelectedRules, moveSelectedRules, copyRoutingRules, saveRoutingRules, moveRoutingRule, removeRoutingRule, importRoutingRules, importRulesFromClipboard, readRulesFile, importRulesFromUrl },
     routeModalActions: { saveRoute },

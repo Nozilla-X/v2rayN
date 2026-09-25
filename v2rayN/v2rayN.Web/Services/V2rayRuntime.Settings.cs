@@ -12,6 +12,18 @@ namespace v2rayN.Web.Services;
 
 public sealed partial class V2rayRuntime
 {
+    private static readonly EConfigType[] WebEditableCoreTypes =
+    [
+        EConfigType.VMess,
+        EConfigType.Custom,
+        EConfigType.Shadowsocks,
+        EConfigType.SOCKS,
+        EConfigType.VLESS,
+        EConfigType.Trojan,
+        EConfigType.Hysteria2,
+        EConfigType.WireGuard,
+    ];
+
     public Task<WebSettingsView> GetSettingsAsync()
     {
         var inbound = Config.Inbound[0];
@@ -70,7 +82,21 @@ public sealed partial class V2rayRuntime
                 Config.SpeedTestItem.SpeedTestDelayInterval),
             Config.RoutingBasicItem.DomainStrategy,
             Config.RoutingBasicItem.DomainStrategy4Singbox,
-            Config.CoreTypeItem.Select(item => new CoreTypeMapping(item.ConfigType, item.CoreType)).ToArray()));
+            Config.CoreTypeItem
+                .Where(item => WebEditableCoreTypes.Contains(item.ConfigType))
+                .Select(item => new CoreTypeMapping(item.ConfigType, item.CoreType))
+                .ToArray(),
+            new WebSettingsOptionsView(
+                Global.Fingerprints.ToArray(),
+                Global.UserAgent.ToArray(),
+                Global.SingboxMuxs.ToArray(),
+                ["reject", "skip"],
+                Global.FragmentPacketsOptions.ToArray(),
+                Global.destOverrideProtocols.ToArray(),
+                Global.DomainStrategies.ToArray(),
+                Global.DomainStrategies4Sbox.ToArray(),
+                Global.DomainStrategies.AppendEmpty().ToArray(),
+                Global.DomainStrategies4Sbox.ToArray())));
     }
 
     public async Task<OperationView> UpdateInboundSettingsAsync(InboundSettingsInput input)
@@ -79,6 +105,10 @@ public sealed partial class V2rayRuntime
         if (input.LocalPort <= 0 || input.LocalPort > 65535 - highestPortOffset)
         {
             return OperationView.Fail("inbound_port_invalid", ApiMessageKeys.SettingsInvalidPort);
+        }
+        if (!AreDestOverrideProtocolsValid(input.DestOverride))
+        {
+            return OperationView.Fail("inbound_dest_override_invalid", ApiMessageKeys.CommonInvalidInput);
         }
 
         await _mutations.RunAsync(async () =>
@@ -104,6 +134,10 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> UpdateCoreSettingsAsync(CoreSettingsInput input)
     {
+        if (!AreCoreSettingsOptionsValid(input))
+        {
+            return OperationView.Fail("core_setting_option_invalid", ApiMessageKeys.SettingsInvalidCoreValue);
+        }
         if (!Global.LogLevels.Contains(input.Loglevel ?? string.Empty, StringComparer.OrdinalIgnoreCase))
         {
             return OperationView.Fail("core_log_level_invalid", ApiMessageKeys.SettingsInvalidCoreLogLevel);
@@ -215,10 +249,16 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> UpdateCoreTypeMappingsAsync(IEnumerable<CoreTypeMapping> mappings)
     {
+        var requestedMappings = mappings.ToArray();
+        if (!AreWebCoreTypeMappingsValid(requestedMappings))
+        {
+            return OperationView.Fail("core_type_mapping_invalid", ApiMessageKeys.CommonInvalidInput);
+        }
+
         await _mutations.RunAsync(async () =>
         {
             EnsureCoreTypeMappings();
-            foreach (var mapping in mappings)
+            foreach (var mapping in requestedMappings)
             {
                 var item = Config.CoreTypeItem.FirstOrDefault(entry => entry.ConfigType == mapping.ConfigType);
                 if (item is not null)
@@ -325,6 +365,10 @@ public sealed partial class V2rayRuntime
         if (string.IsNullOrWhiteSpace(input.Remarks))
         {
             return OperationView.Fail("routing_name_required", ApiMessageKeys.RoutingNameRequired);
+        }
+        if (!AreRoutingProfileStrategiesValid(input.DomainStrategy, input.DomainStrategy4Singbox))
+        {
+            return OperationView.Fail("routing_strategy_invalid", ApiMessageKeys.SettingsInvalidRoutingStrategy);
         }
 
         var ruleJson = string.IsNullOrWhiteSpace(input.RuleSet) ? "[]" : input.RuleSet;
@@ -713,4 +757,26 @@ public sealed partial class V2rayRuntime
 
     private static bool IsHttpUrl(string? value) =>
         Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";
+
+    internal static bool IsWebEditableCoreType(EConfigType configType) => WebEditableCoreTypes.Contains(configType);
+
+    internal static bool AreWebCoreTypeMappingsValid(IReadOnlyCollection<CoreTypeMapping> mappings) =>
+        mappings.All(mapping => IsWebEditableCoreType(mapping.ConfigType) && Enum.IsDefined(mapping.CoreType))
+        && mappings.Select(mapping => mapping.ConfigType).Distinct().Count() == mappings.Count;
+
+    internal static bool AreDestOverrideProtocolsValid(IEnumerable<string>? protocols) =>
+        protocols is null || protocols.All(Global.destOverrideProtocols.Contains);
+
+    internal static bool AreCoreSettingsOptionsValid(CoreSettingsInput input) =>
+        Global.Fingerprints.Contains(input.DefFingerprint ?? string.Empty)
+        && (string.IsNullOrEmpty(input.DefUserAgent) || Global.UserAgent.Contains(input.DefUserAgent))
+        && Global.SingboxMuxs.Contains(input.Mux4SboxProtocol ?? string.Empty)
+        && (string.IsNullOrEmpty(input.Mux4RayXudpProxyUDP443)
+            || input.Mux4RayXudpProxyUDP443 is "reject" or "skip")
+        && (string.IsNullOrEmpty(input.FragmentPackets)
+            || Global.FragmentPacketsOptions.Contains(input.FragmentPackets));
+
+    internal static bool AreRoutingProfileStrategiesValid(string? domainStrategy, string? domainStrategy4Singbox) =>
+        Global.DomainStrategies.AppendEmpty().Contains(domainStrategy ?? string.Empty)
+        && Global.DomainStrategies4Sbox.Contains(domainStrategy4Singbox ?? string.Empty);
 }

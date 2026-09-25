@@ -3,7 +3,7 @@ import type { ApiError, ApiServices, Dict, ErrorHandler, Notice, Translate } fro
 import { canonicalNetwork, profileEditorOptions } from '../profileEditorOptions'
 
 const groupIncompatibleProfileFields = [
-  'configVersion', 'address', 'port', 'password', 'username', 'network', 'headerType', 'requestHost', 'path',
+  'address', 'port', 'password', 'username', 'network', 'headerType', 'requestHost', 'path',
   'streamSecurity', 'allowInsecure', 'sni', 'alpn', 'fingerprint', 'publicKey', 'shortId', 'spiderX',
   'mldsa65Verify', 'muxEnabled', 'cert', 'certSha', 'echConfigList', 'verifyPeerCertByName', 'finalmask',
   'extra', 'transportExtra', 'ports', 'alterId', 'flow', 'id', 'security',
@@ -279,7 +279,7 @@ export function useProfiles(options: ApiServices & {
     editingProfileId.value = ''
     profileModalError.value = ''
     profileForm.value = {
-      configType: 'VMess', coreType: 'Xray', configVersion: 4, remarks: '', address: '', port: 443,
+      configType: 'VMess', coreType: 'Xray', remarks: '', address: '', port: 443,
       password: '', username: '', network: profileEditorOptions.defaultNetwork, streamSecurity: 'tls', allowInsecure: '', sni: '',
       alpn: '', fingerprint: '', publicKey: '', shortId: '', spiderX: '', muxEnabled: null,
       protoExtra: { vmessSecurity: 'auto' },
@@ -287,7 +287,7 @@ export function useProfiles(options: ApiServices & {
     }
     groupChildIds.value = []
     profileAdvancedJson.value = JSON.stringify({
-      indexId: '', configType: 'VMess', coreType: 'Xray', configVersion: 4, subid: '', isSub: false,
+      indexId: '', configType: 'VMess', coreType: 'Xray', subid: '', isSub: false,
       remarks: '', address: '', port: 443, password: '', username: '', network: profileEditorOptions.defaultNetwork, streamSecurity: 'tls',
       allowInsecure: '', sni: '', alpn: '', fingerprint: '', publicKey: '', shortId: '', spiderX: '',
       protoExtra: '{}', transportExtra: '{}',
@@ -343,7 +343,6 @@ export function useProfiles(options: ApiServices & {
         configType: profileForm.value.configType,
         coreType: profileForm.value.coreType || null,
         ...(!isGroupProfile ? {
-          configVersion: Number(profileForm.value.configVersion || 4),
           address: profileForm.value.address,
           port: Number(profileForm.value.port || 0),
           password: profileForm.value.password || '',
@@ -372,6 +371,7 @@ export function useProfiles(options: ApiServices & {
       if (isGroupProfile) {
         for (const field of groupIncompatibleProfileFields) delete body[field]
       }
+      delete body.configVersion
       const result = await options.request(editingProfileId.value ? `/api/profiles/${encodeURIComponent(editingProfileId.value)}` : '/api/profiles', {
         method: editingProfileId.value ? 'PUT' : 'POST', body,
       })

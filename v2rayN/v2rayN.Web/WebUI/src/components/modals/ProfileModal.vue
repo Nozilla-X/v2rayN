@@ -150,7 +150,7 @@ watch([() => state.showProfileForm, protocol, shadowsocksMethods], ([isOpen, con
         <fieldset class="editor-section">
           <legend>{{ t('nodes.profileBase') }}</legend>
           <div class="form-grid three-col">
-            <label>{{ t('nodes.type') }}<select v-model="state.profileForm.configType"><option v-for="kind in state.protocolTypes" :key="kind" :value="kind">{{ kind === 'Anytls' ? 'AnyTLS' : kind }}</option><option value="PolicyGroup">PolicyGroup</option><option value="ProxyChain">ProxyChain</option></select></label>
+            <label>{{ t('nodes.type') }}<select v-model="state.profileForm.configType" :disabled="!!state.editingProfileId"><option v-for="kind in state.protocolTypes" :key="kind" :value="kind">{{ kind === 'Anytls' ? 'AnyTLS' : kind }}</option><option value="PolicyGroup">PolicyGroup</option><option value="ProxyChain">ProxyChain</option></select></label>
             <label>{{ t('nodes.coreType') }}<select v-model="state.profileForm.coreType" :disabled="singboxOnlyConfigTypes.includes(protocol)"><option value="">{{ t('common.none') }}</option><option v-for="core in state.coreTypes" :key="core" :value="core">{{ core === 'sing_box' ? 'sing-box' : core }}</option></select></label>
             <label>{{ t('nodes.remarks') }}<input v-model="state.profileForm.remarks" required /></label>
             <template v-if="!isGroup">
@@ -179,7 +179,6 @@ watch([() => state.showProfileForm, protocol, shadowsocksMethods], ([isOpen, con
               <label v-if="['HTTP', 'SOCKS', 'Naive'].includes(protocol)">{{ t('nodes.username') }}<input v-model="state.profileForm.username" autocomplete="off" /></label>
               <label v-if="protocol === 'TUIC'">{{ t('nodes.uuid') }}<input v-model="state.profileForm.username" required autocomplete="off" /></label>
               <label v-if="['HTTP', 'SOCKS', 'Naive'].includes(protocol)">{{ t('nodes.password') }}<input v-model="state.profileForm.password" :required="protocol === 'Naive'" autocomplete="off" /></label>
-              <label v-if="protocol === 'VMess'">{{ t('nodes.configVersion') }}<input v-model.number="state.profileForm.configVersion" type="number" min="1" /></label>
               <label v-if="protocol === 'VMess'">{{ t('nodes.alterId') }}<input v-model="state.profileForm.protoExtra.alterId" /></label>
               <label v-if="protocol === 'VMess'">{{ t('nodes.security') }}<select v-model="state.profileForm.protoExtra.vmessSecurity"><option v-for="security in transportOptions.vmessSecurities" :key="security" :value="security">{{ security }}</option></select></label>
               <label v-if="['VLESS', 'Trojan'].includes(protocol)">{{ t('nodes.flow') }}<select v-model="state.profileForm.protoExtra.flow"><option v-for="flow in transportOptions.flows" :key="flow || 'none'" :value="flow">{{ flow || t('common.none') }}</option></select></label>

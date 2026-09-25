@@ -143,6 +143,18 @@ public sealed record SpeedTestSettingsView(
     int? SpeedTestPageSize,
     int? SpeedTestDelayInterval);
 
+public sealed record WebSettingsOptionsView(
+    string[] Fingerprints,
+    string[] UserAgents,
+    string[] Mux4SboxProtocols,
+    string[] Mux4RayXudpProxyUDP443Options,
+    string[] FragmentPacketsOptions,
+    string[] DestOverrideProtocols,
+    string[] RoutingBasicDomainStrategies,
+    string[] RoutingBasicDomainStrategies4Singbox,
+    string[] RoutingProfileDomainStrategies,
+    string[] RoutingProfileDomainStrategies4Singbox);
+
 public sealed record CoreTypeMapping(EConfigType ConfigType, ECoreType CoreType);
 
 public sealed record WebSettingsView(
@@ -152,7 +164,8 @@ public sealed record WebSettingsView(
     SpeedTestSettingsView SpeedTest,
     string? DomainStrategy,
     string? DomainStrategy4Singbox,
-    IReadOnlyList<CoreTypeMapping> CoreTypes);
+    IReadOnlyList<CoreTypeMapping> CoreTypes,
+    WebSettingsOptionsView Options);
 
 public sealed record InboundSettingsInput(
     int LocalPort,

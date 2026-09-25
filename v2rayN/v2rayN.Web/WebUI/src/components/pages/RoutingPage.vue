@@ -18,10 +18,9 @@ const allRulesSelected = computed(() => state.routingRules.length > 0 && state.s
     <div class="page-toolbar"><div class="page-title"><h1>{{ t('routing.title') }}</h1><span class="count-tag">{{ state.routes.length }}</span></div><div class="toolbar-main"><button class="button primary" @click="actions.openAddRoute"><UiIcon name="plus" /> {{ t('routing.create') }}</button><button class="button danger" :disabled="!state.selectedRouteIds.length" @click="actions.deleteSelectedRoutes">{{ t('common.deleteSelected', { count: state.selectedRouteIds.length }) }}</button><button class="button" :disabled="!state.selectedRoutingId" @click="actions.activateRoute(state.selectedRoutingId)">{{ t('routing.setDefault') }}</button><ActionDropdown :label="t('routing.importProfiles')"><button class="action-menu-item" role="menuitem" @click="actions.importRoutingProfiles">{{ t('routing.importProfiles') }}</button></ActionDropdown></div></div>
 
     <div class="routing-strategy-bar">
-      <label>{{ t('routing.domainStrategy') }}<input v-model="state.routingForm.domainStrategy" list="route-global-domain-strategies" /></label>
-      <label>{{ t('routing.domainStrategySingbox') }}<input v-model="state.routingForm.domainStrategy4Singbox" /></label>
+      <label>{{ t('routing.domainStrategy') }}<select v-model="state.routingForm.domainStrategy"><option v-for="strategy in state.routingOptions.routingBasicDomainStrategies || []" :key="strategy" :value="strategy">{{ strategy }}</option></select></label>
+      <label>{{ t('routing.domainStrategySingbox') }}<select v-model="state.routingForm.domainStrategy4Singbox"><option v-for="strategy in state.routingOptions.routingBasicDomainStrategies4Singbox || []" :key="strategy || 'none'" :value="strategy">{{ strategy || t('common.none') }}</option></select></label>
       <button class="button compact" @click="actions.saveRoutingStrategies">{{ t('common.save') }}</button>
-      <datalist id="route-global-domain-strategies"><option v-for="strategy in ['AsIs', 'UseIP', 'UseIPv4v6', 'UseIPv6v4', 'UseIPv4', 'UseIPv6']" :key="strategy" :value="strategy" /></datalist>
     </div>
 
     <div class="split-workspace routing-workspace">
