@@ -9,5 +9,47 @@ const actions = props.actions
 </script>
 
 <template>
-<div v-if="state.showSubscriptionForm" class="modal-shade" @click.self="state.showSubscriptionForm = false"><form class="modal-panel wide-modal" @submit.prevent="actions.saveSubscription"><div class="modal-head"><h2>{{ t(state.editingSubscriptionId ? 'subscriptions.editSubscription' : 'subscriptions.addSubscription') }}</h2><button class="tool-button" type="button" @click="state.showSubscriptionForm = false">×</button></div><div class="form-grid two-col"><label>{{ t('subscriptions.name') }}<input v-model="state.subscriptionForm.remarks" required /></label><label>{{ t('subscriptions.url') }}<input v-model="state.subscriptionForm.url" /></label><label>{{ t('subscriptions.moreUrl') }}<input v-model="state.subscriptionForm.moreUrl" /></label><label>{{ t('subscriptions.interval') }}<input v-model.number="state.subscriptionForm.autoUpdateInterval" type="number" min="0" /></label><label>{{ t('subscriptions.userAgent') }}<input v-model="state.subscriptionForm.userAgent" /></label><label>{{ t('subscriptions.convertTarget') }}<input v-model="state.subscriptionForm.convertTarget" /></label><label>{{ t('subscriptions.filter') }}<input v-model="state.subscriptionForm.filter" /></label><label>{{ t('subscriptions.sort') }}<input v-model.number="state.subscriptionForm.sort" type="number" /></label><label>{{ t('subscriptions.prevProfile') }}<input v-model="state.subscriptionForm.prevProfile" /></label><label>{{ t('subscriptions.nextProfile') }}<input v-model="state.subscriptionForm.nextProfile" /></label><label>{{ t('subscriptions.preSocksPort') }}<input v-model.number="state.subscriptionForm.preSocksPort" type="number" /></label><label>{{ t('subscriptions.customCoreType') }}<select v-model="state.subscriptionForm.customCoreType"><option :value="null">{{ t('common.none') }}</option><option v-for="core in state.coreTypes" :key="core" :value="core">{{ core }}</option></select></label><label class="wide-field">{{ t('subscriptions.requestHeaders') }}<textarea v-model="state.subscriptionForm.requestHeaders"></textarea></label><label class="wide-field">{{ t('subscriptions.memo') }}<textarea v-model="state.subscriptionForm.memo"></textarea></label><label class="check-inline"><input v-model="state.subscriptionForm.enabled" type="checkbox" />{{ t('subscriptions.enabled') }}</label></div><div class="modal-actions"><button class="button" type="button" @click="state.showSubscriptionForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></div></form></div>
+  <div v-if="state.showSubscriptionForm" class="modal-shade" @click.self="state.showSubscriptionForm = false">
+    <form class="modal-panel wide-modal modal-form" @submit.prevent="actions.saveSubscription">
+      <header class="modal-head"><h2>{{ t(state.editingSubscriptionId ? 'subscriptions.editSubscription' : 'subscriptions.addSubscription') }}</h2><button class="tool-button" type="button" :aria-label="t('common.close')" @click="state.showSubscriptionForm = false">×</button></header>
+      <div class="modal-content">
+        <fieldset class="editor-section"><legend>{{ t('subscriptions.source') }}</legend>
+          <div class="form-grid two-col">
+            <label>{{ t('subscriptions.name') }}<input v-model="state.subscriptionForm.remarks" required /></label>
+            <label>{{ t('subscriptions.url') }}<input v-model="state.subscriptionForm.url" inputmode="url" /></label>
+            <label class="check-inline"><input v-model="state.subscriptionForm.enabled" type="checkbox" />{{ t('subscriptions.enabled') }}</label>
+            <label>{{ t('subscriptions.interval') }}<input v-model.number="state.subscriptionForm.autoUpdateInterval" type="number" min="0" /></label>
+          </div>
+          <details class="secondary-fields"><summary>{{ t('subscriptions.moreUrl') }}</summary><label>{{ t('subscriptions.moreUrl') }}<textarea v-model="state.subscriptionForm.moreUrl" /></label></details>
+        </fieldset>
+
+        <fieldset class="editor-section"><legend>{{ t('subscriptions.filter') }}</legend>
+          <div class="form-grid two-col">
+            <label>{{ t('subscriptions.filter') }}<input v-model="state.subscriptionForm.filter" /></label>
+            <label>{{ t('subscriptions.convertTarget') }}<input v-model="state.subscriptionForm.convertTarget" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="editor-section"><legend>{{ t('subscriptions.requestOptions') }}</legend>
+          <div class="form-grid two-col">
+            <label>{{ t('subscriptions.userAgent') }}<input v-model="state.subscriptionForm.userAgent" /></label>
+            <label class="wide-field">{{ t('subscriptions.requestHeaders') }}<textarea v-model="state.subscriptionForm.requestHeaders" class="code-area" spellcheck="false" /></label>
+            <label>{{ t('subscriptions.sort') }}<input v-model.number="state.subscriptionForm.sort" type="number" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="editor-section"><legend>{{ t('subscriptions.proxyChain') }}</legend>
+          <div class="form-grid two-col">
+            <label>{{ t('subscriptions.prevProfile') }}<select v-model="state.subscriptionForm.prevProfile"><option value="">{{ t('common.none') }}</option><option v-if="state.subscriptionForm.prevProfile && !state.profileOptions.some((profile: Record<string, any>) => profile.remarks === state.subscriptionForm.prevProfile)" :value="state.subscriptionForm.prevProfile">{{ state.subscriptionForm.prevProfile }} · {{ t('subscriptions.profileNotListed') }}</option><option v-for="profile in state.profileOptions" :key="`prev-${profile.indexId}`" :value="profile.remarks">{{ profile.remarks }} · {{ profile.configType }}</option></select></label>
+            <label>{{ t('subscriptions.nextProfile') }}<select v-model="state.subscriptionForm.nextProfile"><option value="">{{ t('common.none') }}</option><option v-if="state.subscriptionForm.nextProfile && !state.profileOptions.some((profile: Record<string, any>) => profile.remarks === state.subscriptionForm.nextProfile)" :value="state.subscriptionForm.nextProfile">{{ state.subscriptionForm.nextProfile }} · {{ t('subscriptions.profileNotListed') }}</option><option v-for="profile in state.profileOptions" :key="`next-${profile.indexId}`" :value="profile.remarks">{{ profile.remarks }} · {{ profile.configType }}</option></select></label>
+            <label>{{ t('subscriptions.customCoreType') }}<select v-model="state.subscriptionForm.customCoreType"><option :value="null">{{ t('common.none') }}</option><option v-for="core in state.coreTypes" :key="core" :value="core">{{ core === 'sing_box' ? 'sing-box' : core }}</option></select></label>
+            <label>{{ t('subscriptions.preSocksPort') }}<input v-model.number="state.subscriptionForm.preSocksPort" type="number" min="0" max="65535" /></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="editor-section"><legend>{{ t('subscriptions.memo') }}</legend><label>{{ t('subscriptions.memo') }}<textarea v-model="state.subscriptionForm.memo" /></label></fieldset>
+      </div>
+      <footer class="modal-actions"><button class="button" type="button" @click="state.showSubscriptionForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></footer>
+    </form>
+  </div>
 </template>

@@ -10,12 +10,14 @@ export function useSubscriptions(options: ApiServices & {
   loadGroups: () => Promise<void>
   loadProfiles: () => Promise<void>
   selectedGroup: Ref<string>
+  groups: Ref<Dict[]>
   coreTypes: string[]
 }) {
   const t = options.t
   const subscriptions = ref<Dict[]>([])
   const subscriptionUseProxy = ref(false)
   const subscriptionForm = ref<Dict>({})
+  const profileOptions = ref<Dict[]>([])
   const showSubscriptionForm = ref(false)
   const editingSubscriptionId = ref('')
 
@@ -29,6 +31,7 @@ export function useSubscriptions(options: ApiServices & {
   }
 
   function openAddSubscription() {
+    void loadProfileOptions()
     editingSubscriptionId.value = ''
     subscriptionForm.value = {
       remarks: '', url: '', moreUrl: '', enabled: true, userAgent: '', requestHeaders: '', filter: '',
@@ -38,9 +41,19 @@ export function useSubscriptions(options: ApiServices & {
   }
 
   function openEditSubscription(item: Dict) {
+    void loadProfileOptions()
     editingSubscriptionId.value = item.id
     subscriptionForm.value = { ...item, customCoreType: item.customCoreType ? options.canonicalCode(item.customCoreType, options.coreTypes) : null }
     showSubscriptionForm.value = true
+  }
+
+  async function loadProfileOptions() {
+    try {
+      const groupIds = [...new Set(['', ...options.groups.value.map((group) => group.id).filter(Boolean)])]
+      const lists = await Promise.all(groupIds.map((subscriptionId) => options.data(subscriptionId ? options.queryPath('/api/profiles', { subscriptionId }) : '/api/profiles?subscriptionId=')))
+      profileOptions.value = [...new Map(lists.flat().map((item: Dict) => [item.indexId, item])).values()]
+    }
+    catch (error) { options.showError(error) }
   }
 
   async function saveSubscription() {
@@ -97,7 +110,7 @@ export function useSubscriptions(options: ApiServices & {
   }
 
   const subscriptionsPageState = reactive({ subscriptions, subscriptionUseProxy, selectedGroup: options.selectedGroup })
-  const subscriptionModalState = reactive({ showSubscriptionForm, subscriptionForm, editingSubscriptionId, coreTypes: options.coreTypes })
+  const subscriptionModalState = reactive({ showSubscriptionForm, subscriptionForm, editingSubscriptionId, coreTypes: options.coreTypes, profileOptions })
 
   return {
     subscriptions, subscriptionUseProxy, showSubscriptionForm, loadSubscriptions, subscriptionsPageState, subscriptionModalState,

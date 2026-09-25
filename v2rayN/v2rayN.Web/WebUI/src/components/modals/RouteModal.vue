@@ -9,5 +9,25 @@ const actions = props.actions
 </script>
 
 <template>
-<div v-if="state.showRouteForm" class="modal-shade" @click.self="state.showRouteForm = false"><form class="modal-panel" @submit.prevent="actions.saveRoute"><div class="modal-head"><h2>{{ t(state.editingRouteId ? 'routing.edit' : 'routing.create') }}</h2><button class="tool-button" type="button" @click="state.showRouteForm = false">×</button></div><div class="form-grid"><label>{{ t('routing.name') }}<input v-model="state.routeForm.remarks" required /></label><label>{{ t('routing.url') }}<input v-model="state.routeForm.url" /></label><label>{{ t('routing.domainStrategy') }}<input v-model="state.routeForm.domainStrategy" /></label><label>{{ t('routing.domainStrategySingbox') }}<input v-model="state.routeForm.domainStrategy4Singbox" /></label><label>{{ t('routing.ruleCount') }}<input v-model.number="state.routeForm.ruleNum" type="number" min="0" /></label><label>{{ t('routing.url') }}<input v-model="state.routeForm.customRulesetPath4Singbox" /></label><label class="check-inline"><input v-model="state.routeForm.enabled" type="checkbox" />{{ t('common.enabled') }}</label><label class="check-inline"><input v-model="state.routeForm.locked" type="checkbox" />{{ t('common.enabled') }}</label><label class="wide-field">{{ t('common.rawJson') }}<textarea v-model="state.routeForm.ruleSet" class="code-area"></textarea></label></div><div class="modal-actions"><button class="button" type="button" @click="state.showRouteForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></div></form></div>
+  <div v-if="state.showRouteForm" class="modal-shade" @click.self="state.showRouteForm = false">
+    <form class="modal-panel wide-modal modal-form" @submit.prevent="actions.saveRoute">
+      <header class="modal-head"><h2>{{ t(state.editingRouteId ? 'routing.edit' : 'routing.create') }}</h2><button class="tool-button" type="button" :aria-label="t('common.close')" @click="state.showRouteForm = false">×</button></header>
+      <div class="modal-content">
+        <fieldset class="editor-section"><legend>{{ t('routing.profiles') }}</legend>
+          <div class="form-grid two-col">
+            <label>{{ t('routing.name') }}<input v-model="state.routeForm.remarks" required /></label>
+            <label>{{ t('routing.url') }}<input v-model="state.routeForm.url" inputmode="url" /></label>
+            <label>{{ t('routing.customIcon') }}<input v-model="state.routeForm.customIcon" /></label>
+            <label class="check-inline"><input v-model="state.routeForm.enabled" type="checkbox" />{{ t('common.enabled') }}</label>
+            <label class="check-inline"><input v-model="state.routeForm.locked" type="checkbox" />{{ t('routing.locked') }}</label>
+            <label class="wide-field">{{ t('routing.singboxRuleSetPath') }}<input v-model="state.routeForm.customRulesetPath4Singbox" /></label>
+          </div>
+        </fieldset>
+        <fieldset class="editor-section"><legend>{{ t('routing.domainStrategy') }}</legend>
+          <div class="form-grid two-col"><label>{{ t('routing.domainStrategy') }}<input v-model="state.routeForm.domainStrategy" list="route-domain-strategies" /><datalist id="route-domain-strategies"><option v-for="strategy in ['AsIs', 'UseIP', 'UseIPv4v6', 'UseIPv6v4', 'UseIPv4', 'UseIPv6']" :key="strategy" :value="strategy" /></datalist></label><label>{{ t('routing.domainStrategySingbox') }}<input v-model="state.routeForm.domainStrategy4Singbox" /></label></div>
+        </fieldset>
+      </div>
+      <footer class="modal-actions"><button class="button" type="button" @click="state.showRouteForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.save') }}</button></footer>
+    </form>
+  </div>
 </template>

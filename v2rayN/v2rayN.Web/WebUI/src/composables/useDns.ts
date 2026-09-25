@@ -3,7 +3,9 @@ import type { ApiServices, Dict, ErrorHandler, Notice, Translate } from './types
 
 export function useDns(options: ApiServices & { t: Translate; showNotice: Notice; showError: ErrorHandler }) {
   const t = options.t
-  const simpleDnsRaw = ref('{}')
+  const simpleDnsForm = ref<Dict>({})
+  const simpleDnsAdvancedRaw = ref('{}')
+  const initialSimpleDns = ref<Dict>({})
   const dnsProfiles = ref<Dict[]>([])
 
   async function loadDns() {
@@ -11,14 +13,21 @@ export function useDns(options: ApiServices & { t: Translate; showNotice: Notice
       options.data('/api/settings/dns/simple'),
       options.data('/api/settings/dns/profiles'),
     ])
-    simpleDnsRaw.value = JSON.stringify(simple || {}, null, 2)
-    dnsProfiles.value = profilesResult || []
+    simpleDnsForm.value = { ...(simple || {}) }
+    initialSimpleDns.value = { ...(simple || {}) }
+    simpleDnsAdvancedRaw.value = JSON.stringify(simple || {}, null, 2)
+    dnsProfiles.value = (profilesResult || []).filter((profile: Dict) => ['Xray', 'sing_box', 'sing-box'].includes(String(profile.coreType)))
   }
 
   async function saveSimpleDns() {
     try {
-      const payload = JSON.parse(simpleDnsRaw.value)
+      const advanced = JSON.parse(simpleDnsAdvancedRaw.value || '{}')
+      const changedFields = Object.fromEntries(Object.entries(simpleDnsForm.value).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(initialSimpleDns.value[key])))
+      const payload = { ...advanced, ...changedFields }
       const result = await options.request('/api/settings/dns/simple', { method: 'PUT', body: payload })
+      initialSimpleDns.value = { ...payload }
+      simpleDnsForm.value = { ...payload }
+      simpleDnsAdvancedRaw.value = JSON.stringify(payload, null, 2)
       options.showNotice(options.operationMessage(result))
     } catch (error) {
       if (error instanceof SyntaxError) options.showNotice(t('common.invalidJson'), 'error')
@@ -40,7 +49,7 @@ export function useDns(options: ApiServices & { t: Translate; showNotice: Notice
     } catch (error) { options.showError(error) }
   }
 
-  const dnsPageState = reactive({ simpleDnsRaw, dnsProfiles })
+  const dnsPageState = reactive({ simpleDnsForm, simpleDnsAdvancedRaw, dnsProfiles })
 
-  return { simpleDnsRaw, dnsProfiles, loadDns, dnsPageState, dnsPageActions: { loadDns, saveSimpleDns, saveDnsProfile } }
+  return { simpleDnsForm, simpleDnsAdvancedRaw, dnsProfiles, loadDns, dnsPageState, dnsPageActions: { loadDns, saveSimpleDns, saveDnsProfile } }
 }

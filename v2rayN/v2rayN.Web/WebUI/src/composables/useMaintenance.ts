@@ -14,7 +14,7 @@ export function useMaintenance(options: ApiServices & {
 }) {
   const t = options.t
   const webdavForm = ref<Dict>({ url: '', userName: '', password: '', dirName: '' })
-  const xrayUpdate = ref<Dict>({ preRelease: false, useProxy: true, result: null })
+  const xrayUpdate = ref<Dict>({ selected: true, preRelease: false, useProxy: true, result: null })
 
   async function loadMaintenance() {
     const webdav = await options.data('/api/settings/webdav')
@@ -24,7 +24,7 @@ export function useMaintenance(options: ApiServices & {
 
   async function checkXrayUpdate() {
     try {
-      const result = await options.request(options.queryPath('/api/core/xray/check-update', xrayUpdate.value))
+      const result = await options.request(options.queryPath('/api/core/xray/check-update', { preRelease: xrayUpdate.value.preRelease, useProxy: xrayUpdate.value.useProxy }))
       xrayUpdate.value.result = { ...(result.data || {}), messageKey: result.messageKey }
       options.showNotice(options.translateKey(result.messageKey || (xrayUpdate.value.result.updateAvailable ? 'core.updateAvailable' : 'core.updateCurrent')))
     } catch (error) { options.showError(error) }
@@ -32,7 +32,7 @@ export function useMaintenance(options: ApiServices & {
 
   async function updateXray() {
     try {
-      const result = await options.request(options.queryPath('/api/core/xray/update', xrayUpdate.value), { method: 'POST' })
+      const result = await options.request(options.queryPath('/api/core/xray/update', { preRelease: xrayUpdate.value.preRelease, useProxy: xrayUpdate.value.useProxy }), { method: 'POST' })
       options.showNotice(options.operationMessage(result, 'core.updateStarted'))
       await options.loadOperations()
     } catch (error) { options.showError(error) }

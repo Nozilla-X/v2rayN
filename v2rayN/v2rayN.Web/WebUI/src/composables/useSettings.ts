@@ -1,7 +1,9 @@
 import { reactive, ref, type Ref } from 'vue'
 import type { ApiServices, Dict, ErrorHandler, Notice } from './types'
+import type { Translate } from './types'
 
 export function useSettings(options: ApiServices & {
+  t: Translate
   showNotice: Notice
   showError: ErrorHandler
   loadStatus: () => Promise<void>
@@ -98,7 +100,42 @@ export function useSettings(options: ApiServices & {
     } catch (error) { options.showError(error) }
   }
 
+  async function saveAllSettings() {
+    try {
+      const { destOverrideText, ...inbound } = inboundForm.value
+      const { fragmentLengthsText, fragmentDelaysText, ...core } = coreForm.value
+      const requests = [
+        options.request('/api/settings/inbound', { method: 'PUT', body: {
+          ...inbound,
+          localPort: Number(inbound.localPort), destOverride: parseLines(destOverrideText || ''),
+        } }),
+        options.request('/api/settings/core', { method: 'PUT', body: {
+          ...core,
+          fragmentLengths: parseLines(fragmentLengthsText || ''), fragmentDelays: parseLines(fragmentDelaysText || ''),
+          mux4RayConcurrency: core.mux4RayConcurrency === '' ? null : Number(core.mux4RayConcurrency),
+          mux4RayXudpConcurrency: core.mux4RayXudpConcurrency === '' ? null : Number(core.mux4RayXudpConcurrency),
+          mux4SboxMaxConnections: Number(core.mux4SboxMaxConnections || 0), hy2UpMbps: Number(core.hy2UpMbps || 0), hy2DownMbps: Number(core.hy2DownMbps || 0),
+        } }),
+        options.request('/api/settings/application', { method: 'PUT', body: { ...appForm.value, geoAutoUpdateInterval: Number(appForm.value.geoAutoUpdateInterval || 0) } }),
+        options.request('/api/settings/speedtest', { method: 'PUT', body: {
+          ...speedForm.value,
+          speedTestTimeout: Number(speedForm.value.speedTestTimeout), mixedConcurrencyCount: Number(speedForm.value.mixedConcurrencyCount),
+          speedTestPageSize: speedForm.value.speedTestPageSize === '' ? null : Number(speedForm.value.speedTestPageSize),
+          speedTestDelayInterval: speedForm.value.speedTestDelayInterval === '' ? null : Number(speedForm.value.speedTestDelayInterval),
+        } }),
+        options.request('/api/settings/core-types', { method: 'PUT', body: { mappings: settings.value.coreTypes || [] } }),
+      ]
+      const results = await Promise.all(requests)
+      await options.loadStatus()
+      options.showNotice(options.t('settings.allSaved'))
+      return results
+    } catch (error) {
+      options.showError(error)
+      return null
+    }
+  }
+
   const settingsPageState = reactive({ inboundForm, coreForm, appForm, speedForm, settings, coreTypes: options.coreTypes })
 
-  return { settings, inboundForm, coreForm, appForm, speedForm, loadSettings, settingsPageState, settingsPageActions: { saveInbound, saveCoreSettings, saveAppSettings, saveSpeedSettings, saveCoreTypes } }
+  return { settings, inboundForm, coreForm, appForm, speedForm, loadSettings, settingsPageState, settingsPageActions: { saveInbound, saveCoreSettings, saveAppSettings, saveSpeedSettings, saveCoreTypes, saveAllSettings } }
 }

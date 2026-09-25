@@ -18,6 +18,7 @@ import ExportModal from './components/modals/ExportModal.vue'
 import ImportProfilesModal from './components/modals/ImportProfilesModal.vue'
 import ProfileModal from './components/modals/ProfileModal.vue'
 import RouteModal from './components/modals/RouteModal.vue'
+import RouteRuleModal from './components/modals/RouteRuleModal.vue'
 import SubscriptionModal from './components/modals/SubscriptionModal.vue'
 import { useApi } from './composables/useApi'
 import { useDns } from './composables/useDns'
@@ -86,11 +87,11 @@ const profiles = useProfiles({
 const subscriptions = useSubscriptions({
   ...api, t, locale, showNotice, showError,
   loadOperations: runtime.loadOperations, loadGroups: profiles.loadGroups, loadProfiles: profiles.loadProfiles,
-  selectedGroup: profiles.selectedGroup, coreTypes: profiles.coreTypes,
+  selectedGroup: profiles.selectedGroup, groups: profiles.groups, coreTypes: profiles.coreTypes,
 })
 const routing = useRouting({ ...api, t, showNotice, showError, loadStatus: runtime.loadStatus })
 const dns = useDns({ ...api, t, showNotice, showError })
-const settings = useSettings({ ...api, showNotice, showError, loadStatus: runtime.loadStatus, coreTypes: profiles.coreTypes, routingForm: routing.routingForm })
+const settings = useSettings({ ...api, t, showNotice, showError, loadStatus: runtime.loadStatus, coreTypes: profiles.coreTypes, routingForm: routing.routingForm })
 const templates = useTemplates({ ...api, showNotice, showError })
 const maintenance = useMaintenance({
   ...api, t, translateKey, showNotice, showError, token: sessionToken,
@@ -195,7 +196,7 @@ async function copyProfileExport(options: ProfileExportOptions, profileIds?: str
 
 function contextMenuStyle(menu: Dict) {
   const left = Math.max(0, Math.min(Number(menu.x) || 0, window.innerWidth - 250))
-  const top = Math.max(8, Math.min(Number(menu.y) || 0, window.innerHeight - 428))
+  const top = Math.max(8, Math.min(Number(menu.y) || 0, window.innerHeight - 580))
   return { left: `${left}px`, top: `${top}px` }
 }
 
@@ -248,6 +249,8 @@ const subscriptionModalState = subscriptions.subscriptionModalState
 const subscriptionModalActions = subscriptions.subscriptionModalActions
 const routeModalState = routing.routeModalState
 const routeModalActions = routing.routeModalActions
+const ruleModalState = routing.ruleModalState
+const ruleModalActions = routing.ruleModalActions
 const exportModalState = profiles.exportModalState
 const exportModalActions = profiles.exportModalActions
 
@@ -269,6 +272,7 @@ watch(locale, (value) => {
 }, { immediate: true })
 
 onMounted(async () => {
+  document.addEventListener('keydown', closeDialogsOnEscape)
   await session.loadSetupStatus()
   if (setupRequired.value || !sessionToken.value) return
   try {
@@ -282,8 +286,20 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  document.removeEventListener('keydown', closeDialogsOnEscape)
   clearTimeout(noticeTimer)
 })
+
+function closeDialogsOnEscape(event: KeyboardEvent) {
+  if (event.key !== 'Escape') return
+  contextMenu.value = null
+  profiles.showProfileForm.value = false
+  profiles.showImportForm.value = false
+  profiles.showExportDialog.value = false
+  subscriptions.showSubscriptionForm.value = false
+  routing.showRouteForm.value = false
+  routing.ruleModalState.showRuleForm = false
+}
 </script>
 
 <template>
@@ -336,17 +352,16 @@ onUnmounted(() => {
         </main>
       </template>
     <div v-if="contextMenu" class="context-menu" :style="contextMenuStyle(contextMenu)" @click="contextMenu = null">
-      <strong class="context-heading">{{ contextMenu.profile.remarks || contextMenu.profile.address }}</strong>
-      <button :disabled="contextMenu.profile.isCurrent" @click="nodesPageActions.selectProfile(contextMenu.profile)">{{ contextMenu.profile.isCurrent ? t('nodes.current') : t('nodes.switch') }}</button>
-      <button @click="openEditProfile(contextMenu.profile)">{{ t('common.edit') }}</button>
+      <button :disabled="contextMenu.profile.isCurrent" @click="nodesPageActions.selectProfile(contextMenu.profile)">{{ contextMenu.profile.isCurrent ? t('nodes.current') : t('nodes.switch') }}<span class="menu-shortcut">Enter</span></button>
+      <button @click="openEditProfile(contextMenu.profile)">{{ t('common.edit') }}<span class="menu-shortcut">Ctrl+D</span></button>
       <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.runProfileAction('copy')">{{ t('nodes.copySelected') }}</button>
-      <button class="danger-text" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.runProfileAction('delete')">{{ t('nodes.removeSelected') }}</button>
+      <button class="danger-text" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.runProfileAction('delete')">{{ t('nodes.removeSelected') }}<span class="menu-shortcut">Back</span></button>
       <button @click="nodesPageActions.runProfileAction('deduplicate')">{{ t('nodes.deduplicate') }}</button>
       <button @click="nodesPageActions.runProfileAction('remove-invalid')">{{ t('nodes.removeInvalid') }}</button>
       <div class="context-separator"></div>
-      <button @click="nodesPageActions.startSpeedTest('tcping', [contextMenu.profile.indexId])">{{ t('nodes.tcping') }}</button>
-      <button @click="nodesPageActions.startSpeedTest('realping', [contextMenu.profile.indexId])">{{ t('nodes.realping') }}</button>
-      <button @click="nodesPageActions.startSpeedTest('speedtest', [contextMenu.profile.indexId])">{{ t('nodes.speedtest') }}</button>
+      <button @click="nodesPageActions.startSpeedTest('tcping', [contextMenu.profile.indexId])">{{ t('nodes.tcping') }}<span class="menu-shortcut">Ctrl+O</span></button>
+      <button @click="nodesPageActions.startSpeedTest('realping', [contextMenu.profile.indexId])">{{ t('nodes.realping') }}<span class="menu-shortcut">Ctrl+R</span></button>
+      <button @click="nodesPageActions.startSpeedTest('speedtest', [contextMenu.profile.indexId])">{{ t('nodes.speedtest') }}<span class="menu-shortcut">Ctrl+T</span></button>
       <button @click="nodesPageActions.startSpeedTest('udpTest', [contextMenu.profile.indexId])">{{ t('nodes.udp') }}</button>
       <button @click="nodesPageActions.sortProfiles('DelayVal')">{{ t('nodes.sortByTestResults') }}</button>
       <div class="context-separator"></div>
@@ -354,19 +369,19 @@ onUnmounted(() => {
         <button v-for="group in nodesPageState.groups" :key="group.id || 'all-target'" class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.moveSelectedToGroup(group.id)">{{ group.name || t('common.allGroups') }}</button>
       </FlyoutMenu>
       <FlyoutMenu context :label="t('nodes.move')" :disabled="!nodesPageState.selectedIds.length" @select="contextMenu = null">
-        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('top')">{{ t('nodes.top') }}</button>
-        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('up')">{{ t('nodes.up') }}</button>
-        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('down')">{{ t('nodes.down') }}</button>
-        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('bottom')">{{ t('nodes.bottom') }}</button>
+        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('top')">{{ t('nodes.top') }}<span class="menu-shortcut">T</span></button>
+        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('up')">{{ t('nodes.up') }}<span class="menu-shortcut">U</span></button>
+        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('down')">{{ t('nodes.down') }}<span class="menu-shortcut">D</span></button>
+        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('bottom')">{{ t('nodes.bottom') }}<span class="menu-shortcut">B</span></button>
       </FlyoutMenu>
-      <button :disabled="!nodesPageState.filteredProfiles.length" @click="!nodesPageState.allVisibleSelected && nodesPageActions.toggleAllVisible()">{{ t('nodes.selectAll') }}</button>
+      <button :disabled="!nodesPageState.filteredProfiles.length" @click="!nodesPageState.allVisibleSelected && nodesPageActions.toggleAllVisible()">{{ t('nodes.selectAll') }}<span class="menu-shortcut">Ctrl+A</span></button>
       <div class="context-separator"></div>
-      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.shareProfile(contextMenu.profile.indexId)">{{ t('nodes.shareProfile') }}</button>
+      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.shareSelected">{{ t('nodes.shareProfile') }}<span class="menu-shortcut">Ctrl+F</span></button>
       <FlyoutMenu context :label="t('nodes.exportMenu')" :disabled="!nodesPageState.selectedIds.length" @select="contextMenu = null">
-        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportProfileConfig(contextMenu.profile.indexId)">{{ t('nodes.exportFullConfig') }}</button>
-        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportProfileConfigToClipboard(contextMenu.profile.indexId)">{{ t('nodes.exportFullConfigClipboard') }}</button>
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportFullConfig">{{ t('nodes.exportFullConfig') }}</button>
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportFullConfigToClipboard">{{ t('nodes.exportFullConfigClipboard') }}</button>
         <div class="action-menu-separator" role="separator"></div>
-        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksToClipboard">{{ t('nodes.exportShareLinkClipboard') }}</button>
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksToClipboard">{{ t('nodes.exportShareLinkClipboard') }}<span class="menu-shortcut">Ctrl+C</span></button>
         <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksBase64">{{ t('nodes.exportShareLinkBase64') }}</button>
         <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportInnerUris">{{ t('nodes.exportInnerUri') }}</button>
       </FlyoutMenu>
@@ -385,6 +400,7 @@ onUnmounted(() => {
     <ImportProfilesModal v-if="showImportForm" :state="importProfilesModalState" :actions="importProfilesModalActions" />
     <SubscriptionModal v-if="showSubscriptionForm" :state="subscriptionModalState" :actions="subscriptionModalActions" />
     <RouteModal v-if="showRouteForm" :state="routeModalState" :actions="routeModalActions" />
+    <RouteRuleModal v-if="routingPageState && ruleModalState.showRuleForm" :state="ruleModalState" :actions="ruleModalActions" />
     <ExportModal v-if="showExportDialog" :state="exportModalState" :actions="exportModalActions" />
     </template>
   </div>

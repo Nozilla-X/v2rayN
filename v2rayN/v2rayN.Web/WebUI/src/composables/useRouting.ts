@@ -11,29 +11,45 @@ export function useRouting(options: ApiServices & {
   const activeRoutingId = ref('')
   const routes = ref<Dict[]>([])
   const routingRules = ref<Dict[]>([])
+  const selectedRouteIds = ref<string[]>([])
+  const selectedRuleIds = ref<string[]>([])
   const rulesRaw = ref('[]')
   const ruleImportText = ref('')
-  const appendRules = ref(false)
+  const appendRules = ref(true)
   const routingForm = ref<Dict>({})
   const routeForm = ref<Dict>({})
+  const ruleForm = ref<Dict>({})
+  const ruleAdvancedJson = ref('')
+  const ruleModalError = ref('')
   const showRouteForm = ref(false)
+  const showRuleForm = ref(false)
   const editingRouteId = ref('')
+  const editingRuleId = ref('')
   const currentRoute = computed(() => routes.value.find((route) => route.isActive) || null)
+  const selectedRoute = computed(() => routes.value.find((route) => route.id === activeRoutingId.value) || null)
 
   async function loadRouting() {
     routes.value = await options.data('/api/settings/routing-profiles') || []
-    activeRoutingId.value = routes.value.find((item) => item.isActive)?.id || ''
-    if (routes.value.length && !routes.value.some((item) => item.id === activeRoutingId.value)) activeRoutingId.value = routes.value[0].id
+    selectedRouteIds.value = selectedRouteIds.value.filter((id) => routes.value.some((route) => route.id === id))
+    if (!routes.value.some((item) => item.id === activeRoutingId.value)) {
+      activeRoutingId.value = routes.value.find((item) => item.isActive)?.id || routes.value[0]?.id || ''
+    }
     if (activeRoutingId.value) await loadRules(activeRoutingId.value)
+    else {
+      routingRules.value = []
+      rulesRaw.value = '[]'
+    }
   }
 
   async function loadRules(id = activeRoutingId.value) {
     if (!id) {
       routingRules.value = []
+      selectedRuleIds.value = []
       rulesRaw.value = '[]'
       return
     }
     routingRules.value = await options.data(`/api/settings/routing-profiles/${encodeURIComponent(id)}/rules`) || []
+    selectedRuleIds.value = selectedRuleIds.value.filter((ruleId) => routingRules.value.some((rule) => rule.id === ruleId))
     rulesRaw.value = JSON.stringify(routingRules.value, null, 2)
   }
 
@@ -78,6 +94,22 @@ export function useRouting(options: ApiServices & {
     } catch (error) { options.showError(error) }
   }
 
+  function toggleAllRoutes() {
+    selectedRouteIds.value = selectedRouteIds.value.length === routes.value.length ? [] : routes.value.map((route) => route.id)
+  }
+
+  async function deleteSelectedRoutes() {
+    if (!selectedRouteIds.value.length || !window.confirm(t('common.confirmDelete'))) return
+    try {
+      for (const id of [...selectedRouteIds.value]) {
+        await options.request(`/api/settings/routing-profiles/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      }
+      selectedRouteIds.value = []
+      options.showNotice(t('common.deleted'))
+      await loadRouting()
+    } catch (error) { options.showError(error) }
+  }
+
   async function importRoutingProfiles() {
     try {
       const result = await options.request('/api/settings/routing-profiles/import', { method: 'POST' })
@@ -99,6 +131,7 @@ export function useRouting(options: ApiServices & {
   }
 
   async function importRoutingRules() {
+    if (!activeRoutingId.value || !ruleImportText.value.trim()) return
     try {
       const result = await options.request(`/api/settings/routing-profiles/${encodeURIComponent(activeRoutingId.value)}/rules/import`, {
         method: 'POST', body: { content: ruleImportText.value, append: appendRules.value },
@@ -109,21 +142,122 @@ export function useRouting(options: ApiServices & {
     } catch (error) { options.showError(error) }
   }
 
-  async function addRoutingRule() {
-    const rules = [...routingRules.value, { id: crypto.randomUUID(), enabled: true, type: 'field', remarks: '', outboundTag: 'proxy' }]
+  async function importRulesFromClipboard() {
+    try { ruleImportText.value = await navigator.clipboard.readText() }
+    catch { options.showNotice(t('common.clipboardUnavailable'), 'error'); return }
+    await importRoutingRules()
+  }
+
+  async function readRulesFile(event: Event) {
+    const input = event.target as HTMLInputElement
+    const file = input.files?.[0]
+    if (file) {
+      ruleImportText.value = await file.text()
+      await importRoutingRules()
+    }
+    input.value = ''
+  }
+
+  async function importRulesFromUrl() {
+    const url = selectedRoute.value?.url?.trim()
+    if (!url) return options.showNotice(t('routing.urlRequired'), 'error')
     try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
+      ruleImportText.value = await response.text()
+      await importRoutingRules()
+    } catch (error) {
+      options.showNotice(t('routing.urlImportFailed', { error: error instanceof Error ? error.message : String(error) }), 'error')
+    }
+  }
+
+  function addRoutingRule() {
+    editingRuleId.value = ''
+    ruleModalError.value = ''
+    ruleForm.value = { id: crypto.randomUUID(), enabled: true, type: 'field', remarks: '', ruleType: null, outboundTag: 'proxy', port: '', network: '', inboundTagText: '', protocolText: '', domainText: '', ipText: '', processText: '' }
+    ruleAdvancedJson.value = JSON.stringify({ id: '', type: 'field', port: '', network: '', inboundTag: [], outboundTag: 'proxy', ip: [], domain: [], protocol: [], process: [], enabled: true, remarks: '', ruleType: null }, null, 2)
+    showRuleForm.value = true
+  }
+
+  function openEditRoutingRule(rule: Dict) {
+    editingRuleId.value = rule.id
+    ruleModalError.value = ''
+    ruleForm.value = {
+      ...rule,
+      inboundTagText: (rule.inboundTag || []).join('\n'),
+      protocolText: (rule.protocol || []).join('\n'),
+      domainText: (rule.domain || []).join('\n'),
+      ipText: (rule.ip || []).join('\n'),
+      processText: (rule.process || []).join('\n'),
+    }
+    ruleAdvancedJson.value = JSON.stringify(rule, null, 2)
+    showRuleForm.value = true
+  }
+
+  function listFromText(value: string) {
+    return value.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean)
+  }
+
+  async function saveRoutingRule() {
+    try {
+      const advanced = JSON.parse(ruleAdvancedJson.value || '{}')
+      const rule = {
+        ...advanced,
+        ...ruleForm.value,
+        id: editingRuleId.value || ruleForm.value.id || crypto.randomUUID(),
+        inboundTag: listFromText(ruleForm.value.inboundTagText || ''),
+        protocol: listFromText(ruleForm.value.protocolText || ''),
+        domain: listFromText(ruleForm.value.domainText || ''),
+        ip: listFromText(ruleForm.value.ipText || ''),
+        process: listFromText(ruleForm.value.processText || ''),
+        ruleType: ruleForm.value.ruleType || null,
+      }
+      delete rule.inboundTagText
+      delete rule.protocolText
+      delete rule.domainText
+      delete rule.ipText
+      delete rule.processText
+      const hasMatch = Boolean(rule.port || rule.network || rule.inboundTag.length || rule.protocol.length || rule.domain.length || rule.ip.length || rule.process.length)
+      if (!hasMatch) {
+        ruleModalError.value = t('routing.matchConditionRequired')
+        return
+      }
+      const rules = editingRuleId.value
+        ? routingRules.value.map((item) => item.id === editingRuleId.value ? rule : item)
+        : [rule, ...routingRules.value]
       const result = await options.request(`/api/settings/routing-profiles/${encodeURIComponent(activeRoutingId.value)}/rules`, { method: 'PUT', body: rules })
+      showRuleForm.value = false
       options.showNotice(options.operationMessage(result))
+      await loadRules()
+    } catch (error) {
+      if (error instanceof SyntaxError) ruleModalError.value = t('common.invalidJson')
+      else options.showError(error)
+    }
+  }
+
+  function toggleAllRules() {
+    selectedRuleIds.value = selectedRuleIds.value.length === routingRules.value.length ? [] : routingRules.value.map((rule) => rule.id)
+  }
+
+  async function deleteSelectedRules() {
+    if (!selectedRuleIds.value.length || !window.confirm(t('common.confirmDelete'))) return
+    try {
+      for (const id of [...selectedRuleIds.value]) {
+        await options.request(`/api/settings/routing-profiles/${encodeURIComponent(activeRoutingId.value)}/rules/${encodeURIComponent(id)}`, { method: 'DELETE' })
+      }
+      selectedRuleIds.value = []
+      options.showNotice(t('common.deleted'))
       await loadRules()
     } catch (error) { options.showError(error) }
   }
 
-  async function removeRoutingRule(rule: Dict) {
+  async function exportSelectedRules() {
+    const selected = routingRules.value.filter((rule) => selectedRuleIds.value.includes(rule.id)).map(({ id: _id, ...rule }) => rule)
+    if (!selected.length) return
     try {
-      const result = await options.request(`/api/settings/routing-profiles/${encodeURIComponent(activeRoutingId.value)}/rules/${encodeURIComponent(rule.id)}`, { method: 'DELETE' })
-      options.showNotice(options.operationMessage(result))
-      await loadRules()
-    } catch (error) { options.showError(error) }
+      await navigator.clipboard.writeText(JSON.stringify(selected, null, 2))
+      options.showNotice(t('common.copySuccess'))
+    } catch { options.showNotice(t('common.clipboardUnavailable'), 'error') }
   }
 
   async function moveRoutingRule(rule: Dict, direction: string) {
@@ -131,6 +265,29 @@ export function useRouting(options: ApiServices & {
       const result = await options.request(`/api/settings/routing-profiles/${encodeURIComponent(activeRoutingId.value)}/rules/move`, {
         method: 'POST', body: { ruleId: rule.id, direction, position: -1 },
       })
+      options.showNotice(options.operationMessage(result))
+      await loadRules()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function moveSelectedRules(direction: string) {
+    if (!selectedRuleIds.value.length) return
+    const ordered = routingRules.value.filter((rule) => selectedRuleIds.value.includes(rule.id))
+    if (direction === 'up' || direction === 'top') ordered.reverse()
+    const directionName = direction[0].toUpperCase() + direction.slice(1)
+    try {
+      for (const rule of ordered) {
+        await options.request(`/api/settings/routing-profiles/${encodeURIComponent(activeRoutingId.value)}/rules/move`, {
+          method: 'POST', body: { ruleId: rule.id, direction: directionName, position: -1 },
+        })
+      }
+      await loadRules()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function removeRoutingRule(rule: Dict) {
+    try {
+      const result = await options.request(`/api/settings/routing-profiles/${encodeURIComponent(activeRoutingId.value)}/rules/${encodeURIComponent(rule.id)}`, { method: 'DELETE' })
       options.showNotice(options.operationMessage(result))
       await loadRules()
     } catch (error) { options.showError(error) }
@@ -158,13 +315,15 @@ export function useRouting(options: ApiServices & {
     } catch (error) { options.showError(error) }
   }
 
-  const routingPageState = reactive({ routes, activeRoutingId, currentRoute, routingForm, routingRules, rulesRaw, ruleImportText, appendRules })
+  const routingPageState = reactive({ routes, activeRoutingId, currentRoute, selectedRoute, routingForm, routingRules, rulesRaw, ruleImportText, appendRules, selectedRouteIds, selectedRuleIds })
   const routeModalState = reactive({ showRouteForm, routeForm, editingRouteId })
+  const ruleModalState = reactive({ showRuleForm, ruleForm, ruleAdvancedJson, ruleModalError, editingRuleId })
 
   return {
-    activeRoutingId, routes, routingForm, showRouteForm, loadRouting, loadRules, routingPageState, routeModalState,
+    activeRoutingId, routes, routingForm, showRouteForm, loadRouting, loadRules, routingPageState, routeModalState, ruleModalState,
     activateRoute,
-    routingPageActions: { importRoutingProfiles, openAddRoute, loadRules, openEditRoute, deleteRoute, applyPreset, saveRoutingStrategies, addRoutingRule, copyRoutingRules, saveRoutingRules, moveRoutingRule, removeRoutingRule, importRoutingRules },
+    routingPageActions: { importRoutingProfiles, openAddRoute, loadRules, openEditRoute, deleteRoute, deleteSelectedRoutes, toggleAllRoutes, activateRoute, applyPreset, saveRoutingStrategies, addRoutingRule, openEditRoutingRule, saveRoutingRule, toggleAllRules, deleteSelectedRules, exportSelectedRules, moveSelectedRules, copyRoutingRules, saveRoutingRules, moveRoutingRule, removeRoutingRule, importRoutingRules, importRulesFromClipboard, readRulesFile, importRulesFromUrl },
     routeModalActions: { saveRoute },
+    ruleModalActions: { saveRoutingRule },
   }
 }

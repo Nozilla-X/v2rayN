@@ -21,6 +21,8 @@ export function useProfiles(options: ApiServices & {
   const importForm = ref<Dict>({ content: '', subscriptionId: '', isSubscription: false })
   const profileForm = ref<Dict>({})
   const profileAdvancedJson = ref('')
+  const profileCatalog = ref<Dict[]>([])
+  const groupChildIds = ref<string[]>([])
   const exportOptions = ref({ includeShareUris: true, base64ShareUris: false, includeInnerUri: true, includeClientConfig: true })
   const exportContent = ref('')
   const showProfileForm = ref(false)
@@ -235,14 +237,16 @@ export function useProfiles(options: ApiServices & {
   }
 
   async function openAddProfile() {
+    await loadProfileCatalog()
     editingProfileId.value = ''
     profileModalError.value = ''
     profileForm.value = {
       configType: 'VMess', coreType: 'Xray', configVersion: 4, remarks: '', address: '', port: 443,
       password: '', username: '', network: 'tcp', streamSecurity: 'tls', allowInsecure: '', sni: '',
       alpn: '', fingerprint: '', publicKey: '', shortId: '', spiderX: '', muxEnabled: null,
-      protoExtra: '{}', transportExtra: '{}', protoExtraText: '{\n  \n}', transportExtraText: '{\n  \n}',
+      protoExtra: {}, transportExtra: {},
     }
+    groupChildIds.value = []
     profileAdvancedJson.value = JSON.stringify({
       indexId: '', configType: 'VMess', coreType: 'Xray', configVersion: 4, subid: '', isSub: false,
       remarks: '', address: '', port: 443, password: '', username: '', network: 'tcp', streamSecurity: 'tls',
@@ -257,14 +261,18 @@ export function useProfiles(options: ApiServices & {
     profileModalError.value = ''
     try {
       const details = await options.data(`/api/profiles/${encodeURIComponent(profile.indexId)}`)
+      await loadProfileCatalog()
+      const protoExtra = parseObject(details.protoExtra)
+      const transportExtra = parseObject(details.transportExtra)
       profileForm.value = {
         ...details,
         configType: options.canonicalCode(details.configType, [...protocolTypes, 'PolicyGroup', 'ProxyChain']),
         coreType: options.canonicalCode(details.coreType || profile.coreType, coreTypes),
         allowInsecure: details.allowInsecure === 'true',
-        protoExtraText: details.protoExtra || '{}',
-        transportExtraText: details.transportExtra || '{}',
+        protoExtra: { ...protoExtra, childItems: parseList(protoExtra.childItems) },
+        transportExtra,
       }
+      groupChildIds.value = parseList(protoExtra.childItems)
       profileAdvancedJson.value = JSON.stringify(details, null, 2)
       showProfileForm.value = true
     } catch (error) { options.showError(error) }
@@ -272,9 +280,17 @@ export function useProfiles(options: ApiServices & {
 
   async function saveProfile() {
     try {
-      const protoExtra = JSON.parse(profileForm.value.protoExtraText || '{}')
-      const transportExtra = JSON.parse(profileForm.value.transportExtraText || '{}')
       const advanced = JSON.parse(profileAdvancedJson.value || '{}')
+      const protoExtra = { ...parseObject(advanced.protoExtra), ...profileForm.value.protoExtra }
+      if (['PolicyGroup', 'ProxyChain'].includes(profileForm.value.configType)) {
+        if (!groupChildIds.value.length && !protoExtra.subChildItems) {
+          profileModalError.value = t('nodes.groupChildRequired')
+          return
+        }
+        protoExtra.groupType = profileForm.value.configType
+        protoExtra.childItems = groupChildIds.value.join(',')
+        protoExtra.multipleLoad = profileForm.value.protoExtra.multipleLoad || 'LeastPing'
+      }
       const body = {
         ...advanced,
         configType: profileForm.value.configType,
@@ -294,9 +310,15 @@ export function useProfiles(options: ApiServices & {
         publicKey: profileForm.value.publicKey || '',
         shortId: profileForm.value.shortId || '',
         spiderX: profileForm.value.spiderX || '',
+        mldsa65Verify: profileForm.value.mldsa65Verify || '',
+        cert: profileForm.value.cert || '',
+        certSha: profileForm.value.certSha || '',
+        echConfigList: profileForm.value.echConfigList || '',
+        verifyPeerCertByName: profileForm.value.verifyPeerCertByName || '',
+        finalmask: profileForm.value.finalmask || '',
         muxEnabled: profileForm.value.muxEnabled,
         protoExtra: JSON.stringify(protoExtra),
-        transportExtra: JSON.stringify(transportExtra),
+        transportExtra: JSON.stringify({ ...parseObject(advanced.transportExtra), ...profileForm.value.transportExtra }),
       }
       const result = await options.request(editingProfileId.value ? `/api/profiles/${encodeURIComponent(editingProfileId.value)}` : '/api/profiles', {
         method: editingProfileId.value ? 'PUT' : 'POST', body,
@@ -308,6 +330,41 @@ export function useProfiles(options: ApiServices & {
       if (error instanceof SyntaxError) profileModalError.value = t('common.invalidJson')
       else options.showError(error)
     }
+  }
+
+  function parseObject(value: unknown): Dict {
+    if (typeof value !== 'string' || !value.trim()) return {}
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+    } catch { return {} }
+  }
+
+  function parseList(value: unknown): string[] {
+    if (Array.isArray(value)) return value.map(String).filter(Boolean)
+    return typeof value === 'string' ? value.split(',').map((item) => item.trim()).filter(Boolean) : []
+  }
+
+  function toggleGroupChild(id: string) {
+    groupChildIds.value = groupChildIds.value.includes(id) ? groupChildIds.value.filter((item) => item !== id) : [...groupChildIds.value, id]
+  }
+
+  function moveGroupChild(id: string, direction: 'up' | 'down') {
+    const index = groupChildIds.value.indexOf(id)
+    const next = direction === 'up' ? index - 1 : index + 1
+    if (index < 0 || next < 0 || next >= groupChildIds.value.length) return
+    const ordered = [...groupChildIds.value]
+    ;[ordered[index], ordered[next]] = [ordered[next], ordered[index]]
+    groupChildIds.value = ordered
+  }
+
+  async function loadProfileCatalog() {
+    try {
+      const groupIds = [...new Set(['', ...groups.value.map((group) => group.id).filter(Boolean)])]
+      const lists = await Promise.all(groupIds.map((subscriptionId) => options.data(subscriptionId ? options.queryPath('/api/profiles', { subscriptionId }) : '/api/profiles?subscriptionId=')))
+      profileCatalog.value = [...new Map(lists.flat().map((item: Dict) => [item.indexId, item])).values()]
+    }
+    catch (error) { options.showError(error) }
   }
 
   function openImportProfiles() {
@@ -343,7 +400,7 @@ export function useProfiles(options: ApiServices & {
   }
 
   const nodesPageState = reactive({ filteredProfiles, profiles, selectedGroup, groups, filter, selectedIds, allVisibleSelected, operations: options.operations, testActions })
-  const profileModalState = reactive({ showProfileForm, profileForm, profileAdvancedJson, profileModalError, editingProfileId, protocolTypes, coreTypes })
+  const profileModalState = reactive({ showProfileForm, profileForm, profileAdvancedJson, profileModalError, editingProfileId, protocolTypes, coreTypes, profileCatalog, groupChildIds, groups })
   const importProfilesModalState = reactive({ showImportForm, importForm, groups })
   const exportModalState = reactive({ showExportDialog, exportOptions, exportContent })
 
@@ -352,7 +409,7 @@ export function useProfiles(options: ApiServices & {
     openEditProfile, selectProfile, startSpeedTest, runProfileAction,
     nodesPageState, profileModalState, importProfilesModalState, exportModalState,
     nodesPageActions: { openAddProfile, openImportProfiles, startSpeedTest, runProfileAction, stopSpeedTests, changeGroup, generateGroups, loadProfiles, toggleAllVisible, toggleProfile, sortProfiles, selectProfile, formatDelay, moveSelectedToGroup, moveSelected, moveSelectedPosition, exportSelected, openContext },
-    profileModalActions: { saveProfile },
+    profileModalActions: { saveProfile, toggleGroupChild, moveGroupChild },
     importProfilesModalActions: { importProfiles, readImportFile, pasteImport },
     exportModalActions: { exportSelected, copyExport, downloadExport },
   }
