@@ -165,6 +165,33 @@ function formatBytes(value: number | null | undefined) {
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
 }
 
+const emptyProfileExportOptions = {
+  includeShareUris: false,
+  base64ShareUris: false,
+  includeInnerUri: false,
+  includeClientConfig: false,
+}
+
+type ProfileExportOptions = Partial<typeof emptyProfileExportOptions>
+
+async function openProfileExport(options: ProfileExportOptions, profileIds?: string[]) {
+  Object.assign(profiles.exportModalState.exportOptions, emptyProfileExportOptions, options)
+  const previousSelection = profiles.selectedIds.value
+  if (profileIds) profiles.selectedIds.value = profileIds
+  try {
+    await profiles.nodesPageActions.exportSelected()
+  } finally {
+    if (profileIds) profiles.selectedIds.value = previousSelection
+  }
+}
+
+async function copyProfileExport(options: ProfileExportOptions, profileIds?: string[]) {
+  await openProfileExport(options, profileIds)
+  if (!profiles.exportModalState.showExportDialog) return
+  await profiles.exportModalActions.copyExport()
+  profiles.exportModalState.showExportDialog = false
+}
+
 function contextMenuStyle(menu: Dict) {
   const left = Math.max(0, Math.min(Number(menu.x) || 0, window.innerWidth - 250))
   const top = Math.max(8, Math.min(Number(menu.y) || 0, window.innerHeight - 428))
@@ -179,11 +206,22 @@ const connectionStripState = runtime.connectionStripState
 const connectionStripActions = { listenerDescription: runtime.listenerDescription, formatBytes }
 const noticeState = reactive({ notice, noticeKind })
 
-const nodesPageState = Object.assign(profiles.nodesPageState, { exportOptions: profiles.exportModalState.exportOptions })
+const nodesPageState = Object.assign(profiles.nodesPageState, { subscriptions: subscriptions.subscriptions })
 const nodesPageActions = {
   ...profiles.nodesPageActions,
   updateSubscriptions: subscriptions.subscriptionsPageActions.updateSubscriptions,
   subscriptionUpdateMessageKey: subscriptions.subscriptionUpdateMessageKey,
+  openAddSubscription: subscriptions.subscriptionsPageActions.openAddSubscription,
+  openEditSubscription: subscriptions.subscriptionsPageActions.openEditSubscription,
+  shareSelected: () => openProfileExport({ includeShareUris: true }),
+  shareProfile: (profileId: string) => openProfileExport({ includeShareUris: true }, [profileId]),
+  exportFullConfig: () => openProfileExport({ includeClientConfig: true }),
+  exportProfileConfig: (profileId: string) => openProfileExport({ includeClientConfig: true }, [profileId]),
+  exportFullConfigToClipboard: () => copyProfileExport({ includeClientConfig: true }),
+  exportProfileConfigToClipboard: (profileId: string) => copyProfileExport({ includeClientConfig: true }, [profileId]),
+  exportShareLinksToClipboard: () => copyProfileExport({ includeShareUris: true }),
+  exportShareLinksBase64: () => copyProfileExport({ base64ShareUris: true }),
+  exportInnerUris: () => copyProfileExport({ includeInnerUri: true }),
   formatBytes,
 }
 const subscriptionsPageState = subscriptions.subscriptionsPageState
@@ -299,17 +337,18 @@ onUnmounted(() => {
     <div v-if="contextMenu" class="context-menu" :style="contextMenuStyle(contextMenu)" @click="contextMenu = null">
       <strong class="context-heading">{{ contextMenu.profile.remarks || contextMenu.profile.address }}</strong>
       <button :disabled="contextMenu.profile.isCurrent" @click="nodesPageActions.selectProfile(contextMenu.profile)">{{ contextMenu.profile.isCurrent ? t('nodes.current') : t('nodes.switch') }}</button>
-      <details class="context-submenu">
-        <summary @click.stop>{{ t('nodes.test') }}<span class="submenu-caret">›</span></summary>
-        <div class="context-submenu-list">
-          <button v-for="testAction in nodesPageState.testActions" :key="testAction.id" @click="nodesPageActions.startSpeedTest(testAction.id, [contextMenu.profile.indexId])">{{ t(testAction.key) }}</button>
-          <div class="context-separator"></div>
-          <button :disabled="!nodesPageState.operations.includes('speedtest')" @click="nodesPageActions.stopSpeedTests">{{ t('nodes.stopTest') }}</button>
-        </div>
-      </details>
-      <div class="context-separator"></div>
       <button @click="openEditProfile(contextMenu.profile)">{{ t('common.edit') }}</button>
-      <button @click="nodesPageActions.runProfileAction('copy', [contextMenu.profile.indexId])">{{ t('common.copy') }}</button>
+      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.runProfileAction('copy')">{{ t('nodes.copySelected') }}</button>
+      <button class="danger-text" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.runProfileAction('delete')">{{ t('nodes.removeSelected') }}</button>
+      <button @click="nodesPageActions.runProfileAction('deduplicate')">{{ t('nodes.deduplicate') }}</button>
+      <button @click="nodesPageActions.runProfileAction('remove-invalid')">{{ t('nodes.removeInvalid') }}</button>
+      <div class="context-separator"></div>
+      <button @click="nodesPageActions.startSpeedTest('tcping', [contextMenu.profile.indexId])">{{ t('nodes.tcping') }}</button>
+      <button @click="nodesPageActions.startSpeedTest('realping', [contextMenu.profile.indexId])">{{ t('nodes.realping') }}</button>
+      <button @click="nodesPageActions.startSpeedTest('speedtest', [contextMenu.profile.indexId])">{{ t('nodes.speedtest') }}</button>
+      <button @click="nodesPageActions.startSpeedTest('udpTest', [contextMenu.profile.indexId])">{{ t('nodes.udp') }}</button>
+      <button @click="nodesPageActions.sortProfiles('DelayVal')">{{ t('nodes.sortByTestResults') }}</button>
+      <div class="context-separator"></div>
       <details class="context-submenu">
         <summary @click.stop>{{ t('nodes.moveGroup') }}<span class="submenu-caret">›</span></summary>
         <div class="context-submenu-list">
@@ -323,12 +362,35 @@ onUnmounted(() => {
           <button @click="nodesPageActions.moveSelected('up')">{{ t('nodes.up') }}</button>
           <button @click="nodesPageActions.moveSelected('down')">{{ t('nodes.down') }}</button>
           <button @click="nodesPageActions.moveSelected('bottom')">{{ t('nodes.bottom') }}</button>
-          <button @click="nodesPageActions.moveSelectedPosition">{{ t('nodes.position') }}…</button>
+        </div>
+      </details>
+      <button :disabled="!nodesPageState.filteredProfiles.length" @click="!nodesPageState.allVisibleSelected && nodesPageActions.toggleAllVisible()">{{ t('nodes.selectAll') }}</button>
+      <div class="context-separator"></div>
+      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.shareProfile(contextMenu.profile.indexId)">{{ t('nodes.shareProfile') }}</button>
+      <details class="context-submenu">
+        <summary @click.stop>{{ t('nodes.exportMenu') }}<span class="submenu-caret">›</span></summary>
+        <div class="context-submenu-list">
+          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportProfileConfig(contextMenu.profile.indexId)">{{ t('nodes.exportFullConfig') }}</button>
+          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportProfileConfigToClipboard(contextMenu.profile.indexId)">{{ t('nodes.exportFullConfigClipboard') }}</button>
+          <div class="context-separator"></div>
+          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksToClipboard">{{ t('nodes.exportShareLinkClipboard') }}</button>
+          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksBase64">{{ t('nodes.exportShareLinkBase64') }}</button>
+          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportInnerUris">{{ t('nodes.exportInnerUri') }}</button>
         </div>
       </details>
       <div class="context-separator"></div>
-      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportSelected">{{ t('nodes.exportSelected') }}…</button>
-      <button class="danger-text" @click="nodesPageActions.runProfileAction('delete', [contextMenu.profile.indexId])">{{ t('common.delete') }}</button>
+      <details class="context-submenu">
+        <summary @click.stop>{{ t('nodes.generatePolicyGroups') }}<span class="submenu-caret">›</span></summary>
+        <div class="context-submenu-list">
+          <button :disabled="!nodesPageState.selectedGroup" @click="nodesPageActions.generateGroups(false)">{{ t('nodes.allProfiles') }}</button>
+          <button :disabled="!nodesPageState.selectedGroup || !nodesPageState.profiles.length" @click="nodesPageActions.generateGroups(true)">{{ t('nodes.generateRegionGroups') }}</button>
+        </div>
+      </details>
+      <div class="context-separator"></div>
+      <div class="context-web-only-label">{{ t('nodes.webOnlyActions') }}</div>
+      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.moveSelectedPosition">{{ t('nodes.position') }}…</button>
+      <button :disabled="!nodesPageState.operations.includes('speedtest')" @click="nodesPageActions.stopSpeedTests">{{ t('nodes.stopTest') }}</button>
+      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportSelected">{{ t('nodes.customExport') }}…</button>
     </div>
     <ProfileModal v-if="showProfileForm" :state="profileModalState" :actions="profileModalActions" />
     <ImportProfilesModal v-if="showImportForm" :state="importProfilesModalState" :actions="importProfilesModalActions" />
