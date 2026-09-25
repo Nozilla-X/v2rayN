@@ -1,17 +1,22 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useModalFocus } from '../../composables/useModalFocus'
+import UiIcon from '../UiIcon.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
 const props = defineProps<UiProps>()
 const state = props.state
 const actions = props.actions
+const dialog = ref<HTMLElement | null>(null)
+const { onModalKeydown } = useModalFocus(dialog)
 </script>
 
 <template>
   <div v-if="state.showRuleForm" class="modal-shade" @click.self="state.showRuleForm = false">
-    <form class="modal-panel wide-modal modal-form" @submit.prevent="actions.saveRoutingRule">
-      <header class="modal-head"><div><h2>{{ t(state.editingRuleId ? 'routing.editRule' : 'routing.addRule') }}</h2><small>{{ t('routing.ruleEditorHint') }}</small></div><button class="tool-button" type="button" :aria-label="t('common.close')" @click="state.showRuleForm = false">×</button></header>
+    <form ref="dialog" class="modal-panel wide-modal modal-form" role="dialog" aria-modal="true" :aria-label="t(state.editingRuleId ? 'routing.editRule' : 'routing.addRule')" tabindex="-1" @keydown="onModalKeydown" @submit.prevent="actions.saveRoutingRule">
+      <header class="modal-head"><div><h2>{{ t(state.editingRuleId ? 'routing.editRule' : 'routing.addRule') }}</h2><small>{{ t('routing.ruleEditorHint') }}</small></div><button class="tool-button" type="button" :aria-label="t('common.close')" @click="state.showRuleForm = false"><UiIcon name="close" /></button></header>
       <div class="modal-content">
         <fieldset class="editor-section"><legend>{{ t('routing.ruleType') }}</legend>
           <div class="form-grid three-col">

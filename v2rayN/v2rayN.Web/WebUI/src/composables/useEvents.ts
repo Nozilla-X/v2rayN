@@ -17,6 +17,7 @@ export function useEvents(options: {
   loadProfiles: () => Promise<void>
   loadSubscriptions: () => Promise<void>
   loadStatus: () => Promise<void>
+  loadRouting: () => Promise<void>
   loadOperations: () => Promise<void>
 }) {
   const t = options.t
@@ -43,7 +44,10 @@ export function useEvents(options: {
         if (eventName === 'profiles-changed' || eventName === 'subscription-progress') {
           void options.loadGroups().then(options.loadProfiles).then(options.loadSubscriptions)
         }
-        if (eventName === 'settings-changed') void options.loadStatus()
+        if (eventName === 'settings-changed') {
+          void options.loadStatus()
+          void options.loadRouting()
+        }
         if (eventName.includes('update')) void options.loadOperations()
       })
     }

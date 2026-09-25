@@ -248,6 +248,8 @@ public sealed record DnsProfileInput(
 
 public sealed record RouteRulesImportInput(string Content, bool Append = false);
 
+public sealed record RouteRulesUrlImportInput(bool Append = false);
+
 public sealed record ProfileExportItem(string IndexId, string Remarks, string Format, string Content);
 
 public sealed record TrafficView(long ProxyUp, long ProxyDown, long DirectUp, long DirectDown);

@@ -1,11 +1,19 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import type { UiProps } from './types'
+import UiIcon from './UiIcon.vue'
 
 const { t } = useI18n()
 const props = defineProps<UiProps>()
 const state = props.state
 const actions = props.actions
+
+function changeActiveRoute(event: Event) {
+  const select = event.target as HTMLSelectElement
+  const requestedId = select.value
+  select.value = state.activeRoutingId
+  void actions.activateRoute(requestedId)
+}
 </script>
 
 <template>
@@ -17,15 +25,15 @@ const actions = props.actions
     <span>{{ t('nodes.current') }}:</span><b class="current-runtime-name">{{ state.currentProfile?.remarks || state.status?.currentProfileName || t('nodes.noneCurrent') }}</b>
     <span class="runtime-separator"></span>
     <label class="compact-select-label">{{ t('coreToolbar.route') }}</label>
-    <select v-model="state.activeRoutingId" class="compact-select route-select" @change="actions.activateRoute(state.activeRoutingId)">
+    <select :value="state.activeRoutingId" class="compact-select route-select" @change="changeActiveRoute">
       <option value="">{{ t('common.none') }}</option>
       <option v-for="route in state.routes" :key="route.id" :value="route.id">{{ route.remarks }}</option>
     </select>
   </div>
   <div class="core-actions">
-    <button class="button compact primary" :disabled="state.busy || state.status?.coreRunning" @click="actions.coreAction('start')">▶ {{ t('nodes.start') }}</button>
-    <button class="button compact" :disabled="state.busy || !state.status?.coreRunning" @click="actions.coreAction('restart')">↻ {{ t('nodes.restart') }}</button>
-    <button class="button compact danger" :disabled="state.busy || !state.status?.coreRunning" @click="actions.coreAction('stop')">■ {{ t('nodes.stop') }}</button>
+    <button class="button compact primary" :disabled="state.busy || state.status?.coreRunning" @click="actions.coreAction('start')"><UiIcon name="play" /> {{ t('nodes.start') }}</button>
+    <button class="button compact" :disabled="state.busy || !state.status?.coreRunning" @click="actions.coreAction('restart')"><UiIcon name="refresh" /> {{ t('nodes.restart') }}</button>
+    <button class="button compact danger" :disabled="state.busy || !state.status?.coreRunning" @click="actions.coreAction('stop')"><UiIcon name="stop" /> {{ t('nodes.stop') }}</button>
   </div>
 </section>
 </template>

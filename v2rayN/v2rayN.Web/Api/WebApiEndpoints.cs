@@ -175,6 +175,8 @@ public static class WebApiEndpoints
             ApiReplies.Operation(await runtime.SaveRoutingRulesAsync(id, rules), failureStatus: StatusCodes.Status404NotFound));
         app.MapPost("/api/settings/routing-profiles/{id}/rules/import", async (string id, RouteRulesImportInput input, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.ImportRoutingRulesAsync(id, input)));
+        app.MapPost("/api/settings/routing-profiles/{id}/rules/import-url", async (string id, RouteRulesUrlImportInput input, V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            ApiReplies.Operation(await runtime.ImportRoutingRulesFromUrlAsync(id, input.Append, cancellationToken)));
         app.MapDelete("/api/settings/routing-profiles/{id}/rules/{ruleId}", async (string id, string ruleId, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.DeleteRoutingRuleAsync(id, ruleId), failureStatus: StatusCodes.Status404NotFound));
         app.MapPost("/api/settings/routing-profiles/{id}/rules/move", async (string id, RouteRulesMoveRequest input, V2rayRuntime runtime) =>

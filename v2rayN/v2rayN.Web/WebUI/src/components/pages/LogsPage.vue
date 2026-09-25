@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { UiProps } from '../types'
+import UiIcon from '../UiIcon.vue'
 
 const { t, locale } = useI18n()
 const props = defineProps<UiProps>()
@@ -20,7 +21,7 @@ watch(() => state.logs, async () => {
 <template>
   <section class="page logs-page">
     <div class="page-toolbar"><div class="page-title"><h1>{{ t('logs.title') }}</h1><span class="count-tag">{{ state.logTotal }}</span></div>
-      <div class="toolbar-main log-toolbar"><label class="search-box log-search"><span>⌕</span><input v-model="state.logFilter" :placeholder="t('logs.filter')" @keyup.enter="actions.loadLogs(1)" /></label><button class="button" @click="actions.loadLogs(1)">{{ t('logs.load') }}</button><button class="button" :disabled="!state.selectedLogKeys.length" @click="actions.copySelectedLogs">{{ t('logs.copySelected') }}</button><button class="button" @click="actions.copyCurrentPage">{{ t('logs.copyPage') }}</button><button class="button" @click="actions.copyAllLogs">{{ t('logs.copyAll') }}</button><button class="button danger" @click="actions.clearLogs">{{ t('logs.clear') }}</button></div>
+      <div class="toolbar-main log-toolbar"><label class="search-box log-search"><UiIcon name="search" /><input v-model="state.logFilter" :placeholder="t('logs.filter')" @keyup.enter="actions.loadLogs(1)" /></label><button class="button" @click="actions.loadLogs(1)">{{ t('logs.load') }}</button><button class="button" :disabled="!state.selectedLogKeys.length" @click="actions.copySelectedLogs">{{ t('logs.copySelected') }}</button><button class="button" @click="actions.copyCurrentPage">{{ t('logs.copyPage') }}</button><button class="button" @click="actions.copyAllLogs">{{ t('logs.copyAll') }}</button><button class="button danger" @click="actions.clearLogs">{{ t('logs.clear') }}</button></div>
     </div>
     <div class="logs-options"><label class="check-inline"><input v-model="autoScroll" type="checkbox" />{{ t('logs.autoScroll') }}</label><span class="muted">{{ t('logs.regexHint') }}</span></div>
     <div ref="logPanel" class="log-table-wrap"><table class="data-table log-table"><thead><tr><th class="check-cell"><input type="checkbox" :checked="allSelected" :aria-label="t('common.selectAll')" @change="actions.toggleAllLogs" /></th><th>{{ t('logs.time') }}</th><th>{{ t('logs.source') }}</th><th>{{ t('logs.message') }}</th></tr></thead><tbody><tr v-for="(log, index) in state.logs" :key="`${log.timestamp}-${index}`" :class="{ selected: state.selectedLogKeys.includes(actions.logKey(log, index)) }"><td class="check-cell"><input type="checkbox" :checked="state.selectedLogKeys.includes(actions.logKey(log, index))" :aria-label="log.message" @change="actions.toggleLog(log, index)" /></td><td class="log-time">{{ new Date(log.timestamp).toLocaleTimeString(locale, { hour12: false }) }}</td><td><span class="source-tag">{{ log.source }}</span></td><td class="log-message">{{ log.message }}</td></tr><tr v-if="!state.logs.length"><td colspan="4" class="empty-row">{{ t('logs.noLogs') }}</td></tr></tbody></table></div>

@@ -409,7 +409,9 @@
     "importFromUrl": "From URL",
     "importParserHint": "File, clipboard, and URL contents are parsed by the existing Backend rule importer.",
     "urlRequired": "The current rule set has no URL configured",
-    "urlImportFailed": "Could not fetch URL (browser CORS may block it): {error}",
+    "urlImportFailed": "Could not import rules from URL: {error}",
+    "urlImportFailedGeneric": "Could not download or import rules from the configured URL",
+    "urlInvalid": "The configured rule URL is invalid",
     "matchConditionRequired": "Enter at least one match condition",
     "listInputHint": "One item per line; comma-separated items are also accepted",
     "domainInputHint": "One item per line; supports domain:, full:, regexp: and related rule syntax",
@@ -537,7 +539,9 @@
     "coreTypesHint": "Map configuration protocols to their default Core.",
     "singleSaveHint": "Save across tabs through the existing settings APIs.",
     "saveAll": "Save settings",
-    "allSaved": "Settings saved"
+    "allSaved": "Settings saved",
+    "saveAllFailed": "Saving stopped at {section}. Previously saved sections remain saved: {saved}.",
+    "settingsRefreshFailed": "Settings were saved, but the runtime status could not be refreshed."
   },
   "templates": {
     "title": "Full config template settings",

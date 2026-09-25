@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { closeActionDropdownKey } from './menuContext'
+import { focusFirstMenuItem, navigateMenu } from './menuContext'
+import UiIcon from './UiIcon.vue'
 
 const props = withDefaults(defineProps<{
   label: string
@@ -28,7 +30,7 @@ async function updatePosition() {
 
   const margin = 8
   const gap = 4
-  const maxWidth = Math.max(180, window.innerWidth - margin * 2)
+  const maxWidth = Math.max(150, window.innerWidth - margin * 2)
   const preferredWidth = Math.min(menu.offsetWidth, maxWidth)
   const spaceRight = window.innerWidth - margin - anchor.right - gap
   const spaceLeft = anchor.left - gap - margin
@@ -38,17 +40,23 @@ async function updatePosition() {
   menu.style.width = `${width}px`
   let left = openRight ? anchor.right + gap : anchor.left - width - gap
   left = Math.max(margin, Math.min(left, window.innerWidth - width - margin))
-  const height = Math.min(menu.offsetHeight, window.innerHeight - margin * 2)
-  let top = anchor.top
-  if (top + height > window.innerHeight - margin) top = window.innerHeight - height - margin
-  top = Math.max(margin, top)
-  panelStyle.value = { left: `${left}px`, top: `${top}px`, width: `${width}px`, visibility: 'visible' }
+  const preferredHeight = Math.min(menu.scrollHeight, Math.floor(window.innerHeight * 0.48), window.innerHeight - margin * 2)
+  const below = window.innerHeight - anchor.top - margin
+  const above = anchor.bottom - margin
+  const alignBottom = below < Math.min(preferredHeight, 180) && above > below
+  const availableHeight = Math.max(100, alignBottom ? above : below)
+  const height = Math.min(preferredHeight, availableHeight)
+  const top = alignBottom ? anchor.bottom - height : Math.max(margin, anchor.top)
+  panelStyle.value = { left: `${left}px`, top: `${top}px`, width: `${width}px`, maxHeight: `${height}px`, visibility: 'visible' }
 }
 
 async function toggle() {
   if (props.disabled) return
   open.value = !open.value
-  if (open.value) await updatePosition()
+  if (open.value) {
+    await updatePosition()
+    focusFirstMenuItem(panel.value)
+  }
 }
 
 function close() {
@@ -61,10 +69,13 @@ function onPointerDown(event: PointerEvent) {
   close()
 }
 
-function onKeydown(event: KeyboardEvent) {
-  if (event.key !== 'Escape' || !open.value) return
+function onMenuEscape() {
   close()
   trigger.value?.focus()
+}
+
+function onPanelKeydown(event: KeyboardEvent) {
+  navigateMenu(event, panel.value)
 }
 
 function onPanelClick(event: MouseEvent) {
@@ -81,14 +92,12 @@ function onResize() {
 
 onMounted(() => {
   document.addEventListener('pointerdown', onPointerDown)
-  document.addEventListener('keydown', onKeydown)
   window.addEventListener('resize', onResize)
   document.addEventListener('scroll', onResize, true)
 })
 
 onUnmounted(() => {
   document.removeEventListener('pointerdown', onPointerDown)
-  document.removeEventListener('keydown', onKeydown)
   window.removeEventListener('resize', onResize)
   document.removeEventListener('scroll', onResize, true)
 })
@@ -107,7 +116,7 @@ onUnmounted(() => {
       :aria-expanded="open"
       @click.stop="toggle"
     >
-      {{ label }}<span class="submenu-caret" aria-hidden="true">›</span>
+      {{ label }}<UiIcon class="submenu-caret" name="chevron-right" :size="12" />
     </button>
     <Teleport to="body">
       <div
@@ -117,6 +126,8 @@ onUnmounted(() => {
         :class="{ 'context-submenu-list': context }"
         :style="panelStyle"
         role="menu"
+        @keydown="onPanelKeydown"
+        @menu-escape.stop="onMenuEscape"
         @click.stop="onPanelClick"
       >
         <slot />

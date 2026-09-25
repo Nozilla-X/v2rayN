@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { UiProps } from '../types'
+import UiIcon from '../UiIcon.vue'
 
 const { t } = useI18n()
 const props = defineProps<UiProps>()
@@ -24,7 +25,7 @@ const activeTab = ref('updates')
       </div>
       <div class="settings-subsection"><div class="section-heading"><div><h2>{{ t('maintenance.geoFiles') }}</h2><small>{{ t('maintenance.geoUpdateHint') }}</small></div></div><button class="button" :disabled="state.operations.includes('geo-update')" @click="actions.updateGeo">{{ t('maintenance.updateGeo') }}</button></div>
       <div class="settings-subsection"><div class="section-heading"><div><h2>{{ t('maintenance.statistics') }}</h2><small>{{ t('maintenance.statistics') }} · {{ state.status?.statisticsEnabled ? t('common.enabled') : t('status.statisticsOff') }}</small></div></div><button class="button danger" @click="actions.clearStatistics">{{ t('maintenance.clearStatistics') }}</button></div>
-      <div class="settings-subsection"><div class="section-heading"><h2>{{ t('maintenance.operationList') }}</h2><button class="tool-button" :title="t('common.refresh')" @click="actions.loadOperations">↻</button></div><div v-if="state.operations.length" class="operation-list"><span v-for="operation in state.operations" :key="operation" class="operation-pill"><i class="status-led on"></i>{{ operation }}</span></div><p v-else class="muted">{{ t('maintenance.noOperations') }}</p></div>
+      <div class="settings-subsection"><div class="section-heading"><h2>{{ t('maintenance.operationList') }}</h2><button class="tool-button" :aria-label="t('common.refresh')" :title="t('common.refresh')" @click="actions.loadOperations"><UiIcon name="refresh" /></button></div><div v-if="state.operations.length" class="operation-list"><span v-for="operation in state.operations" :key="operation" class="operation-pill"><i class="status-led on"></i>{{ operation }}</span></div><p v-else class="muted">{{ t('maintenance.noOperations') }}</p></div>
     </section>
 
     <section v-else class="settings-section backup-section">

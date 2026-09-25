@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useModalFocus } from '../../composables/useModalFocus'
+import UiIcon from '../UiIcon.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
 const props = defineProps<UiProps>()
 const state = props.state
 const actions = props.actions
+const dialog = ref<HTMLElement | null>(null)
+const { onModalKeydown } = useModalFocus(dialog)
 const protocol = computed(() => state.profileForm.configType)
 const isGroup = computed(() => ['PolicyGroup', 'ProxyChain'].includes(protocol.value))
 const isTls = computed(() => ['tls', 'reality'].includes(String(state.profileForm.streamSecurity).toLowerCase()))
@@ -17,10 +21,10 @@ const transports = ['tcp', 'raw', 'ws', 'grpc', 'xhttp', 'httpupgrade', 'kcp', '
 
 <template>
   <div v-if="state.showProfileForm" class="modal-shade" @click.self="state.showProfileForm = false">
-    <form class="modal-panel wide-modal modal-form" @submit.prevent="actions.saveProfile">
+    <form ref="dialog" class="modal-panel wide-modal modal-form" role="dialog" aria-modal="true" :aria-label="t(state.editingProfileId ? 'nodes.editNode' : 'nodes.addNode')" tabindex="-1" @keydown="onModalKeydown" @submit.prevent="actions.saveProfile">
       <header class="modal-head">
         <div><h2>{{ t(state.editingProfileId ? 'nodes.editNode' : 'nodes.addNode') }}</h2><small>{{ t('nodes.protocolEditorHint') }}</small></div>
-        <button class="tool-button" type="button" :aria-label="t('common.close')" @click="state.showProfileForm = false">×</button>
+        <button class="tool-button" type="button" :aria-label="t('common.close')" @click="state.showProfileForm = false"><UiIcon name="close" /></button>
       </header>
 
       <div class="modal-content">
@@ -44,7 +48,7 @@ const transports = ['tcp', 'raw', 'ws', 'grpc', 'xhttp', 'httpupgrade', 'kcp', '
             <label v-if="protocol === 'PolicyGroup'">{{ t('nodes.groupStrategy') }}<select v-model="state.profileForm.protoExtra.multipleLoad"><option value="LeastPing">{{ t('nodes.strategyLeastPing') }}</option><option value="Fallback">{{ t('nodes.strategyFallback') }}</option><option value="Random">{{ t('nodes.strategyRandom') }}</option><option value="RoundRobin">{{ t('nodes.strategyRoundRobin') }}</option><option value="LeastLoad">{{ t('nodes.strategyLeastLoad') }}</option></select></label>
             <label>{{ t('nodes.groupSubscription') }}<select v-model="state.profileForm.protoExtra.subChildItems"><option value="">{{ t('common.none') }}</option><option v-for="group in state.groups" :key="group.id" :value="group.id">{{ group.name || t('common.allGroups') }}</option></select></label>
             <label>{{ t('nodes.groupFilter') }}<input v-model="state.profileForm.protoExtra.filter" /></label>
-            <div class="wide-field group-member-editor"><strong>{{ t('nodes.groupMembers') }}</strong><small class="field-hint">{{ t('nodes.groupMembersHint') }}</small><div class="group-member-columns"><div class="group-profile-choices"><label v-for="item in state.profileCatalog" :key="item.indexId" class="group-profile-choice"><input type="checkbox" :disabled="item.indexId === state.editingProfileId" :checked="state.groupChildIds.includes(item.indexId)" @change="actions.toggleGroupChild(item.indexId)" /><span>{{ item.remarks }}<small>{{ item.configType }} · {{ item.address }}:{{ item.port }}</small></span></label></div><div class="group-member-order"><div v-for="(id, index) in state.groupChildIds" :key="id" class="group-member-row"><span>{{ state.profileCatalog.find((item: Record<string, any>) => item.indexId === id)?.remarks || id }}</span><button class="tool-button" type="button" :disabled="index === 0" :aria-label="t('nodes.moveMemberUp')" @click="actions.moveGroupChild(id, 'up')">↑</button><button class="tool-button" type="button" :disabled="index === state.groupChildIds.length - 1" :aria-label="t('nodes.moveMemberDown')" @click="actions.moveGroupChild(id, 'down')">↓</button><button class="tool-button danger-text" type="button" :aria-label="t('common.delete')" @click="actions.toggleGroupChild(id)">×</button></div><p v-if="!state.groupChildIds.length" class="muted">{{ t('common.empty') }}</p></div></div></div>
+            <div class="wide-field group-member-editor"><strong>{{ t('nodes.groupMembers') }}</strong><small class="field-hint">{{ t('nodes.groupMembersHint') }}</small><div class="group-member-columns"><div class="group-profile-choices"><label v-for="item in state.profileCatalog" :key="item.indexId" class="group-profile-choice"><input type="checkbox" :disabled="item.indexId === state.editingProfileId" :checked="state.groupChildIds.includes(item.indexId)" @change="actions.toggleGroupChild(item.indexId)" /><span>{{ item.remarks }}<small>{{ item.configType }} · {{ item.address }}:{{ item.port }}</small></span></label></div><div class="group-member-order"><div v-for="(id, index) in state.groupChildIds" :key="id" class="group-member-row"><span>{{ state.profileCatalog.find((item: Record<string, any>) => item.indexId === id)?.remarks || id }}</span><button class="tool-button" type="button" :disabled="index === 0" :aria-label="t('nodes.moveMemberUp')" @click="actions.moveGroupChild(id, 'up')"><UiIcon name="arrow-up" /></button><button class="tool-button" type="button" :disabled="index === state.groupChildIds.length - 1" :aria-label="t('nodes.moveMemberDown')" @click="actions.moveGroupChild(id, 'down')"><UiIcon name="arrow-down" /></button><button class="tool-button danger-text" type="button" :aria-label="t('common.delete')" @click="actions.toggleGroupChild(id)"><UiIcon name="close" /></button></div><p v-if="!state.groupChildIds.length" class="muted">{{ t('common.empty') }}</p></div></div></div>
           </div>
         </fieldset>
 

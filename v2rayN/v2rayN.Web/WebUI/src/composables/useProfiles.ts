@@ -17,6 +17,7 @@ export function useProfiles(options: ApiServices & {
   const selectedGroup = ref('')
   const filter = ref('')
   const selectedIds = ref<string[]>([])
+  const focusedProfileId = ref('')
   const sorting = ref({ column: '', ascending: true })
   const importForm = ref<Dict>({ content: '', subscriptionId: '', isSubscription: false })
   const profileForm = ref<Dict>({})
@@ -58,6 +59,9 @@ export function useProfiles(options: ApiServices & {
     const path = options.queryPath('/api/profiles', { subscriptionId: selectedGroup.value, filter: filter.value.trim() })
     profiles.value = await options.data(path) || []
     selectedIds.value = selectedIds.value.filter((id) => profiles.value.some((profile) => profile.indexId === id))
+    if (!profiles.value.some((profile) => profile.indexId === focusedProfileId.value)) {
+      focusedProfileId.value = profiles.value.find((profile) => profile.isCurrent)?.indexId || profiles.value[0]?.indexId || ''
+    }
   }
 
   async function changeGroup(groupId: string) {
@@ -109,6 +113,32 @@ export function useProfiles(options: ApiServices & {
     } else {
       selectedIds.value = [...new Set([...selectedIds.value, ...filteredProfiles.value.map((profile) => profile.indexId)])]
     }
+  }
+
+  function setFocusedProfile(id: string) {
+    focusedProfileId.value = id
+  }
+
+  function focusProfile(event: MouseEvent, profile: Dict) {
+    const target = event.target
+    if (target instanceof Element && target.closest('button, input, select, a')) return
+    focusedProfileId.value = profile.indexId
+    if (!selectedIds.value.includes(profile.indexId)) selectedIds.value = [profile.indexId]
+    ;(event.currentTarget as HTMLElement).focus({ preventScroll: true })
+  }
+
+  function openContextAt(x: number, y: number, profile: Dict) {
+    if (!selectedIds.value.includes(profile.indexId)) selectedIds.value = [profile.indexId]
+    focusedProfileId.value = profile.indexId
+    options.contextMenu.value = { x: Math.min(x, window.innerWidth - 250), y: Math.min(y, window.innerHeight - 280), profile }
+  }
+
+  function handleRowKeydown(event: KeyboardEvent, profile: Dict) {
+    if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return
+    event.preventDefault()
+    const row = event.currentTarget as HTMLElement
+    const rect = row.getBoundingClientRect()
+    openContextAt(rect.left + 8, rect.bottom, profile)
   }
 
   async function sortProfiles(column: string) {
@@ -232,8 +262,7 @@ export function useProfiles(options: ApiServices & {
 
   function openContext(event: MouseEvent, profile: Dict) {
     event.preventDefault()
-    if (!selectedIds.value.includes(profile.indexId)) selectedIds.value = [profile.indexId]
-    options.contextMenu.value = { x: Math.min(event.clientX, window.innerWidth - 250), y: Math.min(event.clientY, window.innerHeight - 280), profile }
+    openContextAt(event.clientX, event.clientY, profile)
   }
 
   async function openAddProfile() {
@@ -399,7 +428,7 @@ export function useProfiles(options: ApiServices & {
     return `${value} ms`
   }
 
-  const nodesPageState = reactive({ filteredProfiles, profiles, selectedGroup, groups, filter, selectedIds, allVisibleSelected, operations: options.operations, testActions })
+  const nodesPageState = reactive({ filteredProfiles, profiles, selectedGroup, groups, filter, selectedIds, focusedProfileId, allVisibleSelected, operations: options.operations, testActions })
   const profileModalState = reactive({ showProfileForm, profileForm, profileAdvancedJson, profileModalError, editingProfileId, protocolTypes, coreTypes, profileCatalog, groupChildIds, groups })
   const importProfilesModalState = reactive({ showImportForm, importForm, groups })
   const exportModalState = reactive({ showExportDialog, exportOptions, exportContent })
@@ -408,7 +437,7 @@ export function useProfiles(options: ApiServices & {
     profiles, groups, selectedGroup, selectedIds, protocolTypes, coreTypes, showProfileForm, showImportForm, showExportDialog, loadGroups, loadProfiles,
     openEditProfile, selectProfile, startSpeedTest, runProfileAction,
     nodesPageState, profileModalState, importProfilesModalState, exportModalState,
-    nodesPageActions: { openAddProfile, openImportProfiles, startSpeedTest, runProfileAction, stopSpeedTests, changeGroup, generateGroups, loadProfiles, toggleAllVisible, toggleProfile, sortProfiles, selectProfile, formatDelay, moveSelectedToGroup, moveSelected, moveSelectedPosition, exportSelected, openContext },
+    nodesPageActions: { openAddProfile, openImportProfiles, startSpeedTest, runProfileAction, stopSpeedTests, changeGroup, generateGroups, loadProfiles, toggleAllVisible, toggleProfile, sortProfiles, selectProfile, formatDelay, moveSelectedToGroup, moveSelected, moveSelectedPosition, exportSelected, openContext, focusProfile, setFocusedProfile, handleRowKeydown },
     profileModalActions: { saveProfile, toggleGroupChild, moveGroupChild },
     importProfilesModalActions: { importProfiles, readImportFile, pasteImport },
     exportModalActions: { exportSelected, copyExport, downloadExport },

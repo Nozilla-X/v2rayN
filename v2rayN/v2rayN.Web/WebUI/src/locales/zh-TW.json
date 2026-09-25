@@ -403,7 +403,9 @@
     "importFromUrl": "從 URL",
     "importParserHint": "檔案 / 剪貼簿 / URL 內容均交由現有 Backend 規則匯入器解析。",
     "urlRequired": "目前規則集尚未設定 URL",
-    "urlImportFailed": "URL 擷取失敗（可能受到瀏覽器 CORS 限制）：{error}",
+    "urlImportFailed": "從 URL 匯入規則失敗：{error}",
+    "urlImportFailedGeneric": "無法下載或匯入目前規則集 URL 的內容",
+    "urlInvalid": "目前規則集設定的 URL 無效",
     "matchConditionRequired": "請至少填寫一項比對條件",
     "listInputHint": "每行一項，也可用逗號分隔",
     "domainInputHint": "每行一項；支援 domain:、full:、regexp: 等規則語法",
@@ -531,7 +533,9 @@
     "coreTypesHint": "依設定檔協定對應預設 Core。",
     "singleSaveHint": "跨分頁統一儲存；僅呼叫現有設定 API。",
     "saveAll": "儲存設定",
-    "allSaved": "設定已儲存"
+    "allSaved": "設定已儲存",
+    "saveAllFailed": "儲存已在「{section}」停止；先前已儲存的部分不會回復：{saved}。",
+    "settingsRefreshFailed": "設定已儲存，但無法重新整理執行狀態。"
   },
   "templates": {
     "title": "完整設定範本",

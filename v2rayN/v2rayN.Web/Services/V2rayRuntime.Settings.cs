@@ -5,6 +5,7 @@ using ServiceLib.Handler;
 using ServiceLib.Manager;
 using ServiceLib.Models.Configs;
 using ServiceLib.Models.Entities;
+using ServiceLib.Services;
 using v2rayN.Web.Contracts;
 
 namespace v2rayN.Web.Services;
@@ -511,6 +512,29 @@ public sealed partial class V2rayRuntime
             0 => RoutingRulesSaved(routingId),
             _ => OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed),
         };
+    }
+
+    public async Task<OperationView> ImportRoutingRulesFromUrlAsync(string routingId, bool append, CancellationToken cancellationToken)
+    {
+        var item = await AppManager.Instance.GetRoutingItem(routingId);
+        if (item is null)
+        {
+            return OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound);
+        }
+        if (!Uri.TryCreate(item.Url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        {
+            return OperationView.Fail("routing_url_invalid", "routing.urlInvalid");
+        }
+
+        var download = new DownloadService();
+        var content = await download.TryDownloadString(uri.AbsoluteUri, true, string.Empty, cancellationToken);
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return OperationView.Fail("routing_url_download_failed", "routing.urlImportFailedGeneric");
+        }
+
+        return await ImportRoutingRulesAsync(routingId, new RouteRulesImportInput(content, append));
     }
 
     private OperationView RoutingRulesSaved(string routingId)

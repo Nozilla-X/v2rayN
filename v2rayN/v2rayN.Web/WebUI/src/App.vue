@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppHeader from './components/AppHeader.vue'
 import ConnectionStrip from './components/ConnectionStrip.vue'
@@ -33,6 +33,7 @@ import { useSettings } from './composables/useSettings'
 import { useSubscriptions } from './composables/useSubscriptions'
 import { useTemplates } from './composables/useTemplates'
 import type { ApiError, Dict } from './composables/types'
+import { navigateMenu } from './components/menuContext'
 
 const { t, locale } = useI18n()
 const sessionToken = ref(localStorage.getItem('v2rayn-web-token') || '')
@@ -45,14 +46,14 @@ const noticeKind = ref<'success' | 'error'>('success')
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
 
 const navItems = [
-  { id: 'nodes', key: 'nav.nodes', icon: '▦' },
-  { id: 'subscriptions', key: 'nav.subscriptions', icon: '↻' },
-  { id: 'routing', key: 'nav.routing', icon: '⇄' },
-  { id: 'dns', key: 'nav.dns', icon: '⌘' },
-  { id: 'settings', key: 'nav.settings', icon: '⚙' },
-  { id: 'templates', key: 'nav.templates', icon: '≡' },
-  { id: 'maintenance', key: 'nav.maintenance', icon: '⇩' },
-  { id: 'logs', key: 'nav.logs', icon: '▤' },
+  { id: 'nodes', key: 'nav.nodes', icon: 'grid' },
+  { id: 'subscriptions', key: 'nav.subscriptions', icon: 'refresh' },
+  { id: 'routing', key: 'nav.routing', icon: 'route' },
+  { id: 'dns', key: 'nav.dns', icon: 'dns' },
+  { id: 'settings', key: 'nav.settings', icon: 'settings' },
+  { id: 'templates', key: 'nav.templates', icon: 'list' },
+  { id: 'maintenance', key: 'nav.maintenance', icon: 'download' },
+  { id: 'logs', key: 'nav.logs', icon: 'logs' },
 ]
 
 function translateKey(key?: string | null): string {
@@ -103,7 +104,7 @@ const events = useEvents({
   logs: logs.logs, logTotal: logs.logTotal, logPage: logs.logPage, logPageSize: logs.logPageSize,
   request: api.request, t, showNotice, matchesLogFilter: logs.matchesLogFilter,
   loadGroups: profiles.loadGroups, loadProfiles: profiles.loadProfiles, loadSubscriptions: subscriptions.loadSubscriptions,
-  loadStatus: runtime.loadStatus, loadOperations: runtime.loadOperations,
+  loadStatus: runtime.loadStatus, loadRouting: routing.loadRouting, loadOperations: runtime.loadOperations,
 })
 
 async function loadPageData() {
@@ -154,6 +155,10 @@ const currentProfile = computed(() => profiles.profiles.value.find((profile) => 
 const brandIconMode = computed(() => runtime.status.value?.coreRunning ? 'proxy' : 'off')
 const brandIconSrc = computed(() => ({ proxy: '/NotifyIcon2.ico', off: '/NotifyIcon1.ico' })[brandIconMode.value])
 const brandIconTitle = computed(() => t(`brandState.${brandIconMode.value}`))
+watch(brandIconSrc, (src) => {
+  const favicon = document.querySelector<HTMLLinkElement>('link[rel~="icon"]')
+  if (favicon) favicon.href = src
+}, { immediate: true })
 const pageTitle = computed(() => {
   const item = navItems.find((entry) => entry.id === activePage.value)
   return item ? t(item.key) : t('nav.nodes')
@@ -194,10 +199,18 @@ async function copyProfileExport(options: ProfileExportOptions, profileIds?: str
   profiles.exportModalState.showExportDialog = false
 }
 
-function contextMenuStyle(menu: Dict) {
-  const left = Math.max(0, Math.min(Number(menu.x) || 0, window.innerWidth - 250))
-  const top = Math.max(8, Math.min(Number(menu.y) || 0, window.innerHeight - 580))
-  return { left: `${left}px`, top: `${top}px` }
+const contextMenuElement = ref<HTMLElement | null>(null)
+const contextMenuPlacement = ref({ left: '-10000px', top: '-10000px' })
+
+function positionContextMenu(menu: Dict) {
+  const element = contextMenuElement.value
+  if (!element) return
+  const margin = 8
+  const width = element.offsetWidth
+  const height = element.offsetHeight
+  const left = Math.max(margin, Math.min(Number(menu.x) || 0, window.innerWidth - width - margin))
+  const top = Math.max(margin, Math.min(Number(menu.y) || 0, window.innerHeight - height - margin))
+  contextMenuPlacement.value = { left: `${left}px`, top: `${top}px` }
 }
 
 const headerState = reactive({ navItems, brandIconSrc, brandIconTitle, activePage, subscriptions: subscriptions.subscriptions, authenticated, locale, loading })
@@ -206,7 +219,7 @@ const runtimeStripState = reactive({ status: runtime.status, currentProfile, act
 const runtimeStripActions = { activateRoute, coreAction: runtime.coreAction }
 const connectionStripState = runtime.connectionStripState
 const connectionStripActions = { listenerDescription: runtime.listenerDescription, formatBytes }
-const noticeState = reactive({ notice, noticeKind })
+const noticeState = reactive({ notice, noticeKind, closeLabel: computed(() => t('common.close')) })
 
 const nodesPageState = Object.assign(profiles.nodesPageState, { subscriptions: subscriptions.subscriptions })
 const nodesPageActions = {
@@ -226,6 +239,160 @@ const nodesPageActions = {
   exportInnerUris: () => copyProfileExport({ includeInnerUri: true }),
   formatBytes,
 }
+
+function nodeProfileForAction(event?: Event): Dict | undefined {
+  const target = event?.target
+  const rowId = target instanceof Element ? target.closest<HTMLElement>('[data-profile-id]')?.dataset.profileId : undefined
+  const id = rowId || nodesPageState.focusedProfileId || contextMenu.value?.profile?.indexId || profiles.selectedIds.value[0]
+  return profiles.profiles.value.find((profile) => profile.indexId === id)
+    || (contextMenu.value?.profile as Dict | undefined)
+}
+
+function nodeIdsForAction(event?: Event): string[] {
+  if (profiles.selectedIds.value.length) return [...profiles.selectedIds.value]
+  const profile = nodeProfileForAction(event)
+  return profile ? [profile.indexId] : []
+}
+
+function ensureNodeSelection() {
+  if (profiles.selectedIds.value.length) return true
+  const profile = nodeProfileForAction()
+  if (!profile) return false
+  profiles.selectedIds.value = [profile.indexId]
+  return true
+}
+
+function selectContextProfile() {
+  const profile = nodeProfileForAction()
+  if (profile) void nodesPageActions.selectProfile(profile)
+}
+
+function editContextProfile() {
+  const profile = nodeProfileForAction()
+  if (profile) void profiles.openEditProfile(profile)
+}
+
+function copySelectedNodes() {
+  if (ensureNodeSelection()) void nodesPageActions.runProfileAction('copy')
+}
+
+function deleteSelectedNodes() {
+  if (ensureNodeSelection()) void nodesPageActions.runProfileAction('delete')
+}
+
+function testSelectedNodes(action: string, profile?: Dict) {
+  const ids = profile ? [profile.indexId] : nodeIdsForAction()
+  if (ids.length) void nodesPageActions.startSpeedTest(action, ids)
+}
+
+function moveSelectedNodes(direction: string) {
+  if (ensureNodeSelection()) void nodesPageActions.moveSelected(direction)
+}
+
+function selectAllNodes() {
+  if (!nodesPageState.allVisibleSelected && nodesPageState.filteredProfiles.length) {
+    nodesPageActions.toggleAllVisible()
+  }
+}
+
+function shareSelectedNodes() {
+  if (ensureNodeSelection()) nodesPageActions.shareSelected()
+}
+
+function copySelectedShareLinks() {
+  if (ensureNodeSelection()) nodesPageActions.exportShareLinksToClipboard()
+}
+
+function isEditableTarget(target: EventTarget | null) {
+  return target instanceof Element
+    && Boolean(target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])'))
+}
+
+function closeTopLayerOnEscape(event: KeyboardEvent): boolean {
+  if (event.key !== 'Escape') return false
+
+  const flyout = document.querySelector<HTMLElement>('.flyout-menu-popup')
+  if (flyout) {
+    flyout.dispatchEvent(new Event('menu-escape', { bubbles: true }))
+  } else {
+    const dropdown = document.querySelector<HTMLElement>('.action-menu-popup:not(.flyout-menu-popup)')
+    if (dropdown) {
+      dropdown.dispatchEvent(new Event('menu-escape', { bubbles: true }))
+    } else if (contextMenu.value) {
+      const profileId = contextMenu.value.profile?.indexId
+      contextMenu.value = null
+      void nextTick(() => {
+        const row = [...document.querySelectorAll<HTMLElement>('[data-profile-id]')]
+          .find((item) => item.dataset.profileId === profileId)
+        row?.focus({ preventScroll: true })
+      })
+    } else if (exportModalState.showExportDialog) {
+      profiles.showExportDialog.value = false
+    } else if (routing.ruleModalState.showRuleForm) {
+      routing.ruleModalState.showRuleForm = false
+    } else if (routing.showRouteForm.value) {
+      routing.showRouteForm.value = false
+    } else if (subscriptions.showSubscriptionForm.value) {
+      subscriptions.showSubscriptionForm.value = false
+    } else if (profiles.showImportForm.value) {
+      profiles.showImportForm.value = false
+    } else if (profiles.showProfileForm.value) {
+      profiles.showProfileForm.value = false
+    } else {
+      return false
+    }
+  }
+
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  return true
+}
+
+function handleGlobalKeydown(event: KeyboardEvent) {
+  if (closeTopLayerOnEscape(event)) return
+  if (activePage.value !== 'nodes' || isEditableTarget(event.target)) return
+  if (document.querySelector('.modal-shade, .context-menu, .action-menu-popup')) return
+
+  const key = event.key.toLowerCase()
+  const control = event.ctrlKey && !event.shiftKey && !event.altKey && !event.metaKey
+  let handled = true
+  if (control) {
+    switch (key) {
+      case 'a': selectAllNodes(); break
+      case 'c': copySelectedShareLinks(); break
+      case 'd': editContextProfile(); break
+      case 'f': shareSelectedNodes(); break
+      case 'o': testSelectedNodes('tcping'); break
+      case 'r': testSelectedNodes('realping'); break
+      case 't': testSelectedNodes('speedtest'); break
+      default: handled = false
+    }
+  } else if (!event.ctrlKey && !event.altKey && !event.metaKey) {
+    switch (key) {
+      case 'enter': selectContextProfile(); break
+      case 'backspace':
+      case 'delete': deleteSelectedNodes(); break
+      case 't': moveSelectedNodes('top'); break
+      case 'u': moveSelectedNodes('up'); break
+      case 'd': moveSelectedNodes('down'); break
+      case 'b': moveSelectedNodes('bottom'); break
+      default: handled = false
+    }
+  } else {
+    handled = false
+  }
+
+  if (handled) event.preventDefault()
+}
+
+watch(contextMenu, async (menu) => {
+  if (!menu) return
+  contextMenuPlacement.value = { left: '-10000px', top: '-10000px' }
+  await nextTick()
+  positionContextMenu(menu)
+  contextMenuElement.value?.querySelector<HTMLElement>('button:not(:disabled)')?.focus({ preventScroll: true })
+})
+
 const subscriptionsPageState = subscriptions.subscriptionsPageState
 const subscriptionsPageActions = subscriptions.subscriptionsPageActions
 const routingPageState = routing.routingPageState
@@ -272,7 +439,8 @@ watch(locale, (value) => {
 }, { immediate: true })
 
 onMounted(async () => {
-  document.addEventListener('keydown', closeDialogsOnEscape)
+  document.addEventListener('keydown', handleGlobalKeydown, true)
+  window.addEventListener('resize', positionOpenContextMenu)
   await session.loadSetupStatus()
   if (setupRequired.value || !sessionToken.value) return
   try {
@@ -286,19 +454,13 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
-  document.removeEventListener('keydown', closeDialogsOnEscape)
+  document.removeEventListener('keydown', handleGlobalKeydown, true)
+  window.removeEventListener('resize', positionOpenContextMenu)
   clearTimeout(noticeTimer)
 })
 
-function closeDialogsOnEscape(event: KeyboardEvent) {
-  if (event.key !== 'Escape') return
-  contextMenu.value = null
-  profiles.showProfileForm.value = false
-  profiles.showImportForm.value = false
-  profiles.showExportDialog.value = false
-  subscriptions.showSubscriptionForm.value = false
-  routing.showRouteForm.value = false
-  routing.ruleModalState.showRuleForm = false
+function positionOpenContextMenu() {
+  if (contextMenu.value) positionContextMenu(contextMenu.value)
 }
 </script>
 
@@ -351,37 +513,37 @@ function closeDialogsOnEscape(event: KeyboardEvent) {
           <LogsPage v-else-if="activePage === 'logs'" :state="logsPageState" :actions="logsPageActions" />
         </main>
       </template>
-    <div v-if="contextMenu" class="context-menu" :style="contextMenuStyle(contextMenu)" @click="contextMenu = null">
-      <button :disabled="contextMenu.profile.isCurrent" @click="nodesPageActions.selectProfile(contextMenu.profile)">{{ contextMenu.profile.isCurrent ? t('nodes.current') : t('nodes.switch') }}<span class="menu-shortcut">Enter</span></button>
-      <button @click="openEditProfile(contextMenu.profile)">{{ t('common.edit') }}<span class="menu-shortcut">Ctrl+D</span></button>
-      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.runProfileAction('copy')">{{ t('nodes.copySelected') }}</button>
-      <button class="danger-text" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.runProfileAction('delete')">{{ t('nodes.removeSelected') }}<span class="menu-shortcut">Back</span></button>
-      <button @click="nodesPageActions.runProfileAction('deduplicate')">{{ t('nodes.deduplicate') }}</button>
-      <button @click="nodesPageActions.runProfileAction('remove-invalid')">{{ t('nodes.removeInvalid') }}</button>
+    <div v-if="contextMenu" ref="contextMenuElement" class="context-menu" :style="contextMenuPlacement" role="menu" @keydown="navigateMenu($event, contextMenuElement)" @click="contextMenu = null">
+      <button role="menuitem" :disabled="contextMenu.profile.isCurrent" @click="selectContextProfile">{{ contextMenu.profile.isCurrent ? t('nodes.current') : t('nodes.switch') }}<span class="menu-shortcut">Enter</span></button>
+      <button role="menuitem" @click="editContextProfile">{{ t('common.edit') }}<span class="menu-shortcut">Ctrl+D</span></button>
+      <button role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="copySelectedNodes">{{ t('nodes.copySelected') }}</button>
+      <button role="menuitem" class="danger-text" :disabled="!nodesPageState.selectedIds.length" @click="deleteSelectedNodes">{{ t('nodes.removeSelected') }}<span class="menu-shortcut">Back</span></button>
+      <button role="menuitem" @click="nodesPageActions.runProfileAction('deduplicate')">{{ t('nodes.deduplicate') }}</button>
+      <button role="menuitem" @click="nodesPageActions.runProfileAction('remove-invalid')">{{ t('nodes.removeInvalid') }}</button>
       <div class="context-separator"></div>
-      <button @click="nodesPageActions.startSpeedTest('tcping', [contextMenu.profile.indexId])">{{ t('nodes.tcping') }}<span class="menu-shortcut">Ctrl+O</span></button>
-      <button @click="nodesPageActions.startSpeedTest('realping', [contextMenu.profile.indexId])">{{ t('nodes.realping') }}<span class="menu-shortcut">Ctrl+R</span></button>
-      <button @click="nodesPageActions.startSpeedTest('speedtest', [contextMenu.profile.indexId])">{{ t('nodes.speedtest') }}<span class="menu-shortcut">Ctrl+T</span></button>
-      <button @click="nodesPageActions.startSpeedTest('udpTest', [contextMenu.profile.indexId])">{{ t('nodes.udp') }}</button>
-      <button @click="nodesPageActions.sortProfiles('DelayVal')">{{ t('nodes.sortByTestResults') }}</button>
+      <button role="menuitem" @click="testSelectedNodes('tcping', contextMenu.profile)">{{ t('nodes.tcping') }}<span class="menu-shortcut">Ctrl+O</span></button>
+      <button role="menuitem" @click="testSelectedNodes('realping', contextMenu.profile)">{{ t('nodes.realping') }}<span class="menu-shortcut">Ctrl+R</span></button>
+      <button role="menuitem" @click="testSelectedNodes('speedtest', contextMenu.profile)">{{ t('nodes.speedtest') }}<span class="menu-shortcut">Ctrl+T</span></button>
+      <button role="menuitem" @click="testSelectedNodes('udpTest', contextMenu.profile)">{{ t('nodes.udp') }}</button>
+      <button role="menuitem" @click="nodesPageActions.sortProfiles('DelayVal')">{{ t('nodes.sortByTestResults') }}</button>
       <div class="context-separator"></div>
       <FlyoutMenu context :label="t('nodes.moveGroup')" :disabled="!nodesPageState.selectedIds.length" @select="contextMenu = null">
         <button v-for="group in nodesPageState.groups" :key="group.id || 'all-target'" class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.moveSelectedToGroup(group.id)">{{ group.name || t('common.allGroups') }}</button>
       </FlyoutMenu>
       <FlyoutMenu context :label="t('nodes.move')" :disabled="!nodesPageState.selectedIds.length" @select="contextMenu = null">
-        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('top')">{{ t('nodes.top') }}<span class="menu-shortcut">T</span></button>
-        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('up')">{{ t('nodes.up') }}<span class="menu-shortcut">U</span></button>
-        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('down')">{{ t('nodes.down') }}<span class="menu-shortcut">D</span></button>
-        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('bottom')">{{ t('nodes.bottom') }}<span class="menu-shortcut">B</span></button>
+        <button class="action-menu-item" role="menuitem" @click="moveSelectedNodes('top')">{{ t('nodes.top') }}<span class="menu-shortcut">T</span></button>
+        <button class="action-menu-item" role="menuitem" @click="moveSelectedNodes('up')">{{ t('nodes.up') }}<span class="menu-shortcut">U</span></button>
+        <button class="action-menu-item" role="menuitem" @click="moveSelectedNodes('down')">{{ t('nodes.down') }}<span class="menu-shortcut">D</span></button>
+        <button class="action-menu-item" role="menuitem" @click="moveSelectedNodes('bottom')">{{ t('nodes.bottom') }}<span class="menu-shortcut">B</span></button>
       </FlyoutMenu>
-      <button :disabled="!nodesPageState.filteredProfiles.length" @click="!nodesPageState.allVisibleSelected && nodesPageActions.toggleAllVisible()">{{ t('nodes.selectAll') }}<span class="menu-shortcut">Ctrl+A</span></button>
+      <button role="menuitem" :disabled="!nodesPageState.filteredProfiles.length" @click="selectAllNodes">{{ t('nodes.selectAll') }}<span class="menu-shortcut">Ctrl+A</span></button>
       <div class="context-separator"></div>
-      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.shareSelected">{{ t('nodes.shareProfile') }}<span class="menu-shortcut">Ctrl+F</span></button>
+      <button role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="shareSelectedNodes">{{ t('nodes.shareProfile') }}<span class="menu-shortcut">Ctrl+F</span></button>
       <FlyoutMenu context :label="t('nodes.exportMenu')" :disabled="!nodesPageState.selectedIds.length" @select="contextMenu = null">
         <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportFullConfig">{{ t('nodes.exportFullConfig') }}</button>
         <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportFullConfigToClipboard">{{ t('nodes.exportFullConfigClipboard') }}</button>
         <div class="action-menu-separator" role="separator"></div>
-        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksToClipboard">{{ t('nodes.exportShareLinkClipboard') }}<span class="menu-shortcut">Ctrl+C</span></button>
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="copySelectedShareLinks">{{ t('nodes.exportShareLinkClipboard') }}<span class="menu-shortcut">Ctrl+C</span></button>
         <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksBase64">{{ t('nodes.exportShareLinkBase64') }}</button>
         <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportInnerUris">{{ t('nodes.exportInnerUri') }}</button>
       </FlyoutMenu>
@@ -392,9 +554,9 @@ function closeDialogsOnEscape(event: KeyboardEvent) {
       </FlyoutMenu>
       <div class="context-separator"></div>
       <div class="context-web-only-label">{{ t('nodes.webOnlyActions') }}</div>
-      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.moveSelectedPosition">{{ t('nodes.position') }}…</button>
-      <button :disabled="!nodesPageState.operations.includes('speedtest')" @click="nodesPageActions.stopSpeedTests">{{ t('nodes.stopTest') }}</button>
-      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportSelected">{{ t('nodes.customExport') }}…</button>
+      <button role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.moveSelectedPosition">{{ t('nodes.position') }}…</button>
+      <button role="menuitem" :disabled="!nodesPageState.operations.includes('speedtest')" @click="nodesPageActions.stopSpeedTests">{{ t('nodes.stopTest') }}</button>
+      <button role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportSelected">{{ t('nodes.customExport') }}…</button>
     </div>
     <ProfileModal v-if="showProfileForm" :state="profileModalState" :actions="profileModalActions" />
     <ImportProfilesModal v-if="showImportForm" :state="importProfilesModalState" :actions="importProfilesModalActions" />
