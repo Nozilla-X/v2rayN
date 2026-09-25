@@ -1,6 +1,7 @@
 FROM docker.io/library/node:22-bookworm-slim AS webui
 WORKDIR /src
 COPY v2rayN/v2rayN.Web/WebUI/package.json v2rayN/v2rayN.Web/WebUI/package-lock.json ./v2rayN/v2rayN.Web/WebUI/
+COPY v2rayN/v2rayN.Web/Contracts/ApiModels.cs ./v2rayN/v2rayN.Web/Contracts/ApiModels.cs
 RUN npm ci --prefix v2rayN/v2rayN.Web/WebUI
 COPY v2rayN/v2rayN.Web/WebUI/ ./v2rayN/v2rayN.Web/WebUI/
 RUN npm run build --prefix v2rayN/v2rayN.Web/WebUI

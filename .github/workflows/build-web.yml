@@ -1,0 +1,147 @@
+name: Build v2rayN.Web
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'v2rayN/v2rayN.Web/**'
+      - 'v2rayN/ServiceLib/**'
+      - 'v2rayN/ServiceLib.Tests/**'
+      - 'v2rayN/Directory.Build.*'
+      - 'v2rayN/Directory.Packages.props'
+      - 'global.json'
+      - '.github/workflows/build-web.yml'
+  push:
+    branches:
+      - web
+    paths:
+      - 'v2rayN/v2rayN.Web/**'
+      - 'v2rayN/ServiceLib/**'
+      - 'v2rayN/ServiceLib.Tests/**'
+      - 'v2rayN/Directory.Build.*'
+      - 'v2rayN/Directory.Packages.props'
+      - 'global.json'
+      - '.github/workflows/build-web.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify Web and tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Verify frontend, tests, and native publish
+        run: bash v2rayN/v2rayN.Web/scripts/verify.sh "$RUNNER_TEMP/v2rayN.Web-verify"
+
+      - name: Check patch whitespace
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "$BASE_SHA" =~ ^0+$ ]]; then
+            empty_tree="$(git hash-object -t tree -w /dev/null)"
+            git diff --check "$empty_tree" HEAD
+          else
+            git diff --check "$BASE_SHA...HEAD"
+          fi
+
+  native:
+    name: Native artifact (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            runner: ubuntu-24.04
+          - rid: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.x'
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Publish native Web app
+        env:
+          RID: ${{ matrix.rid }}
+        run: bash v2rayN/v2rayN.Web/scripts/publish-native.sh "$RID"
+
+      - name: Package native artifact
+        env:
+          RID: ${{ matrix.rid }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish_dir="v2rayN/v2rayN.Web/publish/$RID"
+          test -x "$publish_dir/v2rayN.Web"
+          test -f "$publish_dir/wwwroot/index.html"
+
+          xray_file="$(find "$publish_dir" -type f -iname '*xray*' -print -quit)"
+          if [[ -n "$xray_file" ]]; then
+            echo "Unexpected Xray Core file in native publish: $xray_file" >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          archive="$GITHUB_WORKSPACE/dist/v2rayN.Web-$RID.tar.gz"
+          tar -C "$publish_dir" -czf "$archive" .
+          tar -tzf "$archive" > "$RUNNER_TEMP/v2rayN.Web-$RID.contents"
+          grep -Fxq './v2rayN.Web' "$RUNNER_TEMP/v2rayN.Web-$RID.contents"
+          grep -Fxq './wwwroot/index.html' "$RUNNER_TEMP/v2rayN.Web-$RID.contents"
+
+      - name: Upload native artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: v2rayN.Web-${{ matrix.rid }}
+          path: dist/v2rayN.Web-${{ matrix.rid }}.tar.gz
+          if-no-files-found: error
+
+  container:
+    name: Verify Containerfile build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Containerfile (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./v2rayN/v2rayN.Web/Containerfile
+          tags: v2rayn-web:ci
+          push: false
