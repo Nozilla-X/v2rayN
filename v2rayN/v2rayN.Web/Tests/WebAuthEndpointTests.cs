@@ -168,15 +168,7 @@ public class WebAuthEndpointTests
         await (firstRead > 0).Should().BeTrue();
 
         sessions.Revoke(session.Token);
-        var closed = false;
-        try
-        {
-            closed = await stream.ReadAsync(buffer).AsTask().WaitAsync(TimeSpan.FromSeconds(3)) == 0;
-        }
-        catch (IOException)
-        {
-            closed = true;
-        }
+        var closed = await ReadSseStreamUntilClosedAsync(stream);
         await closed.Should().BeTrue();
     }
 
@@ -203,19 +195,12 @@ public class WebAuthEndpointTests
         await (response.StatusCode == HttpStatusCode.OK).Should().BeTrue();
         await using var stream = await response.Content.ReadAsStreamAsync();
         var buffer = new byte[512];
-        await stream.ReadAsync(buffer).AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+        var firstRead = await stream.ReadAsync(buffer).AsTask().WaitAsync(TimeSpan.FromSeconds(3));
+        await (firstRead > 0).Should().BeTrue();
 
         time.Advance(WebSessionService.SlidingLifetime + TimeSpan.FromSeconds(1));
         await sessions.TryValidateWithoutRenewal(session.Token, out _).Should().BeFalse();
-        var closed = false;
-        try
-        {
-            closed = await stream.ReadAsync(buffer).AsTask().WaitAsync(TimeSpan.FromSeconds(3)) == 0;
-        }
-        catch (IOException)
-        {
-            closed = true;
-        }
+        var closed = await ReadSseStreamUntilClosedAsync(stream);
         await closed.Should().BeTrue();
     }
 
@@ -309,6 +294,20 @@ public class WebAuthEndpointTests
         await heartbeatSent.Should().BeFalse();
         await (snapshot!.LastSeenAt == startedAt).Should().BeTrue();
         await snapshot.RevocationToken.IsCancellationRequested.Should().BeTrue();
+    }
+
+    private static async Task<bool> ReadSseStreamUntilClosedAsync(Stream stream)
+    {
+        try
+        {
+            // A network read may return only part of already-buffered SSE frames.
+            await stream.CopyToAsync(Stream.Null).WaitAsync(TimeSpan.FromSeconds(3));
+            return true;
+        }
+        catch (IOException)
+        {
+            return true;
+        }
     }
 
     private sealed class ApiHarness : IAsyncDisposable
