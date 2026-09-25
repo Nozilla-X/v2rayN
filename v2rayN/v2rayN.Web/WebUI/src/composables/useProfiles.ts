@@ -1,0 +1,359 @@
+import { computed, reactive, ref, type Ref } from 'vue'
+import type { ApiError, ApiServices, Dict, ErrorHandler, Notice, Translate } from './types'
+
+export function useProfiles(options: ApiServices & {
+  t: Translate
+  showNotice: Notice
+  showError: ErrorHandler
+  loadStatus: () => Promise<void>
+  loadOperations: () => Promise<void>
+  busy: Ref<boolean>
+  operations: Ref<string[]>
+  contextMenu: Ref<Dict | null>
+}) {
+  const t = options.t
+  const profiles = ref<Dict[]>([])
+  const groups = ref<Dict[]>([])
+  const selectedGroup = ref('')
+  const filter = ref('')
+  const selectedIds = ref<string[]>([])
+  const sorting = ref({ column: '', ascending: true })
+  const importForm = ref<Dict>({ content: '', subscriptionId: '', isSubscription: false })
+  const profileForm = ref<Dict>({})
+  const profileAdvancedJson = ref('')
+  const exportOptions = ref({ includeShareUris: true, base64ShareUris: false, includeInnerUri: true, includeClientConfig: true })
+  const exportContent = ref('')
+  const showProfileForm = ref(false)
+  const showImportForm = ref(false)
+  const showExportDialog = ref(false)
+  const editingProfileId = ref('')
+  const profileModalError = ref('')
+
+  const protocolTypes = ['VMess', 'VLESS', 'Shadowsocks', 'SOCKS', 'Trojan', 'Hysteria2', 'TUIC', 'WireGuard', 'HTTP', 'Anytls', 'Naive']
+  const coreTypes = ['Xray', 'sing_box', 'v2fly', 'v2fly_v5', 'mihomo', 'hysteria', 'naiveproxy', 'tuic', 'juicity', 'brook', 'overtls', 'shadowquic', 'mieru']
+  const testActions = [
+    { id: 'tcping', key: 'nodes.tcping' },
+    { id: 'realping', key: 'nodes.realping' },
+    { id: 'fastRealping', key: 'nodes.fastRealping' },
+    { id: 'udpTest', key: 'nodes.udp' },
+    { id: 'speedtest', key: 'nodes.speedtest' },
+    { id: 'mixedtest', key: 'nodes.mixedtest' },
+  ]
+
+  // The backend owns filtering so its ServiceLib regex semantics are preserved.
+  const filteredProfiles = computed(() => profiles.value)
+  const selectedProfiles = computed(() => profiles.value.filter((profile) => selectedIds.value.includes(profile.indexId)))
+  const allVisibleSelected = computed(() => filteredProfiles.value.length > 0 && filteredProfiles.value.every((profile) => selectedIds.value.includes(profile.indexId)))
+
+  async function loadGroups() {
+    groups.value = await options.data('/api/profile-groups') || []
+    if (!groups.value.some((group) => group.id === selectedGroup.value)) {
+      selectedGroup.value = groups.value.find((group) => group.isCurrent)?.id || ''
+    }
+  }
+
+  async function loadProfiles() {
+    const path = options.queryPath('/api/profiles', { subscriptionId: selectedGroup.value, filter: filter.value.trim() })
+    profiles.value = await options.data(path) || []
+    selectedIds.value = selectedIds.value.filter((id) => profiles.value.some((profile) => profile.indexId === id))
+  }
+
+  async function changeGroup(groupId: string) {
+    try {
+      await options.request('/api/profile-groups/current', { method: 'PUT', body: { subscriptionId: groupId || null } })
+      selectedGroup.value = groupId
+      selectedIds.value = []
+      await loadProfiles()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function selectProfile(profile: Dict) {
+    if (profile.isCurrent) return
+    options.busy.value = true
+    try {
+      const result = await options.request(`/api/profiles/${encodeURIComponent(profile.indexId)}/select`, { method: 'POST' })
+      options.showNotice(options.operationMessage(result, 'core.started'))
+      await Promise.all([options.loadStatus(), loadProfiles()])
+    } catch (error) { options.showError(error) } finally { options.busy.value = false }
+  }
+
+  async function startSpeedTest(action: string, ids: string[] = selectedIds.value) {
+    try {
+      const result = await options.request('/api/speedtests', {
+        method: 'POST',
+        body: { action, ...(ids.length ? { profileIds: ids } : {}) },
+      })
+      options.showNotice(options.operationMessage(result, 'speedtest.started'))
+      await options.loadOperations()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function stopSpeedTests() {
+    try {
+      const result = await options.request('/api/speedtests', { method: 'DELETE' })
+      options.showNotice(options.operationMessage(result))
+      await options.loadOperations()
+    } catch (error) { options.showError(error) }
+  }
+
+  function toggleProfile(id: string) {
+    selectedIds.value = selectedIds.value.includes(id) ? selectedIds.value.filter((item) => item !== id) : [...selectedIds.value, id]
+  }
+
+  function toggleAllVisible() {
+    if (allVisibleSelected.value) {
+      const visible = new Set(filteredProfiles.value.map((profile) => profile.indexId))
+      selectedIds.value = selectedIds.value.filter((id) => !visible.has(id))
+    } else {
+      selectedIds.value = [...new Set([...selectedIds.value, ...filteredProfiles.value.map((profile) => profile.indexId)])]
+    }
+  }
+
+  async function sortProfiles(column: string) {
+    const ascending = sorting.value.column === column ? !sorting.value.ascending : true
+    sorting.value = { column, ascending }
+    try {
+      await options.request('/api/profiles/sort', { method: 'POST', body: { subscriptionId: selectedGroup.value || null, column, ascending } })
+      await loadProfiles()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function runProfileAction(action: string, profileIds = selectedIds.value) {
+    if (!profileIds.length && !['test-group', 'deduplicate', 'remove-invalid'].includes(action)) {
+      options.showNotice(t('nodes.selectionRequired'), 'error')
+      return
+    }
+    try {
+      let result: Dict
+      if (action === 'delete') {
+        if (!window.confirm(t('common.confirmDelete'))) return
+        result = await options.request('/api/profiles', { method: 'DELETE', body: { profileIds } })
+      } else if (action === 'copy') {
+        result = await options.request('/api/profiles/copy', { method: 'POST', body: { profileIds } })
+      } else if (action === 'deduplicate') {
+        result = await options.request(options.queryPath('/api/profiles/deduplicate', { subscriptionId: selectedGroup.value }), { method: 'POST' })
+      } else if (action === 'remove-invalid') {
+        result = await options.request(options.queryPath('/api/profiles/invalid-test-results', { subscriptionId: selectedGroup.value }), { method: 'DELETE' })
+      } else if (action === 'test-group') {
+        await startSpeedTest('mixedtest', [])
+        return
+      } else {
+        return
+      }
+      options.showNotice(options.operationMessage(result))
+      selectedIds.value = []
+      await Promise.all([loadGroups(), loadProfiles(), options.loadStatus()])
+    } catch (error) { options.showError(error) }
+  }
+
+  async function moveSelectedToGroup(subscriptionId: string) {
+    if (!selectedIds.value.length) return options.showNotice(t('nodes.selectionRequired'), 'error')
+    try {
+      const result = await options.request('/api/profiles/move-to-group', { method: 'POST', body: { profileIds: selectedIds.value, subscriptionId } })
+      options.showNotice(options.operationMessage(result))
+      await Promise.all([loadGroups(), loadProfiles()])
+      selectedIds.value = []
+    } catch (error) { options.showError(error) }
+  }
+
+  async function moveSelected(direction: string) {
+    if (!selectedIds.value.length) return options.showNotice(t('nodes.selectionRequired'), 'error')
+    const ordered = [...selectedProfiles.value]
+    if (direction === 'up' || direction === 'top') ordered.reverse()
+    try {
+      for (const profile of ordered) {
+        await options.request('/api/profiles/move', { method: 'POST', body: { profileId: profile.indexId, direction, position: -1 } })
+      }
+      await loadProfiles()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function moveSelectedPosition() {
+    if (!selectedIds.value.length) return options.showNotice(t('nodes.selectionRequired'), 'error')
+    const value = window.prompt(t('nodes.positionPrompt'))
+    if (value === null) return
+    const position = Number.parseInt(value, 10)
+    if (!Number.isInteger(position) || position < 1) return options.showNotice(t('errors.invalidInput'), 'error')
+    try {
+      for (const profile of selectedProfiles.value) {
+        await options.request('/api/profiles/move', { method: 'POST', body: { profileId: profile.indexId, direction: 'position', position: position - 1 } })
+      }
+      await loadProfiles()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function generateGroups(byRegion: boolean) {
+    if (!selectedGroup.value) {
+      options.showNotice(t('nodes.groupGenerationSelectSubscription'), 'error')
+      return
+    }
+    try {
+      const route = byRegion ? '/api/profile-groups/generate/regions' : '/api/profile-groups/generate/all'
+      const result = await options.request(options.queryPath(route, { subscriptionId: selectedGroup.value || null }), { method: 'POST' })
+      options.showNotice(options.operationMessage(result, 'profiles.grouped'))
+      await Promise.all([loadGroups(), loadProfiles()])
+    } catch (error) {
+      const issue = error as ApiError
+      if (byRegion && issue.code === 'profile_group_empty') options.showNotice(t('nodes.regionGroupsNoMatches'), 'error')
+      else options.showError(error)
+    }
+  }
+
+  async function exportSelected() {
+    if (!selectedIds.value.length) return options.showNotice(t('nodes.selectionRequired'), 'error')
+    try {
+      const result = await options.data('/api/profiles/export', {
+        method: 'POST',
+        body: { profileIds: selectedIds.value, ...exportOptions.value },
+      })
+      exportContent.value = (result || []).map((item: Dict) => `# ${item.format}${item.remarks ? ` · ${item.remarks}` : ''}\n${item.content}`).join('\n\n')
+      showExportDialog.value = true
+    } catch (error) { options.showError(error) }
+  }
+
+  async function copyExport() {
+    try {
+      await navigator.clipboard.writeText(exportContent.value)
+      options.showNotice(t('common.copySuccess'))
+    } catch { options.showNotice(t('common.clipboardUnavailable'), 'error') }
+  }
+
+  function downloadExport() {
+    const blob = new Blob([exportContent.value], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'v2rayN-profiles.txt'
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+
+  function openContext(event: MouseEvent, profile: Dict) {
+    event.preventDefault()
+    if (!selectedIds.value.includes(profile.indexId)) selectedIds.value = [profile.indexId]
+    options.contextMenu.value = { x: Math.min(event.clientX, window.innerWidth - 250), y: Math.min(event.clientY, window.innerHeight - 280), profile }
+  }
+
+  async function openAddProfile() {
+    editingProfileId.value = ''
+    profileModalError.value = ''
+    profileForm.value = {
+      configType: 'VMess', coreType: 'Xray', configVersion: 4, remarks: '', address: '', port: 443,
+      password: '', username: '', network: 'tcp', streamSecurity: 'tls', allowInsecure: '', sni: '',
+      alpn: '', fingerprint: '', publicKey: '', shortId: '', spiderX: '', muxEnabled: null,
+      protoExtra: '{}', transportExtra: '{}', protoExtraText: '{\n  \n}', transportExtraText: '{\n  \n}',
+    }
+    profileAdvancedJson.value = JSON.stringify({
+      indexId: '', configType: 'VMess', coreType: 'Xray', configVersion: 4, subid: '', isSub: false,
+      remarks: '', address: '', port: 443, password: '', username: '', network: 'tcp', streamSecurity: 'tls',
+      allowInsecure: '', sni: '', alpn: '', fingerprint: '', publicKey: '', shortId: '', spiderX: '',
+      protoExtra: '{}', transportExtra: '{}',
+    }, null, 2)
+    showProfileForm.value = true
+  }
+
+  async function openEditProfile(profile: Dict) {
+    editingProfileId.value = profile.indexId
+    profileModalError.value = ''
+    try {
+      const details = await options.data(`/api/profiles/${encodeURIComponent(profile.indexId)}`)
+      profileForm.value = {
+        ...details,
+        configType: options.canonicalCode(details.configType, [...protocolTypes, 'PolicyGroup', 'ProxyChain']),
+        coreType: options.canonicalCode(details.coreType || profile.coreType, coreTypes),
+        allowInsecure: details.allowInsecure === 'true',
+        protoExtraText: details.protoExtra || '{}',
+        transportExtraText: details.transportExtra || '{}',
+      }
+      profileAdvancedJson.value = JSON.stringify(details, null, 2)
+      showProfileForm.value = true
+    } catch (error) { options.showError(error) }
+  }
+
+  async function saveProfile() {
+    try {
+      const protoExtra = JSON.parse(profileForm.value.protoExtraText || '{}')
+      const transportExtra = JSON.parse(profileForm.value.transportExtraText || '{}')
+      const advanced = JSON.parse(profileAdvancedJson.value || '{}')
+      const body = {
+        ...advanced,
+        configType: profileForm.value.configType,
+        coreType: profileForm.value.coreType || null,
+        configVersion: Number(profileForm.value.configVersion || 4),
+        remarks: profileForm.value.remarks,
+        address: profileForm.value.address,
+        port: Number(profileForm.value.port || 0),
+        password: profileForm.value.password || '',
+        username: profileForm.value.username || '',
+        network: profileForm.value.network || '',
+        streamSecurity: profileForm.value.streamSecurity || '',
+        allowInsecure: profileForm.value.allowInsecure ? 'true' : '',
+        sni: profileForm.value.sni || '',
+        alpn: profileForm.value.alpn || '',
+        fingerprint: profileForm.value.fingerprint || '',
+        publicKey: profileForm.value.publicKey || '',
+        shortId: profileForm.value.shortId || '',
+        spiderX: profileForm.value.spiderX || '',
+        muxEnabled: profileForm.value.muxEnabled,
+        protoExtra: JSON.stringify(protoExtra),
+        transportExtra: JSON.stringify(transportExtra),
+      }
+      const result = await options.request(editingProfileId.value ? `/api/profiles/${encodeURIComponent(editingProfileId.value)}` : '/api/profiles', {
+        method: editingProfileId.value ? 'PUT' : 'POST', body,
+      })
+      showProfileForm.value = false
+      options.showNotice(options.operationMessage(result, 'profiles.saved'))
+      await Promise.all([loadGroups(), loadProfiles(), options.loadStatus()])
+    } catch (error) {
+      if (error instanceof SyntaxError) profileModalError.value = t('common.invalidJson')
+      else options.showError(error)
+    }
+  }
+
+  function openImportProfiles() {
+    importForm.value = { content: '', subscriptionId: selectedGroup.value || '', isSubscription: false }
+    showImportForm.value = true
+  }
+
+  async function pasteImport() {
+    try { importForm.value.content = await navigator.clipboard.readText() } catch { options.showNotice(t('common.clipboardUnavailable'), 'error') }
+  }
+
+  async function readImportFile(event: Event) {
+    const input = event.target as HTMLInputElement
+    const file = input.files?.[0]
+    if (file) importForm.value.content = await file.text()
+    input.value = ''
+  }
+
+  async function importProfiles() {
+    try {
+      const result = await options.request('/api/profiles/import', { method: 'POST', body: importForm.value })
+      const count = result.data?.imported ?? 0
+      showImportForm.value = false
+      options.showNotice(t('nodes.profilesImported', { count }))
+      await Promise.all([loadGroups(), loadProfiles()])
+    } catch (error) { options.showError(error) }
+  }
+
+  function formatDelay(value: number) {
+    if (value < 0) return t('nodes.timeout')
+    if (!value) return t('nodes.delayUntested')
+    return `${value} ms`
+  }
+
+  const nodesPageState = reactive({ filteredProfiles, profiles, selectedGroup, groups, filter, selectedIds, allVisibleSelected, operations: options.operations, testActions })
+  const profileModalState = reactive({ showProfileForm, profileForm, profileAdvancedJson, profileModalError, editingProfileId, protocolTypes, coreTypes })
+  const importProfilesModalState = reactive({ showImportForm, importForm, groups })
+  const exportModalState = reactive({ showExportDialog, exportOptions, exportContent })
+
+  return {
+    profiles, groups, selectedGroup, selectedIds, protocolTypes, coreTypes, showProfileForm, showImportForm, showExportDialog, loadGroups, loadProfiles,
+    openEditProfile, selectProfile, startSpeedTest, runProfileAction,
+    nodesPageState, profileModalState, importProfilesModalState, exportModalState,
+    nodesPageActions: { openAddProfile, openImportProfiles, startSpeedTest, runProfileAction, stopSpeedTests, changeGroup, generateGroups, loadProfiles, toggleAllVisible, toggleProfile, sortProfiles, selectProfile, formatDelay, moveSelectedToGroup, moveSelected, moveSelectedPosition, exportSelected, openContext },
+    profileModalActions: { saveProfile },
+    importProfilesModalActions: { importProfiles, readImportFile, pasteImport },
+    exportModalActions: { exportSelected, copyExport, downloadExport },
+  }
+}

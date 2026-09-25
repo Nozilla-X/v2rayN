@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
@@ -32,10 +32,22 @@ for (const [name, keys] of locales) {
   if (apiNamespaces.length) errors.push(`${name}: legacy API translation namespaces [${apiNamespaces.join(', ')}]`)
 }
 
-const appVue = await readFile(path.join(webUiRoot, 'src', 'App.vue'), 'utf8')
-const uiKeys = new Set([...appVue.matchAll(/\bt\(\s*['"]([\w.-]+)['"]\s*(?:,|\))/g)].map((match) => match[1]))
-for (const key of uiKeys) {
-  if (!baseKeys.has(key)) errors.push(`App.vue references missing locale key: ${key}`)
+const sourceRoot = path.join(webUiRoot, 'src')
+const composablesRoot = path.join(sourceRoot, 'composables')
+const composableFiles = (await readdir(composablesRoot)).filter((file) => file.endsWith('.ts'))
+const uiSources = [
+  ['App.vue', await readFile(path.join(sourceRoot, 'App.vue'), 'utf8')],
+  ...await Promise.all(composableFiles.map(async (file) => [
+    path.join('composables', file), await readFile(path.join(composablesRoot, file), 'utf8'),
+  ])),
+]
+const uiKeys = new Set()
+for (const [source, content] of uiSources) {
+  for (const match of content.matchAll(/\bt\(\s*['"]([\w.-]+)['"]\s*(?:,|\))/g)) {
+    const key = match[1]
+    uiKeys.add(key)
+    if (!baseKeys.has(key)) errors.push(`${source} references missing locale key: ${key}`)
+  }
 }
 
 const contractsPath = path.resolve(webUiRoot, '..', 'Contracts', 'ApiModels.cs')
