@@ -9,7 +9,10 @@ const paths: Record<string, string[]> = {
   refresh: ['M13 5.5A5.5 5.5 0 0 0 3.6 3.6L2.5 5', 'M2.5 2.5V5h2.5', 'M3 10.5a5.5 5.5 0 0 0 9.4 1.9l1.1-1.4', 'M13.5 13.5V11H11'],
   route: ['M3 3.5h3v3H3z M10 9.5h3v3h-3z', 'M6 5h2a2 2 0 0 1 2 2v2.5', 'M8 5 6.5 3.5 M8 5 6.5 6.5'],
   dns: ['M3 2.5h10v3H3z M3 7h10v3H3z M3 11.5h10v2H3z', 'M5 4h.01 M5 8.5h.01 M5 12.5h.01'],
-  settings: ['M6.2 2.1 7 1.5h2l.8.6.3 1.1 1 .6 1.1-.3.9.7.7 1.9-.4 1-1 .2v1.1l1 .2.4 1.9-.7.7-1.1-.3-1 .6-.3 1.1-.8.6H7l-.8-.6-.3-1.1-1-.6-1.1.3-.7-.7.4-1.9 1-.2V7.4l-1-.2-.4-1.9.7-.7 1.1.3 1-.6z', 'M8 6.1a1.9 1.9 0 1 0 0 3.8 1.9 1.9 0 0 0 0-3.8z'],
+  settings: [
+    'M12.22 2h-.44a2 2 0 0 0-1.98 1.72l-.14 1.05a7.96 7.96 0 0 0-1.32.76l-.98-.4a2 2 0 0 0-2.48.91l-.22.38a2 2 0 0 0 .5 2.56l.83.65a8 8 0 0 0 0 1.52l-.83.65a2 2 0 0 0-.5 2.56l.22.38a2 2 0 0 0 2.48.91l.98-.4c.4.31.85.57 1.32.76l.14 1.05A2 2 0 0 0 11.78 20h.44a2 2 0 0 0 1.98-1.72l.14-1.05c.47-.19.92-.45 1.32-.76l.98.4a2 2 0 0 0 2.48-.91l.22-.38a2 2 0 0 0-.5-2.56l-.83-.65a8 8 0 0 0 0-1.52l.83-.65a2 2 0 0 0 .5-2.56l-.22-.38a2 2 0 0 0-2.48-.91l-.98.4a7.96 7.96 0 0 0-1.32-.76l-.14-1.05A2 2 0 0 0 12.22 2z',
+    'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z',
+  ],
   list: ['M5.5 3h7 M5.5 6.3h7 M5.5 9.7h7 M5.5 13h7', 'M2.5 3h.01 M2.5 6.3h.01 M2.5 9.7h.01 M2.5 13h.01'],
   download: ['M8 2v7', 'm5 6 3 3 3-3', 'M3 10.5v2A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-2'],
   logs: ['M3 2.5h10v11H3z', 'M5 5h6 M5 7.5h6 M5 10h4'],
@@ -34,10 +37,11 @@ const paths: Record<string, string[]> = {
 }
 
 const iconPaths = paths[props.name] || paths.list
+const iconTransform = props.name === 'settings' ? 'scale(0.6666667)' : undefined
 </script>
 
 <template>
   <svg class="ui-icon" :width="size" :height="size" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
-    <path v-for="(path, index) in iconPaths" :key="index" :d="path" />
+    <path v-for="(path, index) in iconPaths" :key="index" :d="path" :transform="iconTransform" />
   </svg>
 </template>
