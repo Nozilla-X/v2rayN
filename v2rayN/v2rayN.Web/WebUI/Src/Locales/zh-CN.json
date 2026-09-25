@@ -10,7 +10,7 @@
     "managementKey": "管理密钥",
     "confirmKey": "确认密钥",
     "submit": "设置并进入",
-    "localOnly": "首次初始化只能在运行 v2rayN Web 的本机完成。请在服务器上打开 http://127.0.0.1:5080。",
+    "localOnly": "首次初始化请在运行 v2rayN Web 的本机或可信私有网络中，通过服务器的私有 IP 直接访问；不支持公网或反向代理访问。",
     "keyTooShort": "管理密钥至少需要 12 个字符。",
     "keyTooLong": "管理密钥不能超过 4096 个字符。",
     "keysDoNotMatch": "两次输入的密钥不一致。",

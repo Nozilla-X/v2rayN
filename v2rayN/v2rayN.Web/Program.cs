@@ -114,7 +114,7 @@ internal static class Program
         if (string.IsNullOrWhiteSpace(builder.Configuration[Microsoft.AspNetCore.Hosting.WebHostDefaults.ServerUrlsKey])
             && string.IsNullOrWhiteSpace(builder.Configuration["http_ports"]))
         {
-            builder.WebHost.UseUrls("http://127.0.0.1:5080");
+            builder.WebHost.UseUrls("http://0.0.0.0:5080");
         }
 
         builder.Services.AddSingleton<EventHub>();

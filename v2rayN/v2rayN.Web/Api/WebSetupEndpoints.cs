@@ -13,7 +13,8 @@ public static class WebSetupEndpoints
             setupAllowedFromThisRequest = WebSetupAccessPolicy.IsAllowed(
                 context.Connection.RemoteIpAddress,
                 context.Request.Host.Host,
-                WebSetupAccessPolicy.HasForwardedHeaders(context.Request.Headers)),
+                WebSetupAccessPolicy.HasForwardedHeaders(context.Request.Headers),
+                context.Connection.LocalIpAddress),
         }));
 
         app.MapPost("/api/setup", async (WebSetupRequest request, HttpContext context, WebAuthService auth, WebSessionService sessions) =>
@@ -21,7 +22,8 @@ public static class WebSetupEndpoints
             var setupAccessAllowed = WebSetupAccessPolicy.IsAllowed(
                 context.Connection.RemoteIpAddress,
                 context.Request.Host.Host,
-                WebSetupAccessPolicy.HasForwardedHeaders(context.Request.Headers));
+                WebSetupAccessPolicy.HasForwardedHeaders(context.Request.Headers),
+                context.Connection.LocalIpAddress);
             var result = await auth.SetupAsync(
                 request.Key,
                 request.ConfirmKey,
@@ -31,7 +33,7 @@ public static class WebSetupEndpoints
             return result switch
             {
                 WebSetupResult.Created => CreateSetupResponse(sessions),
-                WebSetupResult.Forbidden => Results.Json(new { error = "loopback_required" }, statusCode: StatusCodes.Status403Forbidden),
+                WebSetupResult.Forbidden => Results.Json(new { error = "private_network_required" }, statusCode: StatusCodes.Status403Forbidden),
                 WebSetupResult.KeyTooShort => Results.BadRequest(new { error = "key_too_short", minimumLength = WebAuthService.MinimumKeyLength }),
                 WebSetupResult.KeyTooLong => Results.BadRequest(new { error = "key_too_long", maximumLength = WebAuthService.MaximumKeyLength }),
                 WebSetupResult.KeysDoNotMatch => Results.BadRequest(new { error = "keys_do_not_match" }),

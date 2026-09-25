@@ -30,6 +30,20 @@ public class WebSetupAccessPolicyTests
     }
 
     [Test]
+    public async Task PrivateNetworkClientCanInitializeUsingTheServerPrivateIp()
+    {
+        var serverAddress = IPAddress.Parse("192.168.86.221");
+        await WebSetupAccessPolicy.IsAllowed(
+            IPAddress.Parse("192.168.86.149"), "192.168.86.221", false, serverAddress).Should().BeTrue();
+        await WebSetupAccessPolicy.IsAllowed(
+            IPAddress.Parse("10.147.17.168"), "192.168.86.221", false, serverAddress).Should().BeTrue();
+        await WebSetupAccessPolicy.IsAllowed(
+            IPAddress.Parse("192.168.86.149"), "192.168.86.222", false, serverAddress).Should().BeFalse();
+        await WebSetupAccessPolicy.IsAllowed(
+            IPAddress.Parse("8.8.8.8"), "192.168.86.221", false, serverAddress).Should().BeFalse();
+    }
+
+    [Test]
     public async Task ForwardingHeadersNeverGrantSetupAccess()
     {
         await WebSetupAccessPolicy.IsAllowed(IPAddress.Loopback, "localhost", true).Should().BeFalse();

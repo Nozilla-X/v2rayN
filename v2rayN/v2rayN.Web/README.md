@@ -39,7 +39,7 @@ bash Scripts/verify.sh
 
 The lower-level Web tests are also runnable independently with `dotnet test Tests/v2rayN.Web.Tests.csproj --configuration Release`. `Scripts/verify.sh` and `Scripts/publish-native.sh` set `NUGET_PACKAGES` themselves so repository-wide NuGet restore behavior remains unchanged.
 
-Open `http://127.0.0.1:5080`. First Run setup or sign-in uses the Management Key (`V2RAYN_WEB_API_KEY` in environment-based deployments). The key is sent only in the login/setup JSON body, is never stored in browser storage, URLs, logs, or EventSource data, and a locally created key is stored only as a PBKDF2 verifier in `guiConfigs/web-auth.json`. PBKDF2 is used only for setup and Management Key login; authenticated REST requests use the Session Token. Login exchanges the Management Key for a random 256-bit Session Token; only its SHA-256 digest is stored in memory by the Backend. Sessions slide after authenticated REST activity with a 7-day idle expiration and a 30-day absolute expiration. “Idle” means no authenticated REST request other than SSE-ticket issuance, not lack of human mouse/keyboard input; WebUI status/profile polling counts as activity. To open EventSource, the WebUI sends an authenticated `POST /api/auth/sse-ticket`; this request does not renew the owning session. The Backend returns a random one-time ticket valid for 45 seconds and stores only its digest plus the owning session digest in memory. The EventSource URL contains that ticket, never the main Session Token. Consuming the ticket does not authenticate REST requests or renew the session; the stream is bound to session revoke/expiry, and SSE heartbeats do not renew it. Sessions and tickets are not persisted and become invalid after a Backend restart. Login attempts are rate-limited per remote IP. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the Web runtime owns scheduling and performs ordered Core/profile/statistics/config/database cleanup under a 20-second overall shutdown budget. If operation drain or a cleanup step times out or fails, later cleanup is skipped to avoid racing active work or closing SQLite while it may still be in use. The example systemd unit allows 45 seconds as the final process-shutdown fallback.
+Open `http://127.0.0.1:5080` locally, or use the server private IP from a trusted LAN/VPN. First Run setup or sign-in uses the Management Key (`V2RAYN_WEB_API_KEY` in environment-based deployments). The key is sent only in the login/setup JSON body, is never stored in browser storage, URLs, logs, or EventSource data, and a locally created key is stored only as a PBKDF2 verifier in `guiConfigs/web-auth.json`. PBKDF2 is used only for setup and Management Key login; authenticated REST requests use the Session Token. Login exchanges the Management Key for a random 256-bit Session Token; only its SHA-256 digest is stored in memory by the Backend. Sessions slide after authenticated REST activity with a 7-day idle expiration and a 30-day absolute expiration. “Idle” means no authenticated REST request other than SSE-ticket issuance, not lack of human mouse/keyboard input; WebUI status/profile polling counts as activity. To open EventSource, the WebUI sends an authenticated `POST /api/auth/sse-ticket`; this request does not renew the owning session. The Backend returns a random one-time ticket valid for 45 seconds and stores only its digest plus the owning session digest in memory. The EventSource URL contains that ticket, never the main Session Token. Consuming the ticket does not authenticate REST requests or renew the session; the stream is bound to session revoke/expiry, and SSE heartbeats do not renew it. Sessions and tickets are not persisted and become invalid after a Backend restart. Login attempts are rate-limited per remote IP. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the Web runtime owns scheduling and performs ordered Core/profile/statistics/config/database cleanup under a 20-second overall shutdown budget. If operation drain or a cleanup step times out or fails, later cleanup is skipped to avoid racing active work or closing SQLite while it may still be in use. The example systemd unit allows 45 seconds as the final process-shutdown fallback.
 
 Use `sudo systemctl stop v2rayn-web.service` for the systemd deployment and `docker stop` / `podman stop` for containers; those foreground-managed deployments do not use `--stop`.
 
@@ -60,13 +60,13 @@ sh Scripts/fetch-core-bundle.sh linux-x64 publish/linux-x64/bin
 - A self-contained single-file executable started from a read-only install directory needs `DOTNET_BUNDLE_EXTRACT_BASE_DIR` set to a writable path (the systemd and container examples use a subdirectory of the data home). A normal user-owned, writable native publish directory can run `./v2rayN.Web` directly.
 - A bundled `bin/` folder beside the executable is copied into the writable ServiceLib data directory when the XDG override is active. Xray can also be checked/updated through `GET /api/core/xray/check-update` and `POST /api/core/xray/update`.
 - The Core listener is controlled by the existing `Config.Inbound`; a new installation retains v2rayN's mixed HTTP/SOCKS port `10808`, loopback-only. Set `V2RAYN_WEB_PROXY_PORT` to explicitly override the saved/default port at startup, and `V2RAYN_WEB_PROXY_LISTEN_ALL=true` only when the listener should accept non-loopback clients. For an isolated local test alongside a v2rayN instance using 10808, set `V2RAYN_WEB_PROXY_PORT=1145` and use a separate `V2RAYN_DATA_HOME`.
-- The WebUI/API defaults to `http://127.0.0.1:5080`. `ASPNETCORE_URLS` follows standard ASP.NET Core configuration for listen addresses and ports; set it to `http://0.0.0.0:5080` for remote access. `V2RAYN_WEB_AUTOSTART` controls starting the selected profile at process launch.
+- The WebUI/API listens on `http://0.0.0.0:5080` by default. `ASPNETCORE_URLS` follows standard ASP.NET Core configuration for listen addresses and ports when a different bind is needed. `V2RAYN_WEB_AUTOSTART` controls starting the selected profile at process launch.
 
 For remote access, prefer a trusted LAN/VPN or place v2rayN.Web behind a TLS-enabled reverse proxy. Do not expose the plain HTTP management endpoint directly to the public Internet.
 
 `V2RAYN_WEB_API_KEY` is optional for native first-run setup and remains supported as the Management Key for systemd/container deployments. The Backend does not require any desktop components or Docker socket access.
 
-First-run key setup is only accepted from IPv4/IPv6 loopback when the Host is `localhost`, `127.0.0.1`, or `::1`; forwarding headers are rejected. Remote deployments must configure `V2RAYN_WEB_API_KEY` before starting the service and sign in with that Management Key.
+First-run key setup is accepted from IPv4/IPv6 loopback or a private-network client connecting directly to the server's private IP; forwarded headers and public addresses are rejected. Remote deployments should configure `V2RAYN_WEB_API_KEY` before starting the service and sign in with that Management Key.
 
 `POST /api/auth/login` exchanges a Management Key for a Session Token. REST requests use `Authorization: Bearer <session-token>`. Because the browser's native `EventSource` API cannot set an authorization header, the authenticated `POST /api/auth/sse-ticket` endpoint issues a random 45-second, one-time ticket for `/api/events?sse_ticket=...`. Only ticket and session digests are retained by the Backend; the ticket cannot authorize REST calls or renew its owning session, and the SSE stream closes on session revoke/expiry. Sessions and tickets are held in memory only; a Backend restart requires signing in again.
 
@@ -89,6 +89,31 @@ sudo systemctl enable --now v2rayn-web.service
 ```
 
 Edit `/etc/v2rayn-web.env` to set a unique `V2RAYN_WEB_API_KEY` Management Key. The unit uses `V2RAYN_DATA_HOME=/var/lib/v2rayn-web`, `ASPNETCORE_URLS=http://0.0.0.0:5080`, `--foreground`, and `Restart=always`; the latter lets a validated backup restore restart the service after the API requests shutdown.
+
+### Public server deployment
+
+For an Internet-facing server, configure the Management Key before the first start so no remote first-run setup is needed. Generate a strong key with `openssl rand -hex 32` and place it in `/etc/v2rayn-web.env`:
+
+```ini
+V2RAYN_WEB_API_KEY=<generated-secret>
+```
+
+Keep this file readable only by root (`chmod 600`). Bind the app to loopback by changing the systemd unit's `ASPNETCORE_URLS` to `http://127.0.0.1:5080`, then reload and restart the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart v2rayn-web.service
+```
+
+Terminate HTTPS at a reverse proxy on the same server. For example, Caddy can automatically obtain and renew a certificate:
+
+```caddy
+web.example.com {
+    reverse_proxy 127.0.0.1:5080
+}
+```
+
+Open only the proxy's public ports (normally TCP 80/443) in the firewall; keep TCP 5080 private. Sign in to v2rayN Web using the configured `V2RAYN_WEB_API_KEY`. The first-run setup endpoint remains limited to loopback or direct private-network access and rejects public/reverse-proxy setup requests.
 
 Check service logs with:
 

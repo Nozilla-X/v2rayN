@@ -10,7 +10,7 @@
     "managementKey": "Management key",
     "confirmKey": "Confirm key",
     "submit": "Set up and continue",
-    "localOnly": "First-run setup can only be completed on the machine running v2rayN Web. Open http://127.0.0.1:5080 on that machine.",
+    "localOnly": "Complete first-run setup on this machine or directly from a trusted private network using the server's private IP. Public and reverse-proxy access is not allowed.",
     "keyTooShort": "The management key must be at least 12 characters.",
     "keyTooLong": "The management key cannot exceed 4096 characters.",
     "keysDoNotMatch": "The keys do not match.",
