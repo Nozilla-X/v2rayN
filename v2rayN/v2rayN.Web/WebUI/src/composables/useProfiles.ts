@@ -2,6 +2,13 @@ import { computed, reactive, ref, type Ref } from 'vue'
 import type { ApiError, ApiServices, Dict, ErrorHandler, Notice, Translate } from './types'
 import { canonicalNetwork, profileEditorOptions } from '../profileEditorOptions'
 
+const groupIncompatibleProfileFields = [
+  'configVersion', 'address', 'port', 'password', 'username', 'network', 'headerType', 'requestHost', 'path',
+  'streamSecurity', 'allowInsecure', 'sni', 'alpn', 'fingerprint', 'publicKey', 'shortId', 'spiderX',
+  'mldsa65Verify', 'muxEnabled', 'cert', 'certSha', 'echConfigList', 'verifyPeerCertByName', 'finalmask',
+  'extra', 'transportExtra', 'ports', 'alterId', 'flow', 'id', 'security',
+]
+
 export function useProfiles(options: ApiServices & {
   t: Translate
   showNotice: Notice
@@ -299,7 +306,7 @@ export function useProfiles(options: ApiServices & {
       profileForm.value = {
         ...details,
         configType: options.canonicalCode(details.configType, [...protocolTypes, 'PolicyGroup', 'ProxyChain']),
-        coreType: options.canonicalCode(details.coreType || profile.coreType, coreTypes),
+        coreType: details.coreType ? options.canonicalCode(details.coreType, coreTypes) : '',
         network: canonicalNetwork(details.network),
         allowInsecure: details.allowInsecure === 'true',
         protoExtra: { ...protoExtra, childItems: parseList(protoExtra.childItems) },
@@ -315,43 +322,55 @@ export function useProfiles(options: ApiServices & {
     try {
       const advanced = JSON.parse(profileAdvancedJson.value || '{}')
       const protoExtra = { ...parseObject(advanced.protoExtra), ...profileForm.value.protoExtra }
-      if (['PolicyGroup', 'ProxyChain'].includes(profileForm.value.configType)) {
+      const isGroupProfile = ['PolicyGroup', 'ProxyChain'].includes(profileForm.value.configType)
+      if (isGroupProfile) {
         if (!groupChildIds.value.length && !protoExtra.subChildItems) {
           profileModalError.value = t('nodes.groupChildRequired')
           return
         }
         protoExtra.groupType = profileForm.value.configType
         protoExtra.childItems = groupChildIds.value.join(',')
-        protoExtra.multipleLoad = profileForm.value.protoExtra.multipleLoad || 'LeastPing'
+        if (profileForm.value.configType === 'PolicyGroup') {
+          protoExtra.multipleLoad = profileForm.value.protoExtra.multipleLoad || 'LeastPing'
+        } else {
+          delete protoExtra.multipleLoad
+        }
+      } else {
+        for (const field of ['groupType', 'childItems', 'subChildItems', 'filter', 'multipleLoad']) delete protoExtra[field]
       }
-      const body = {
+      const body: Dict = {
         ...advanced,
         configType: profileForm.value.configType,
         coreType: profileForm.value.coreType || null,
-        configVersion: Number(profileForm.value.configVersion || 4),
+        ...(!isGroupProfile ? {
+          configVersion: Number(profileForm.value.configVersion || 4),
+          address: profileForm.value.address,
+          port: Number(profileForm.value.port || 0),
+          password: profileForm.value.password || '',
+          username: profileForm.value.username || '',
+          network: canonicalNetwork(profileForm.value.network),
+          streamSecurity: profileForm.value.streamSecurity || '',
+          allowInsecure: profileForm.value.allowInsecure ? 'true' : '',
+          sni: profileForm.value.sni || '',
+          alpn: profileForm.value.alpn || '',
+          fingerprint: profileForm.value.fingerprint || '',
+          publicKey: profileForm.value.publicKey || '',
+          shortId: profileForm.value.shortId || '',
+          spiderX: profileForm.value.spiderX || '',
+          mldsa65Verify: profileForm.value.mldsa65Verify || '',
+          cert: profileForm.value.cert || '',
+          certSha: profileForm.value.certSha || '',
+          echConfigList: profileForm.value.echConfigList || '',
+          verifyPeerCertByName: profileForm.value.verifyPeerCertByName || '',
+          finalmask: profileForm.value.finalmask || '',
+          muxEnabled: profileForm.value.muxEnabled,
+          transportExtra: JSON.stringify({ ...parseObject(advanced.transportExtra), ...profileForm.value.transportExtra }),
+        } : {}),
         remarks: profileForm.value.remarks,
-        address: profileForm.value.address,
-        port: Number(profileForm.value.port || 0),
-        password: profileForm.value.password || '',
-        username: profileForm.value.username || '',
-        network: canonicalNetwork(profileForm.value.network),
-        streamSecurity: profileForm.value.streamSecurity || '',
-        allowInsecure: profileForm.value.allowInsecure ? 'true' : '',
-        sni: profileForm.value.sni || '',
-        alpn: profileForm.value.alpn || '',
-        fingerprint: profileForm.value.fingerprint || '',
-        publicKey: profileForm.value.publicKey || '',
-        shortId: profileForm.value.shortId || '',
-        spiderX: profileForm.value.spiderX || '',
-        mldsa65Verify: profileForm.value.mldsa65Verify || '',
-        cert: profileForm.value.cert || '',
-        certSha: profileForm.value.certSha || '',
-        echConfigList: profileForm.value.echConfigList || '',
-        verifyPeerCertByName: profileForm.value.verifyPeerCertByName || '',
-        finalmask: profileForm.value.finalmask || '',
-        muxEnabled: profileForm.value.muxEnabled,
         protoExtra: JSON.stringify(protoExtra),
-        transportExtra: JSON.stringify({ ...parseObject(advanced.transportExtra), ...profileForm.value.transportExtra }),
+      }
+      if (isGroupProfile) {
+        for (const field of groupIncompatibleProfileFields) delete body[field]
       }
       const result = await options.request(editingProfileId.value ? `/api/profiles/${encodeURIComponent(editingProfileId.value)}` : '/api/profiles', {
         method: editingProfileId.value ? 'PUT' : 'POST', body,

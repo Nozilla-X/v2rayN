@@ -14,9 +14,11 @@ const dialog = ref<HTMLElement | null>(null)
 const { onModalKeydown } = useModalFocus(dialog)
 const protocol = computed(() => state.profileForm.configType)
 const isGroup = computed(() => ['PolicyGroup', 'ProxyChain'].includes(protocol.value))
+const groupConfigTypes = ['PolicyGroup', 'ProxyChain']
 const singboxOnlyConfigTypes: readonly string[] = profileEditorOptions.singboxOnlyConfigTypes
 const realityConfigTypes = ['VLESS', 'Trojan', 'Anytls']
-const transportlessConfigTypes = ['Hysteria2', 'TUIC', 'WireGuard', 'Anytls', 'Naive']
+const transportlessConfigTypes = ['Hysteria2', 'TUIC', 'WireGuard', 'Anytls', 'Naive', ...groupConfigTypes]
+const groupProtocolExtraFields = ['groupType', 'childItems', 'subChildItems', 'filter', 'multipleLoad']
 const protocolExtraOwners: Record<string, string[]> = {
   alterId: ['VMess'], vmessSecurity: ['VMess'], flow: ['VLESS', 'Trojan'], vlessEncryption: ['VLESS'],
   ssMethod: ['Shadowsocks'], uot: ['Shadowsocks', 'Naive'], httpHeaders: ['HTTP'],
@@ -49,6 +51,13 @@ function canonicalizeProtocolChange(configType: string) {
   try { advanced = parseObject(JSON.parse(state.profileAdvancedJson || '{}')) } catch { return }
   const protocolExtra = form.protoExtra || (form.protoExtra = {})
   const advancedProtocolExtra = parseObject(advanced.protoExtra)
+  if (!groupConfigTypes.includes(configType)) {
+    removeKeys(protocolExtra, groupProtocolExtraFields)
+    removeKeys(advancedProtocolExtra, groupProtocolExtraFields)
+  } else if (configType !== 'PolicyGroup') {
+    delete protocolExtra.multipleLoad
+    delete advancedProtocolExtra.multipleLoad
+  }
 
   if (!realityConfigTypes.includes(configType) && String(form.streamSecurity).toLowerCase() === 'reality') {
     form.streamSecurity = ''
@@ -169,7 +178,7 @@ watch([() => state.showProfileForm, protocol, shadowsocksMethods], ([isOpen, con
               <label v-if="!['HTTP', 'SOCKS', 'Naive', 'WireGuard'].includes(protocol)">{{ t(protocol === 'VMess' || protocol === 'VLESS' ? 'nodes.uuid' : 'nodes.password') }}<input v-model="state.profileForm.password" :required="['VMess', 'VLESS', 'Shadowsocks', 'Trojan', 'Hysteria2', 'TUIC', 'Anytls'].includes(protocol)" autocomplete="off" /></label>
               <label v-if="['HTTP', 'SOCKS', 'Naive'].includes(protocol)">{{ t('nodes.username') }}<input v-model="state.profileForm.username" autocomplete="off" /></label>
               <label v-if="protocol === 'TUIC'">{{ t('nodes.uuid') }}<input v-model="state.profileForm.username" required autocomplete="off" /></label>
-              <label v-if="['HTTP', 'SOCKS', 'Naive'].includes(protocol)">{{ t('nodes.password') }}<input v-model="state.profileForm.password" autocomplete="off" /></label>
+              <label v-if="['HTTP', 'SOCKS', 'Naive'].includes(protocol)">{{ t('nodes.password') }}<input v-model="state.profileForm.password" :required="protocol === 'Naive'" autocomplete="off" /></label>
               <label v-if="protocol === 'VMess'">{{ t('nodes.configVersion') }}<input v-model.number="state.profileForm.configVersion" type="number" min="1" /></label>
               <label v-if="protocol === 'VMess'">{{ t('nodes.alterId') }}<input v-model="state.profileForm.protoExtra.alterId" /></label>
               <label v-if="protocol === 'VMess'">{{ t('nodes.security') }}<select v-model="state.profileForm.protoExtra.vmessSecurity"><option v-for="security in transportOptions.vmessSecurities" :key="security" :value="security">{{ security }}</option></select></label>

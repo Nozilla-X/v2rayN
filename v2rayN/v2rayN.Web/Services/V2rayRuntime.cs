@@ -720,13 +720,19 @@ public sealed partial class V2rayRuntime(
             messageKey = ApiMessageKeys.SubscriptionInvalidUrl;
             return false;
         }
+        if (!HttpRequestHeadersHelper.TryParse(input.RequestHeaders, out _))
+        {
+            code = "subscription_headers_invalid";
+            messageKey = ApiMessageKeys.CommonInvalidInput;
+            return false;
+        }
 
         code = "ok";
         messageKey = string.Empty;
         return true;
     }
 
-    private static SubItem ToSubItem(SubscriptionInput input, SubItem? existing) => new()
+    internal static SubItem ToSubItem(SubscriptionInput input, SubItem? existing) => new()
     {
         Id = existing?.Id ?? string.Empty,
         Remarks = input.Remarks.Trim(),
@@ -744,10 +750,10 @@ public sealed partial class V2rayRuntime(
         PrevProfile = input.PrevProfile ?? existing?.PrevProfile,
         NextProfile = input.NextProfile ?? existing?.NextProfile,
         PreSocksPort = input.PreSocksPort,
-        CustomCoreType = input.CustomCoreType ?? existing?.CustomCoreType,
+        CustomCoreType = input.CustomCoreType,
     };
 
-    private static SubscriptionView ToSubscriptionView(SubItem item) => new(
+    internal static SubscriptionView ToSubscriptionView(SubItem item) => new(
         item.Id,
         item.Remarks,
         item.Url,
