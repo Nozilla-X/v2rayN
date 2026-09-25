@@ -26,8 +26,8 @@
     "instanceInUse": "A v2rayN Web instance is already using this data directory."
   },
   "localeNames": {
-    "zhCN": "简体中文",
-    "zhTW": "繁體中文",
+    "zhCN": "Simplified Chinese",
+    "zhTW": "Traditional Chinese",
     "enUS": "English"
   },
   "auth": {
@@ -187,13 +187,13 @@
     "advancedProfileFields": "Complete configuration data (ProfileItem JSON; advanced and protocol-specific fields)",
     "position": "Position",
     "positionPrompt": "Enter the target position (starting from 1)",
-    "move": "调整顺序",
+    "move": "Reorder",
     "generateRegionGroups": "Group by region",
     "includeInnerUri": "Export Inner URI",
-    "count": "{count} 个节点",
+    "count": "{count} nodes",
     "base64ShareUris": "Base64-encoded share URIs",
     "includeClientConfig": "Export client config",
-    "profileSaved": "节点已保存",
+    "profileSaved": "Profile saved",
     "groupGenerationEmpty": "This subscription has no nodes to group",
     "fingerprint": "TLS fingerprint",
     "regionGroupsNoMatches": "No nodes in this subscription match a region",
@@ -205,7 +205,7 @@
     "route": "Routing",
     "statsDisabled": "Traffic statistics are disabled",
     "noListener": "No configured listeners",
-    "listenerStatus": "监听状态"
+    "listenerStatus": "Listener status"
   },
   "subscriptions": {
     "title": "Subscription group settings",
@@ -570,7 +570,7 @@
     "httpupgrade": "HTTPUpgrade",
     "kcp": "mKCP",
     "domainsocket": "Domain Socket",
-    "none": "无",
+    "none": "None",
     "tcp": "TCP",
     "xhttp": "XHTTP",
     "raw": "RAW",
