@@ -45,7 +45,7 @@
     "rateLimited": "Too many sign-in attempts. Try again later."
   },
   "nav": {
-    "nodes": "Configuration",
+    "nodes": "Main page",
     "subscriptions": "Subscription groups",
     "routing": "Routing settings",
     "dns": "DNS settings",

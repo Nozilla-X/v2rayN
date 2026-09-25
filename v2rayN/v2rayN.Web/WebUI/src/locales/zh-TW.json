@@ -45,7 +45,7 @@
     "rateLimited": "登入嘗試過多，請稍後重試。"
   },
   "nav": {
-    "nodes": "設定檔",
+    "nodes": "主頁",
     "subscriptions": "訂閱分組",
     "routing": "路由設定",
     "dns": "DNS 設定",

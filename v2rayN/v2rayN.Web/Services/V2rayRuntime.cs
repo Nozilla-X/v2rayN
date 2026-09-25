@@ -212,7 +212,7 @@ public sealed partial class V2rayRuntime(
             return new(false, "subscription_save_failed", ApiMessageKeys.SubscriptionSaveFailed, null);
         }
 
-        var saved = (await AppManager.Instance.SubItems())?.FirstOrDefault(candidate => candidate.Url == item.Url);
+        var saved = await AppManager.Instance.GetSubItem(item.Id);
         return saved is null
             ? new(false, "subscription_save_failed", ApiMessageKeys.SubscriptionSaveFailed, null)
             : new(true, "ok", ApiMessageKeys.SubscriptionAdded, ToSubscriptionView(saved));
@@ -704,7 +704,7 @@ public sealed partial class V2rayRuntime(
         }
     }
 
-    private static bool TryValidateSubscription(SubscriptionInput input, out string code, out string messageKey)
+    internal static bool TryValidateSubscription(SubscriptionInput input, out string code, out string messageKey)
     {
         if (string.IsNullOrWhiteSpace(input.Remarks))
         {
@@ -712,8 +712,9 @@ public sealed partial class V2rayRuntime(
             messageKey = ApiMessageKeys.SubscriptionNameRequired;
             return false;
         }
-        if (!Uri.TryCreate(input.Url, UriKind.Absolute, out var uri)
-            || uri.Scheme is not ("http" or "https"))
+        if (!string.IsNullOrWhiteSpace(input.Url)
+            && (!Uri.TryCreate(input.Url, UriKind.Absolute, out var uri)
+                || uri.Scheme is not ("http" or "https")))
         {
             code = "subscription_url_invalid";
             messageKey = ApiMessageKeys.SubscriptionInvalidUrl;
@@ -729,7 +730,7 @@ public sealed partial class V2rayRuntime(
     {
         Id = existing?.Id ?? string.Empty,
         Remarks = input.Remarks.Trim(),
-        Url = input.Url.Trim(),
+        Url = input.Url?.Trim() ?? string.Empty,
         MoreUrl = input.MoreUrl?.Trim() ?? existing?.MoreUrl ?? string.Empty,
         Enabled = input.Enabled ?? existing?.Enabled ?? true,
         UserAgent = input.UserAgent?.Trim() ?? existing?.UserAgent ?? string.Empty,
