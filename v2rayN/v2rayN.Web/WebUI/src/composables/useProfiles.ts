@@ -1,5 +1,6 @@
 import { computed, reactive, ref, type Ref } from 'vue'
 import type { ApiError, ApiServices, Dict, ErrorHandler, Notice, Translate } from './types'
+import { canonicalNetwork, profileEditorOptions } from '../profileEditorOptions'
 
 export function useProfiles(options: ApiServices & {
   t: Translate
@@ -10,6 +11,7 @@ export function useProfiles(options: ApiServices & {
   busy: Ref<boolean>
   operations: Ref<string[]>
   contextMenu: Ref<Dict | null>
+  confirm: (message: string) => Promise<boolean>
 }) {
   const t = options.t
   const profiles = ref<Dict[]>([])
@@ -158,7 +160,7 @@ export function useProfiles(options: ApiServices & {
     try {
       let result: Dict
       if (action === 'delete') {
-        if (!window.confirm(t('common.confirmDelete'))) return
+        if (!await options.confirm(t('common.confirmDelete'))) return
         result = await options.request('/api/profiles', { method: 'DELETE', body: { profileIds } })
       } else if (action === 'copy') {
         result = await options.request('/api/profiles/copy', { method: 'POST', body: { profileIds } })
@@ -271,14 +273,15 @@ export function useProfiles(options: ApiServices & {
     profileModalError.value = ''
     profileForm.value = {
       configType: 'VMess', coreType: 'Xray', configVersion: 4, remarks: '', address: '', port: 443,
-      password: '', username: '', network: 'tcp', streamSecurity: 'tls', allowInsecure: '', sni: '',
+      password: '', username: '', network: profileEditorOptions.defaultNetwork, streamSecurity: 'tls', allowInsecure: '', sni: '',
       alpn: '', fingerprint: '', publicKey: '', shortId: '', spiderX: '', muxEnabled: null,
-      protoExtra: {}, transportExtra: {},
+      protoExtra: { vmessSecurity: 'auto' },
+      transportExtra: { rawHeaderType: 'none', xhttpMode: 'auto', kcpHeaderType: 'none', grpcMode: 'gun' },
     }
     groupChildIds.value = []
     profileAdvancedJson.value = JSON.stringify({
       indexId: '', configType: 'VMess', coreType: 'Xray', configVersion: 4, subid: '', isSub: false,
-      remarks: '', address: '', port: 443, password: '', username: '', network: 'tcp', streamSecurity: 'tls',
+      remarks: '', address: '', port: 443, password: '', username: '', network: profileEditorOptions.defaultNetwork, streamSecurity: 'tls',
       allowInsecure: '', sni: '', alpn: '', fingerprint: '', publicKey: '', shortId: '', spiderX: '',
       protoExtra: '{}', transportExtra: '{}',
     }, null, 2)
@@ -297,6 +300,7 @@ export function useProfiles(options: ApiServices & {
         ...details,
         configType: options.canonicalCode(details.configType, [...protocolTypes, 'PolicyGroup', 'ProxyChain']),
         coreType: options.canonicalCode(details.coreType || profile.coreType, coreTypes),
+        network: canonicalNetwork(details.network),
         allowInsecure: details.allowInsecure === 'true',
         protoExtra: { ...protoExtra, childItems: parseList(protoExtra.childItems) },
         transportExtra,
@@ -330,7 +334,7 @@ export function useProfiles(options: ApiServices & {
         port: Number(profileForm.value.port || 0),
         password: profileForm.value.password || '',
         username: profileForm.value.username || '',
-        network: profileForm.value.network || '',
+        network: canonicalNetwork(profileForm.value.network),
         streamSecurity: profileForm.value.streamSecurity || '',
         allowInsecure: profileForm.value.allowInsecure ? 'true' : '',
         sni: profileForm.value.sni || '',
@@ -429,7 +433,7 @@ export function useProfiles(options: ApiServices & {
   }
 
   const nodesPageState = reactive({ filteredProfiles, profiles, selectedGroup, groups, filter, selectedIds, focusedProfileId, allVisibleSelected, operations: options.operations, testActions })
-  const profileModalState = reactive({ showProfileForm, profileForm, profileAdvancedJson, profileModalError, editingProfileId, protocolTypes, coreTypes, profileCatalog, groupChildIds, groups })
+  const profileModalState = reactive({ showProfileForm, profileForm, profileAdvancedJson, profileModalError, editingProfileId, protocolTypes, coreTypes, profileCatalog, groupChildIds, groups, networks: profileEditorOptions.networks })
   const importProfilesModalState = reactive({ showImportForm, importForm, groups })
   const exportModalState = reactive({ showExportDialog, exportOptions, exportContent })
 

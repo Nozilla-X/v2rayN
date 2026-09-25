@@ -31,6 +31,22 @@ public static class WebAuthEndpoints
             sessions.Revoke(WebSessionService.ExtractPresentedToken(context));
             return Results.Ok(new { success = true });
         });
+
+        app.MapPost("/api/auth/sse-ticket", (HttpContext context, WebSessionService sessions) =>
+        {
+            if (!sessions.TryCreateSseTicket(WebSessionService.ExtractPresentedToken(context), out var ticket))
+            {
+                return Results.Json(
+                    ApiEnvelope<object>.Fail("unauthorized", ApiMessageKeys.CommonUnauthorized),
+                    statusCode: StatusCodes.Status401Unauthorized);
+            }
+
+            return Results.Ok(new
+            {
+                success = true,
+                data = new { ticket = ticket!.Token, expiresAt = ticket.ExpiresAt },
+            });
+        });
     }
 
     public sealed record WebLoginRequest(string? Key);

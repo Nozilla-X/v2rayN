@@ -5,6 +5,7 @@ export function useRouting(options: ApiServices & {
   t: Translate
   showNotice: Notice
   showError: ErrorHandler
+  confirm: (message: string) => Promise<boolean>
   loadStatus: () => Promise<void>
 }) {
   const t = options.t
@@ -100,7 +101,7 @@ export function useRouting(options: ApiServices & {
   }
 
   async function deleteRoute(route: Dict) {
-    if (!window.confirm(t('common.confirmDelete'))) return
+    if (!await options.confirm(t('common.confirmDelete'))) return
     try {
       const result = await options.request(`/api/settings/routing-profiles/${encodeURIComponent(route.id)}`, { method: 'DELETE' })
       options.showNotice(options.operationMessage(result))
@@ -113,7 +114,7 @@ export function useRouting(options: ApiServices & {
   }
 
   async function deleteSelectedRoutes() {
-    if (!selectedRouteIds.value.length || !window.confirm(t('common.confirmDelete'))) return
+    if (!selectedRouteIds.value.length || !await options.confirm(t('common.confirmDelete'))) return
     try {
       for (const id of [...selectedRouteIds.value]) {
         await options.request(`/api/settings/routing-profiles/${encodeURIComponent(id)}`, { method: 'DELETE' })
@@ -255,7 +256,7 @@ export function useRouting(options: ApiServices & {
   }
 
   async function deleteSelectedRules() {
-    if (!selectedRuleIds.value.length || !window.confirm(t('common.confirmDelete'))) return
+    if (!await options.confirm(t('common.confirmDelete'))) return
     try {
       for (const id of [...selectedRuleIds.value]) {
         await options.request(`/api/settings/routing-profiles/${encodeURIComponent(selectedRoutingId.value)}/rules/${encodeURIComponent(id)}`, { method: 'DELETE' })

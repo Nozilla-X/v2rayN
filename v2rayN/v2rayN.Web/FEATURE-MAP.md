@@ -6,6 +6,8 @@ The Backend project is `v2rayN/v2rayN.Web/`; the Vue source is nested at `v2rayN
 
 Core start/restart delegates the resolved Core type to ServiceLib and requires that Core's executable to be installed. Xray/sing-box update flows are not generalized; the generated speed-test configs support Xray and sing-box, while TCPing is available for any profile with a port.
 
+v2rayN.Web does not curate its own Core distribution. GitHub artifacts and container images bundle the complete architecture-matched official Linux `2dust/v2rayN-core-bin` payload. The current upstream bundle includes Xray, sing-box, Mihomo, geodata, and sing-box rule sets; required-file/version checks are sanity checks, not an allowlist, and the complete upstream `bin/` directory is copied into the artifact. Bundled Core availability is not the same as Web-specific UI capability. Runtime Core selection and startup remain delegated to ServiceLib's `CoreInfoManager` and `CoreManager`; Web does not add hard-coded branches or distribution rules for bundled Cores.
+
 REST responses use stable JSON field names and enum codes. Operation/error responses have `{ success, code, messageKey, data }`; `messageKey` is for the frontend's `vue-i18n` dictionaries. User-provided names, URLs, profile remarks, and log lines remain data. The backend does not translate API responses.
 
 ## Original feature → ServiceLib → Web API → Web page/action

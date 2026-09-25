@@ -1,7 +1,7 @@
 import { computed, reactive, ref } from 'vue'
 import type { ApiServices, Dict, ErrorHandler, Notice, Translate } from './types'
 
-export function useLogs(options: ApiServices & { t: Translate; showError: ErrorHandler; showNotice: Notice }) {
+export function useLogs(options: ApiServices & { t: Translate; showError: ErrorHandler; showNotice: Notice; confirm: (message: string) => Promise<boolean> }) {
   const t = options.t
   const logs = ref<Dict[]>([])
   const logFilter = ref('')
@@ -80,7 +80,7 @@ export function useLogs(options: ApiServices & { t: Translate; showError: ErrorH
   }
 
   async function clearLogs() {
-    if (!window.confirm(t('logs.clearConfirm'))) return
+    if (!await options.confirm(t('logs.clearConfirm'))) return
     try {
       const result = await options.request('/api/logs', { method: 'DELETE' })
       logs.value = []

@@ -6,6 +6,7 @@ export function useMaintenance(options: ApiServices & {
   translateKey: (key?: string | null) => string
   showNotice: Notice
   showError: ErrorHandler
+  confirm: (message: string) => Promise<boolean>
   token: Ref<string>
   status: Ref<Dict | null>
   operations: Ref<string[]>
@@ -59,7 +60,7 @@ export function useMaintenance(options: ApiServices & {
 
   async function webdavAction(action: 'check' | 'backup' | 'restore') {
     try {
-      if (action === 'restore' && !window.confirm(t('maintenance.restoreConfirm'))) return
+      if (action === 'restore' && !await options.confirm(t('maintenance.restoreConfirm'))) return
       const result = await options.request(`/api/backup/webdav${action === 'check' ? '/check' : action === 'restore' ? '/restore' : ''}`, { method: 'POST' })
       options.showNotice(options.operationMessage(result))
     } catch (error) { options.showError(error) }
@@ -88,7 +89,7 @@ export function useMaintenance(options: ApiServices & {
     const input = event.target as HTMLInputElement
     const file = input.files?.[0]
     if (!file) return
-    if (!window.confirm(t('maintenance.restoreConfirm'))) return
+    if (!await options.confirm(t('maintenance.restoreConfirm'))) return
     try {
       const formData = new FormData()
       formData.set('file', file)
@@ -98,7 +99,7 @@ export function useMaintenance(options: ApiServices & {
   }
 
   async function clearStatistics() {
-    if (!window.confirm(t('maintenance.clearConfirm'))) return
+    if (!await options.confirm(t('maintenance.clearConfirm'))) return
     try {
       const result = await options.request('/api/statistics', { method: 'DELETE' })
       options.showNotice(options.operationMessage(result))

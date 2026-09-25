@@ -371,7 +371,7 @@ public sealed partial class V2rayRuntime(
                     System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(item.ConfigType.ToString()),
                     item.Address,
                     item.Port,
-                    item.Network,
+                    item.GetNetwork(),
                     item.StreamSecurity,
                     item.Subid,
                     model?.SubRemarks ?? subscriptions.GetValueOrDefault(item.Subid),

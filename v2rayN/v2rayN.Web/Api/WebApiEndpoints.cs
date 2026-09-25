@@ -245,11 +245,16 @@ public static class WebApiEndpoints
     {
         app.MapGet("/api/events", async (HttpContext context, EventHub events, WebSessionService sessions) =>
         {
-            var sessionToken = WebSessionService.ExtractPresentedToken(context);
-            var revoked = context.Items.TryGetValue(WebSessionService.RevocationTokenContextKey, out var revocationToken)
-                && revocationToken is CancellationToken revocationCancellation
-                    ? revocationCancellation
-                    : CancellationToken.None;
+            var session = context.Items.TryGetValue(WebSessionService.SessionSnapshotContextKey, out var sessionValue)
+                ? sessionValue as WebSessionSnapshot
+                : null;
+            if (session is null)
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return;
+            }
+
+            var revoked = session.RevocationToken;
             using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(
                 context.RequestAborted,
                 revoked);
@@ -275,7 +280,7 @@ public static class WebApiEndpoints
                             break;
                         }
 
-                        if (!await TryWriteSseHeartbeatAsync(context, sessions, sessionToken, cancellationToken))
+                        if (!await TryWriteSseHeartbeatAsync(context, sessions, session, cancellationToken))
                         {
                             break;
                         }
@@ -326,10 +331,10 @@ public static class WebApiEndpoints
     internal static async Task<bool> TryWriteSseHeartbeatAsync(
         HttpContext context,
         WebSessionService sessions,
-        string sessionToken,
+        WebSessionSnapshot session,
         CancellationToken cancellationToken)
     {
-        if (!sessions.TryValidateWithoutRenewal(sessionToken, out _))
+        if (!sessions.TryValidateSseSessionWithoutRenewal(session.SessionDigest, out _))
         {
             await WriteUnauthorizedSseResponseAsync(context);
             return false;

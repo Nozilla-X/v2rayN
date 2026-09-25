@@ -7,6 +7,21 @@ public sealed class WebSessionAuthenticationMiddleware(RequestDelegate next)
     public async Task InvokeAsync(HttpContext context, WebSessionService sessions)
     {
         var path = context.Request.Path;
+        if (path == "/api/events")
+        {
+            if (!sessions.TryConsumeSseTicket(context.Request.Query["sse_ticket"].ToString(), out var eventSession))
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await context.Response.WriteAsJsonAsync(
+                    ApiEnvelope<object>.Fail("unauthorized", ApiMessageKeys.CommonUnauthorized));
+                return;
+            }
+
+            context.Items[WebSessionService.SessionSnapshotContextKey] = eventSession!;
+            await next(context);
+            return;
+        }
+
         if (!path.StartsWithSegments("/api")
             || path == "/api/health"
             || path == "/api/setup/status"
@@ -18,17 +33,15 @@ public sealed class WebSessionAuthenticationMiddleware(RequestDelegate next)
         }
 
         var presentedToken = WebSessionService.ExtractPresentedToken(context);
-        if (!sessions.TryValidateAndRenew(presentedToken, out var session))
+        var authenticated = path == "/api/auth/sse-ticket"
+            ? sessions.TryValidateWithoutRenewal(presentedToken, out _)
+            : sessions.TryValidateAndRenew(presentedToken, out _);
+        if (!authenticated)
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
             await context.Response.WriteAsJsonAsync(
                 ApiEnvelope<object>.Fail("unauthorized", ApiMessageKeys.CommonUnauthorized));
             return;
-        }
-
-        if (path == "/api/events" && session is not null)
-        {
-            context.Items[WebSessionService.RevocationTokenContextKey] = session.RevocationToken;
         }
 
         await next(context);

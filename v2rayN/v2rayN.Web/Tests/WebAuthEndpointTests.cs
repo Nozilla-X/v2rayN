@@ -48,10 +48,20 @@ public class WebAuthEndpointTests
         using var managementKeyResponse = await api.Client.SendAsync(managementKeyRequest);
         await (managementKeyResponse.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
 
+        using var managementTicketRequest = new HttpRequestMessage(HttpMethod.Post, "/api/auth/sse-ticket");
+        managementTicketRequest.Headers.Authorization = new("Bearer", ManagementKey);
+        using var managementTicketResponse = await api.Client.SendAsync(managementTicketRequest);
+        await (managementTicketResponse.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
+
         using var managementKeySse = await api.Client.GetAsync(
-            $"/api/events?access_token={Uri.EscapeDataString(ManagementKey)}",
+            $"/api/events?sse_ticket={Uri.EscapeDataString(ManagementKey)}",
             HttpCompletionOption.ResponseHeadersRead);
         await (managementKeySse.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
+
+        using var legacySessionUrl = await api.Client.GetAsync(
+            $"/api/events?access_token={Uri.EscapeDataString(sessionToken)}",
+            HttpCompletionOption.ResponseHeadersRead);
+        await (legacySessionUrl.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
     }
 
     [Test]
@@ -142,6 +152,60 @@ public class WebAuthEndpointTests
     }
 
     [Test]
+    public async Task SseTicketIsOneTimeAndCannotAuthenticateRest()
+    {
+        using var directory = new TemporaryDirectory();
+        using var sessions = new WebSessionService();
+        await using var api = await ApiHarness.StartAsync(
+            new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), ManagementKey),
+            sessions);
+        var session = sessions.CreateSession();
+        var ticket = await GetSseTicketAsync(api, session.Token);
+
+        using var restWithTicket = new HttpRequestMessage(HttpMethod.Get, "/api/test/session");
+        restWithTicket.Headers.Authorization = new("Bearer", ticket);
+        using var restResponse = await api.Client.SendAsync(restWithTicket);
+        await (restResponse.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
+
+        var responseTask = api.Client.GetAsync(
+            $"/api/events?sse_ticket={Uri.EscapeDataString(ticket)}",
+            HttpCompletionOption.ResponseHeadersRead);
+        for (var attempt = 0; attempt < 100 && !responseTask.IsCompleted; attempt++)
+        {
+            api.Events.Publish("status", new { ready = true });
+            await Task.Delay(10);
+        }
+
+        using var response = await responseTask.WaitAsync(TimeSpan.FromSeconds(3));
+        await (response.StatusCode == HttpStatusCode.OK).Should().BeTrue();
+        using var replay = await api.Client.GetAsync(
+            $"/api/events?sse_ticket={Uri.EscapeDataString(ticket)}",
+            HttpCompletionOption.ResponseHeadersRead);
+        await (replay.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
+        sessions.Revoke(session.Token);
+    }
+
+    [Test]
+    public async Task IssuingSseTicketDoesNotRenewTheOwningSession()
+    {
+        using var directory = new TemporaryDirectory();
+        var startedAt = DateTimeOffset.Parse("2026-03-10T00:00:00Z");
+        var time = new ManualTimeProvider(startedAt);
+        using var sessions = new WebSessionService(time);
+        await using var api = await ApiHarness.StartAsync(
+            new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), ManagementKey),
+            sessions);
+        var session = sessions.CreateSession();
+        time.Advance(TimeSpan.FromDays(6));
+
+        _ = await GetSseTicketAsync(api, session.Token);
+
+        await sessions.TryValidateWithoutRenewal(session.Token, out var snapshot).Should().BeTrue();
+        await (snapshot!.LastSeenAt == startedAt).Should().BeTrue();
+        await (snapshot.ExpiresAt == session.ExpiresAt).Should().BeTrue();
+    }
+
+    [Test]
     public async Task RevokingAnActiveSseSessionClosesItsStream()
     {
         using var directory = new TemporaryDirectory();
@@ -150,9 +214,10 @@ public class WebAuthEndpointTests
             new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), ManagementKey),
             sessions);
         var session = sessions.CreateSession();
+        var sseTicket = await GetSseTicketAsync(api, session.Token);
 
         var responseTask = api.Client.GetAsync(
-            $"/api/events?access_token={Uri.EscapeDataString(session.Token)}",
+            $"/api/events?sse_ticket={Uri.EscapeDataString(sseTicket)}",
             HttpCompletionOption.ResponseHeadersRead);
         for (var attempt = 0; attempt < 100 && !responseTask.IsCompleted; attempt++)
         {
@@ -182,8 +247,9 @@ public class WebAuthEndpointTests
             new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), ManagementKey),
             sessions);
         var session = sessions.CreateSession();
+        var sseTicket = await GetSseTicketAsync(api, session.Token);
         var responseTask = api.Client.GetAsync(
-            $"/api/events?access_token={Uri.EscapeDataString(session.Token)}",
+            $"/api/events?sse_ticket={Uri.EscapeDataString(sseTicket)}",
             HttpCompletionOption.ResponseHeadersRead);
         for (var attempt = 0; attempt < 100 && !responseTask.IsCompleted; attempt++)
         {
@@ -278,7 +344,7 @@ public class WebAuthEndpointTests
         for (var minute = 1; minute < 7 * 24 * 60; minute++)
         {
             time.Advance(TimeSpan.FromMinutes(1));
-            if (!await WebApiEndpoints.TryWriteSseHeartbeatAsync(context, sessions, session.Token, CancellationToken.None))
+            if (!await WebApiEndpoints.TryWriteSseHeartbeatAsync(context, sessions, snapshot!, CancellationToken.None))
             {
                 throw new InvalidOperationException("SSE heartbeat expired the session before its sliding deadline.");
             }
@@ -288,7 +354,7 @@ public class WebAuthEndpointTests
         var heartbeatSent = await WebApiEndpoints.TryWriteSseHeartbeatAsync(
             context,
             sessions,
-            session.Token,
+            snapshot!,
             CancellationToken.None);
 
         await heartbeatSent.Should().BeFalse();
@@ -308,6 +374,16 @@ public class WebAuthEndpointTests
         {
             return true;
         }
+    }
+
+    private static async Task<string> GetSseTicketAsync(ApiHarness api, string sessionToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/auth/sse-ticket");
+        request.Headers.Authorization = new("Bearer", sessionToken);
+        using var response = await api.Client.SendAsync(request);
+        await (response.StatusCode == HttpStatusCode.OK).Should().BeTrue();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.GetProperty("data").GetProperty("ticket").GetString()!;
     }
 
     private sealed class ApiHarness : IAsyncDisposable

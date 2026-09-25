@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { useI18n } from 'vue-i18n'
 import AppHeader from './components/AppHeader.vue'
 import ConnectionStrip from './components/ConnectionStrip.vue'
+import ConfirmDialog from './components/modals/ConfirmDialog.vue'
 import FlyoutMenu from './components/FlyoutMenu.vue'
 import NoticeBar from './components/NoticeBar.vue'
 import RuntimeStrip from './components/RuntimeStrip.vue'
@@ -45,6 +46,38 @@ const notice = ref('')
 const noticeKind = ref<'success' | 'error'>('success')
 let noticeTimer: ReturnType<typeof setTimeout> | undefined
 
+interface ConfirmationRequest {
+  message: string
+  resolve: (confirmed: boolean) => void
+}
+
+const activeConfirmation = ref<ConfirmationRequest | null>(null)
+const confirmationQueue: ConfirmationRequest[] = []
+let confirmationOpen = false
+
+function activateNextConfirmation() {
+  if (confirmationOpen || !confirmationQueue.length) return
+  confirmationOpen = true
+  activeConfirmation.value = confirmationQueue.shift()!
+}
+
+function confirmDestructive(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    confirmationQueue.push({ message, resolve })
+    activateNextConfirmation()
+  })
+}
+
+async function resolveConfirmation(confirmed: boolean) {
+  const current = activeConfirmation.value
+  if (!current) return
+  activeConfirmation.value = null
+  current.resolve(confirmed)
+  await nextTick()
+  confirmationOpen = false
+  activateNextConfirmation()
+}
+
 const navItems = [
   { id: 'nodes', key: 'nav.nodes', icon: 'grid' },
   { id: 'subscriptions', key: 'nav.subscriptions', icon: 'refresh' },
@@ -81,24 +114,24 @@ let clearSession = () => {}
 const api = useApi({ getToken: () => sessionToken.value, onUnauthorized: () => clearSession(), translateKey })
 const runtime = useRuntime({ ...api, showNotice, showError })
 const profiles = useProfiles({
-  ...api, t, showNotice, showError,
+  ...api, t, showNotice, showError, confirm: confirmDestructive,
   loadStatus: runtime.loadStatus, loadOperations: runtime.loadOperations,
   busy: runtime.busy, operations: runtime.operations, contextMenu,
 })
 const subscriptions = useSubscriptions({
-  ...api, t, locale, showNotice, showError,
+  ...api, t, locale, showNotice, showError, confirm: confirmDestructive,
   loadOperations: runtime.loadOperations, loadGroups: profiles.loadGroups, loadProfiles: profiles.loadProfiles,
   selectedGroup: profiles.selectedGroup, groups: profiles.groups, coreTypes: profiles.coreTypes,
 })
-const routing = useRouting({ ...api, t, showNotice, showError, loadStatus: runtime.loadStatus })
+const routing = useRouting({ ...api, t, showNotice, showError, confirm: confirmDestructive, loadStatus: runtime.loadStatus })
 const dns = useDns({ ...api, t, showNotice, showError })
 const settings = useSettings({ ...api, t, showNotice, showError, loadStatus: runtime.loadStatus, coreTypes: profiles.coreTypes, routingForm: routing.routingForm })
 const templates = useTemplates({ ...api, showNotice, showError })
 const maintenance = useMaintenance({
-  ...api, t, translateKey, showNotice, showError, token: sessionToken,
+  ...api, t, translateKey, showNotice, showError, confirm: confirmDestructive, token: sessionToken,
   status: runtime.status, operations: runtime.operations, loadOperations: runtime.loadOperations, loadProfiles: profiles.loadProfiles,
 })
-const logs = useLogs({ ...api, t, showNotice, showError })
+const logs = useLogs({ ...api, t, showNotice, showError, confirm: confirmDestructive })
 const events = useEvents({
   token: sessionToken, activePage, status: runtime.status,
   logs: logs.logs, logTotal: logs.logTotal, logPage: logs.logPage, logPageSize: logs.logPageSize,
@@ -310,6 +343,12 @@ function isEditableTarget(target: EventTarget | null) {
 
 function closeTopLayerOnEscape(event: KeyboardEvent): boolean {
   if (event.key !== 'Escape') return false
+  if (activeConfirmation.value) {
+    void resolveConfirmation(false)
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    return true
+  }
 
   const flyout = document.querySelector<HTMLElement>('.flyout-menu-popup')
   if (flyout) {
@@ -564,6 +603,7 @@ function positionOpenContextMenu() {
     <RouteModal v-if="showRouteForm" :state="routeModalState" :actions="routeModalActions" />
     <RouteRuleModal v-if="routingPageState && ruleModalState.showRuleForm" :state="ruleModalState" :actions="ruleModalActions" />
     <ExportModal v-if="showExportDialog" :state="exportModalState" :actions="exportModalActions" />
+    <ConfirmDialog v-if="activeConfirmation" :message="activeConfirmation.message" @resolve="resolveConfirmation" />
     </template>
   </div>
 </template>

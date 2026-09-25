@@ -27,6 +27,7 @@ RUN NUGET_PACKAGES=/src/.packages/nuget dotnet publish v2rayN/v2rayN.Web/v2rayN.
     --output /out \
     && mkdir -p /runtime-data
 COPY --from=webui /src/v2rayN/v2rayN.Web/WebUI/dist/ /out/wwwroot/
+# Copy the complete upstream bin/ payload; do not curate or enumerate Core files here.
 COPY --from=core-assets /out/bin/ /out/bin/
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS runtime

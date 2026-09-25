@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useModalFocus } from '../../composables/useModalFocus'
+import { profileEditorOptions, shadowsocksSecurityOptions } from '../../profileEditorOptions'
 import UiIcon from '../UiIcon.vue'
 import type { UiProps } from '../types'
 
@@ -15,8 +16,12 @@ const protocol = computed(() => state.profileForm.configType)
 const isGroup = computed(() => ['PolicyGroup', 'ProxyChain'].includes(protocol.value))
 const isTls = computed(() => ['tls', 'reality'].includes(String(state.profileForm.streamSecurity).toLowerCase()))
 const isReality = computed(() => String(state.profileForm.streamSecurity).toLowerCase() === 'reality')
-
-const transports = ['tcp', 'raw', 'ws', 'grpc', 'xhttp', 'httpupgrade', 'kcp', 'http', 'quic', 'domainsocket']
+const supportsTransport = computed(() => !['Hysteria2', 'TUIC', 'WireGuard', 'Anytls', 'Naive'].includes(protocol.value))
+const streamSecurityOptions = computed(() => ['', 'tls', ...(['VLESS', 'Trojan', 'Anytls'].includes(protocol.value) ? ['reality'] : [])])
+const fingerprintDisabled = computed(() => ['Hysteria2', 'TUIC', 'Naive'].includes(protocol.value))
+const shadowsocksMethods = computed(() => shadowsocksSecurityOptions(state.profileForm.coreType))
+const transportOptions = profileEditorOptions
+const showRawHttpFields = computed(() => state.profileForm.network === 'raw' && state.profileForm.transportExtra.rawHeaderType === 'http')
 </script>
 
 <template>
@@ -32,12 +37,12 @@ const transports = ['tcp', 'raw', 'ws', 'grpc', 'xhttp', 'httpupgrade', 'kcp', '
           <legend>{{ t('nodes.profileBase') }}</legend>
           <div class="form-grid three-col">
             <label>{{ t('nodes.type') }}<select v-model="state.profileForm.configType"><option v-for="kind in state.protocolTypes" :key="kind" :value="kind">{{ kind === 'Anytls' ? 'AnyTLS' : kind }}</option><option value="PolicyGroup">PolicyGroup</option><option value="ProxyChain">ProxyChain</option></select></label>
-            <label>{{ t('nodes.coreType') }}<select v-model="state.profileForm.coreType"><option v-for="core in state.coreTypes" :key="core" :value="core">{{ core === 'sing_box' ? 'sing-box' : core }}</option></select></label>
+            <label>{{ t('nodes.coreType') }}<select v-model="state.profileForm.coreType" :disabled="['TUIC', 'Anytls', 'Naive'].includes(protocol)"><option v-for="core in state.coreTypes" :key="core" :value="core">{{ core === 'sing_box' ? 'sing-box' : core }}</option></select></label>
             <label>{{ t('nodes.remarks') }}<input v-model="state.profileForm.remarks" required /></label>
             <template v-if="!isGroup">
               <label>{{ t('nodes.address') }}<input v-model="state.profileForm.address" required autocomplete="off" /></label>
               <label>{{ t('nodes.port') }}<input v-model.number="state.profileForm.port" type="number" min="1" max="65535" required /></label>
-              <label>{{ t('nodes.network') }}<select v-model="state.profileForm.network"><option v-for="network in transports" :key="network" :value="network">{{ network }}</option></select></label>
+              <label v-if="supportsTransport">{{ t('nodes.network') }}<select v-model="state.profileForm.network"><option v-for="network in state.networks" :key="network" :value="network">{{ network }}</option></select></label>
             </template>
           </div>
         </fieldset>
@@ -62,10 +67,10 @@ const transports = ['tcp', 'raw', 'ws', 'grpc', 'xhttp', 'httpupgrade', 'kcp', '
               <label v-if="['HTTP', 'SOCKS', 'Naive'].includes(protocol)">{{ t('nodes.password') }}<input v-model="state.profileForm.password" autocomplete="off" /></label>
               <label v-if="protocol === 'VMess'">{{ t('nodes.configVersion') }}<input v-model.number="state.profileForm.configVersion" type="number" min="1" /></label>
               <label v-if="protocol === 'VMess'">{{ t('nodes.alterId') }}<input v-model="state.profileForm.protoExtra.alterId" /></label>
-              <label v-if="protocol === 'VMess'">{{ t('nodes.security') }}<input v-model="state.profileForm.protoExtra.vmessSecurity" /></label>
-              <label v-if="protocol === 'VLESS'">{{ t('nodes.flow') }}<input v-model="state.profileForm.protoExtra.flow" placeholder="xtls-rprx-vision" /></label>
+              <label v-if="protocol === 'VMess'">{{ t('nodes.security') }}<select v-model="state.profileForm.protoExtra.vmessSecurity"><option v-for="security in transportOptions.vmessSecurities" :key="security" :value="security">{{ security }}</option></select></label>
+              <label v-if="protocol === 'VLESS'">{{ t('nodes.flow') }}<select v-model="state.profileForm.protoExtra.flow"><option v-for="flow in transportOptions.vlessFlows" :key="flow || 'none'" :value="flow">{{ flow || t('common.none') }}</option></select></label>
               <label v-if="protocol === 'VLESS'">{{ t('nodes.encryption') }}<input v-model="state.profileForm.protoExtra.vlessEncryption" /></label>
-              <label v-if="protocol === 'Shadowsocks'">{{ t('nodes.method') }}<input v-model="state.profileForm.protoExtra.ssMethod" /></label>
+              <label v-if="protocol === 'Shadowsocks'">{{ t('nodes.method') }}<select v-model="state.profileForm.protoExtra.ssMethod" required><option v-for="method in shadowsocksMethods" :key="method" :value="method">{{ method }}</option></select></label>
               <label v-if="['Shadowsocks', 'Naive'].includes(protocol)" class="check-inline"><input v-model="state.profileForm.protoExtra.uot" type="checkbox" />{{ t('nodes.udpOverTcp') }}</label>
               <label v-if="protocol === 'TUIC'">{{ t('nodes.congestionControl') }}<input v-model="state.profileForm.protoExtra.congestionControl" /></label>
               <label v-if="protocol === 'Naive' && state.profileForm.protoExtra.naiveQuic">{{ t('nodes.congestionControl') }}<input v-model="state.profileForm.protoExtra.congestionControl" /></label>
@@ -80,6 +85,7 @@ const transports = ['tcp', 'raw', 'ws', 'grpc', 'xhttp', 'httpupgrade', 'kcp', '
                 <label>{{ t('nodes.geckoMaxPacket') }}<input v-model="state.profileForm.protoExtra.geckoMaxPacketSize" /></label>
               </template>
               <template v-if="protocol === 'WireGuard'">
+                <label>{{ t('nodes.wgPrivateKey') }}<input v-model="state.profileForm.password" required autocomplete="off" /></label>
                 <label>{{ t('nodes.wgPublicKey') }}<input v-model="state.profileForm.protoExtra.wgPublicKey" /></label>
                 <label>{{ t('nodes.wgPresharedKey') }}<input v-model="state.profileForm.protoExtra.wgPresharedKey" /></label>
                 <label>{{ t('nodes.wgAddress') }}<input v-model="state.profileForm.protoExtra.wgInterfaceAddress" /></label>
@@ -90,46 +96,52 @@ const transports = ['tcp', 'raw', 'ws', 'grpc', 'xhttp', 'httpupgrade', 'kcp', '
               <label v-if="['Anytls', 'Naive'].includes(protocol)">{{ t('nodes.insecureConcurrency') }}<input v-model.number="state.profileForm.protoExtra.insecureConcurrency" type="number" min="0" /></label>
               <label v-if="protocol === 'Naive'" class="check-inline"><input v-model="state.profileForm.protoExtra.naiveQuic" type="checkbox" />{{ t('nodes.naiveQuic') }}</label>
               <label v-if="protocol === 'HTTP'">{{ t('nodes.httpHeaders') }}<textarea v-model="state.profileForm.protoExtra.httpHeaders" /></label>
-              <label v-if="['VMess', 'VLESS'].includes(protocol)" class="check-inline"><input v-model="state.profileForm.muxEnabled" type="checkbox" />{{ t('nodes.mux') }}</label>
+              <label v-if="['VMess', 'VLESS', 'Shadowsocks', 'Trojan'].includes(protocol)" class="check-inline"><input v-model="state.profileForm.muxEnabled" type="checkbox" />{{ t('nodes.mux') }}</label>
             </div>
           </fieldset>
 
-          <fieldset class="editor-section">
+          <fieldset v-if="supportsTransport" class="editor-section">
             <legend>{{ t('nodes.transport') }}</legend>
             <div class="form-grid three-col">
-              <template v-if="state.profileForm.network === 'raw' || state.profileForm.network === 'tcp'">
-                <label>{{ t('nodes.rawHeaderType') }}<input v-model="state.profileForm.transportExtra.rawHeaderType" /></label>
+              <template v-if="state.profileForm.network === 'raw'">
+                <label>{{ t('nodes.rawHeaderType') }}<select v-model="state.profileForm.transportExtra.rawHeaderType"><option v-for="type in transportOptions.rawHeaderTypes" :key="type" :value="type">{{ type }}</option></select></label>
+                <template v-if="showRawHttpFields">
+                  <label>{{ t('nodes.host') }}<input v-model="state.profileForm.transportExtra.host" /></label>
+                  <label>{{ t('nodes.path') }}<input v-model="state.profileForm.transportExtra.path" /></label>
+                </template>
               </template>
-              <template v-if="state.profileForm.network === 'ws' || state.profileForm.network === 'http' || state.profileForm.network === 'httpupgrade'">
+              <template v-if="state.profileForm.network === 'ws' || state.profileForm.network === 'httpupgrade'">
                 <label>{{ t('nodes.host') }}<input v-model="state.profileForm.transportExtra.host" /></label>
                 <label>{{ t('nodes.path') }}<input v-model="state.profileForm.transportExtra.path" /></label>
               </template>
               <template v-if="state.profileForm.network === 'grpc'">
+                <label>{{ t('nodes.grpcMode') }}<select v-model="state.profileForm.transportExtra.grpcMode"><option v-for="mode in transportOptions.grpcModes" :key="mode" :value="mode">{{ mode }}</option></select></label>
                 <label>{{ t('nodes.grpcAuthority') }}<input v-model="state.profileForm.transportExtra.grpcAuthority" /></label>
                 <label>{{ t('nodes.grpcServiceName') }}<input v-model="state.profileForm.transportExtra.grpcServiceName" /></label>
-                <label>{{ t('nodes.grpcMode') }}<input v-model="state.profileForm.transportExtra.grpcMode" /></label>
               </template>
               <template v-if="state.profileForm.network === 'xhttp'">
-                <label>{{ t('nodes.xhttpMode') }}<input v-model="state.profileForm.transportExtra.xhttpMode" /></label>
+                <label>{{ t('nodes.xhttpMode') }}<select v-model="state.profileForm.transportExtra.xhttpMode"><option v-for="mode in transportOptions.xhttpModes" :key="mode" :value="mode">{{ mode }}</option></select></label>
+                <label>{{ t('nodes.host') }}<input v-model="state.profileForm.transportExtra.host" /></label>
+                <label>{{ t('nodes.path') }}<input v-model="state.profileForm.transportExtra.path" /></label>
                 <label class="wide-field">{{ t('nodes.xhttpExtra') }}<textarea v-model="state.profileForm.transportExtra.xhttpExtra" /></label>
               </template>
               <template v-if="state.profileForm.network === 'kcp'">
-                <label>{{ t('nodes.kcpHeaderType') }}<input v-model="state.profileForm.transportExtra.kcpHeaderType" /></label>
+                <label>{{ t('nodes.kcpHeaderType') }}<select v-model="state.profileForm.transportExtra.kcpHeaderType"><option v-for="type in transportOptions.kcpHeaderTypes" :key="type" :value="type">{{ type }}</option></select></label>
                 <label>{{ t('nodes.kcpSeed') }}<input v-model="state.profileForm.transportExtra.kcpSeed" /></label>
                 <label>{{ t('nodes.kcpMtu') }}<input v-model.number="state.profileForm.transportExtra.kcpMtu" type="number" min="0" /></label>
               </template>
             </div>
           </fieldset>
 
-          <fieldset class="editor-section">
+          <fieldset v-if="protocol !== 'WireGuard'" class="editor-section">
             <legend>{{ t('nodes.tlsReality') }}</legend>
             <div class="form-grid three-col">
-              <label>{{ t('nodes.streamSecurity') }}<select v-model="state.profileForm.streamSecurity"><option value="">{{ t('common.none') }}</option><option value="tls">TLS</option><option value="reality">Reality</option></select></label>
+              <label>{{ t('nodes.streamSecurity') }}<select v-model="state.profileForm.streamSecurity"><option v-for="security in streamSecurityOptions" :key="security || 'none'" :value="security">{{ security === 'tls' ? 'TLS' : security === 'reality' ? 'Reality' : t('common.none') }}</option></select></label>
               <template v-if="isTls">
                 <label>{{ t('nodes.sni') }}<input v-model="state.profileForm.sni" /></label>
-                <label>{{ t('nodes.alpn') }}<input v-model="state.profileForm.alpn" placeholder="h2,http/1.1" /></label>
-                <label>{{ t('nodes.fingerprint') }}<input v-model="state.profileForm.fingerprint" /></label>
-                <label class="check-inline"><input v-model="state.profileForm.allowInsecure" type="checkbox" />{{ t('nodes.allowInsecure') }}</label>
+                <label>{{ t('nodes.alpn') }}<select v-model="state.profileForm.alpn" :disabled="fingerprintDisabled"><option v-for="alpn in transportOptions.alpns" :key="alpn || 'none'" :value="alpn">{{ alpn || t('common.none') }}</option></select></label>
+                <label>{{ t('nodes.fingerprint') }}<select v-model="state.profileForm.fingerprint" :disabled="fingerprintDisabled"><option v-for="fingerprint in transportOptions.fingerprints" :key="fingerprint || 'none'" :value="fingerprint">{{ fingerprint || t('common.none') }}</option></select></label>
+                <label class="check-inline"><input v-model="state.profileForm.allowInsecure" type="checkbox" :disabled="protocol === 'Naive'" />{{ t('nodes.allowInsecure') }}</label>
               </template>
               <template v-if="isReality">
                 <label>{{ t('nodes.publicKey') }}<input v-model="state.profileForm.publicKey" /></label>

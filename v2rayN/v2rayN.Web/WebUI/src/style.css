@@ -242,6 +242,11 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .modal-shade { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); background: #0009; }
 .modal-panel { width: min(520px, 100%); max-height: calc(100dvh - 24px); overflow: auto; padding: 11px; border: 1px solid var(--border-strong); border-radius: 3px; background: var(--surface-raised); box-shadow: 0 12px 40px #0009; }
 .modal-panel.wide-modal { width: min(850px, 100%); }
+.confirm-shade { z-index: 100; }
+.confirm-panel { width: min(440px, 100%); padding: 0; }
+.confirm-message { margin: 0; padding: 13px 12px; color: #d0d0d0; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.confirm-panel .modal-head { margin: 0; padding: 11px 12px 8px; }
+.confirm-panel .modal-actions { margin: 0; padding: 8px 12px; }
 .modal-head { justify-content: space-between; min-height: var(--control-height); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
 .modal-head h2 { margin: 0; color: #eee; font-size: 14px; }
 .modal-panel > label { margin-bottom: 8px; }
@@ -432,12 +437,25 @@ input[type="checkbox"] { width: 14px; height: 14px; flex: 0 0 auto; }
   .selection-summary { margin-left: auto; }
   .table-footer { align-items: flex-start; flex-direction: column; }
   .table-wrap { max-width: 100%; overflow-x: auto; }
-  .nodes-page .table-wrap { min-height: 160px; max-height: calc(100dvh - 350px); }
-  .profile-table { min-width: 1330px; }
-  .profile-table td { height: var(--control-height-touch); }
-  .profile-table th.actions-cell { display: table-cell; }
-  .profile-table td.row-actions { display: table-cell; text-align: center; }
+  .nodes-page .table-wrap { min-height: 120px; max-height: none; overflow: visible; border: 0; background: transparent; }
+  .table-wrap.auto-fit-columns .profile-table, .profile-table { width: 100%; min-width: 0; display: block; table-layout: fixed; white-space: normal; }
+  .profile-table thead { display: none; }
+  .profile-table tbody { display: grid; gap: 6px; }
+  .profile-table tbody tr { position: relative; min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding-left: 32px; border: 1px solid #414141; background: var(--surface); }
+  .profile-table tbody tr.current { background: #26343a; border-color: #4c7657; box-shadow: inset 2px 0 var(--success); }
+  .profile-table tbody tr.selected { background: #304658; border-color: #527899; }
+  .profile-table tbody tr.current.selected { background: #2d4850; border-color: #6091ad; box-shadow: inset 2px 0 var(--accent); }
+  .profile-table td { display: flex; align-items: flex-start; gap: 4px; min-width: 0; height: auto; min-height: 27px; padding: 5px 4px; border: 0 !important; border-bottom: 1px solid #303030 !important; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  .profile-table td:not(.check-cell)::before { content: attr(data-label); flex: 0 0 59px; color: #929292; font-size: 9px; line-height: 1.35; }
+  .profile-table td.check-cell { position: absolute; inset: 0 auto 0 0; z-index: 1; width: 32px; min-height: 0; justify-content: center; padding: 9px 8px; border-right: 1px solid #303030 !important; }
+  .profile-table td.check-cell::before { content: none; }
+  .profile-table td.remark-cell { grid-column: 1 / -1; align-items: center; min-height: 31px; }
+  .profile-table td.number-cell { text-align: left; }
+  .profile-table td.row-actions { display: flex; grid-column: 1 / -1; justify-content: flex-end; align-items: center; min-height: 37px; }
   .profile-table td.row-actions .row-more { min-width: var(--control-height-touch); min-height: var(--control-height-touch); }
+  .profile-table td.empty-row { grid-column: 1 / -1; justify-content: center; min-height: 70px; margin-left: -32px; }
+  .profile-table td.empty-row::before { content: none; }
+  .profile-table .address-cell, .profile-table .group-cell, .profile-table .ip-cell, .profile-table .remark-text { max-width: none; }
   .row-more { display: inline-flex; }
   .context-menu { width: min(244px, calc(100vw - 16px)); }
   .logs-page { height: calc(100dvh - 225px); min-height: 240px; }
@@ -456,6 +474,8 @@ input[type="checkbox"] { width: 14px; height: 14px; flex: 0 0 auto; }
   .template-code { min-height: 48vh; }
   .modal-shade { place-items: end center; padding: 0; }
   .modal-panel, .modal-panel.wide-modal, .modal-form { width: 100%; max-width: none; max-height: 100dvh; height: 100dvh; border-right: 0; border-bottom: 0; border-left: 0; border-radius: 0; }
+  .confirm-shade { place-items: center; padding: 12px; }
+  .confirm-shade .confirm-panel { width: min(440px, calc(100vw - 24px)); max-width: 440px; max-height: calc(100dvh - 24px); height: auto; border: 1px solid var(--border-strong); border-radius: 3px; }
   .modal-form .modal-head { padding-top: max(10px, env(safe-area-inset-top)); padding-right: max(12px, env(safe-area-inset-right)); padding-left: max(12px, env(safe-area-inset-left)); }
   .modal-form .modal-content { padding-right: max(12px, env(safe-area-inset-right)); padding-left: max(12px, env(safe-area-inset-left)); }
   .modal-form .modal-actions { padding-right: max(12px, env(safe-area-inset-right)); padding-bottom: max(8px, env(safe-area-inset-bottom)); padding-left: max(12px, env(safe-area-inset-left)); }

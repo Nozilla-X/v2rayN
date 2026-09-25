@@ -1,4 +1,3 @@
-using Microsoft.AspNetCore.Http;
 using v2rayN.Web.Security;
 
 namespace v2rayN.Web.Tests;
@@ -72,22 +71,41 @@ public class WebSessionServiceTests
     }
 
     [Test]
-    public async Task SseReadsOnlyItsSessionTokenAndBearerTakesPrecedence()
+    public async Task SseTicketsAreRandomShortLivedOneTimeAndCannotAuthenticateRest()
     {
-        using var sessions = new WebSessionService();
+        var time = new ManualTimeProvider(DateTimeOffset.Parse("2026-03-20T00:00:00Z"));
+        using var sessions = new WebSessionService(time);
         var session = sessions.CreateSession();
-        const string managementKey = "management-key-never-for-sse";
-        var context = new DefaultHttpContext();
-        context.Request.Path = "/api/events";
-        context.Request.QueryString = new QueryString($"?access_token={Uri.EscapeDataString(session.Token)}");
+        time.Advance(TimeSpan.FromDays(6));
 
-        var queryToken = WebSessionService.ExtractPresentedToken(context);
-        await (queryToken == session.Token).Should().BeTrue();
-        await sessions.TryValidateAndRenew(queryToken, out _).Should().BeTrue();
+        await sessions.TryCreateSseTicket(session.Token, out var ticket).Should().BeTrue();
+        await (ticket!.Token.Length == 43).Should().BeTrue();
+        await ticket.Token.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_').Should().BeTrue();
+        await (ticket.Token != session.Token).Should().BeTrue();
+        await (ticket.ExpiresAt == time.GetUtcNow() + WebSessionService.SseTicketLifetime).Should().BeTrue();
+        await sessions.TryValidateWithoutRenewal(ticket.Token, out _).Should().BeFalse();
 
-        context.Request.Headers.Authorization = $"Bearer {managementKey}";
-        await (WebSessionService.ExtractPresentedToken(context) == managementKey).Should().BeTrue();
-        await sessions.TryValidateWithoutRenewal(WebSessionService.ExtractPresentedToken(context), out _).Should().BeFalse();
+        await sessions.TryConsumeSseTicket(ticket.Token, out var consumed).Should().BeTrue();
+        await (consumed!.LastSeenAt == session.ExpiresAt - WebSessionService.SlidingLifetime).Should().BeTrue();
+        await sessions.TryConsumeSseTicket(ticket.Token, out _).Should().BeFalse();
+    }
+
+    [Test]
+    public async Task ExpiredTicketsAndRevokedSessionsCannotOpenOrCreateSseTickets()
+    {
+        var time = new ManualTimeProvider(DateTimeOffset.Parse("2026-03-25T00:00:00Z"));
+        using var sessions = new WebSessionService(time);
+        var session = sessions.CreateSession();
+        await sessions.TryCreateSseTicket(session.Token, out var ticket).Should().BeTrue();
+
+        await sessions.Revoke(session.Token).Should().BeTrue();
+        await sessions.TryCreateSseTicket(session.Token, out _).Should().BeFalse();
+        await sessions.TryConsumeSseTicket(ticket!.Token, out _).Should().BeFalse();
+
+        var secondSession = sessions.CreateSession();
+        await sessions.TryCreateSseTicket(secondSession.Token, out var expiringTicket).Should().BeTrue();
+        time.Advance(WebSessionService.SseTicketLifetime + TimeSpan.FromSeconds(1));
+        await sessions.TryConsumeSseTicket(expiringTicket!.Token, out _).Should().BeFalse();
     }
 
     [Test]

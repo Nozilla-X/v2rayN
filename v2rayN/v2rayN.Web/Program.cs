@@ -86,8 +86,8 @@ internal static class Program
             ContentRootPath = applicationBase,
             WebRootPath = Directory.Exists(webRoot) ? webRoot : null,
         });
-        // The framework request-start log includes the query string. EventSource uses
-        // access_token, so suppress those request lifecycle logs to avoid logging sessions.
+        // EventSource carries only a one-time, short-lived SSE ticket in its URL; keep
+        // request lifecycle logs from recording that ticket as well.
         builder.Logging.AddFilter("Microsoft.AspNetCore.Hosting.Diagnostics", LogLevel.Warning);
         if (string.IsNullOrWhiteSpace(builder.Configuration[Microsoft.AspNetCore.Hosting.WebHostDefaults.ServerUrlsKey])
             && string.IsNullOrWhiteSpace(builder.Configuration["http_ports"]))

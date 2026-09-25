@@ -6,6 +6,7 @@ export function useSubscriptions(options: ApiServices & {
   locale: Ref<string>
   showNotice: Notice
   showError: ErrorHandler
+  confirm: (message: string) => Promise<boolean>
   loadOperations: () => Promise<void>
   loadGroups: () => Promise<void>
   loadProfiles: () => Promise<void>
@@ -70,7 +71,7 @@ export function useSubscriptions(options: ApiServices & {
   }
 
   async function deleteSubscription(item: Dict) {
-    if (!window.confirm(t('subscriptions.deleteConfirm', { name: item.remarks }))) return
+    if (!await options.confirm(t('subscriptions.deleteConfirm', { name: item.remarks }))) return
     try {
       const result = await options.request(`/api/subscriptions/${encodeURIComponent(item.id)}`, { method: 'DELETE' })
       options.showNotice(options.operationMessage(result, 'subscriptions.deleted'))

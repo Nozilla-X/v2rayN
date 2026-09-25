@@ -6,16 +6,20 @@ namespace v2rayN.Web.Security;
 
 public sealed class WebSessionService : IDisposable
 {
-    public const string RevocationTokenContextKey = "v2rayn.web.session.revocation-token";
+    public const string SessionSnapshotContextKey = "v2rayn.web.session.snapshot";
     public static readonly TimeSpan SlidingLifetime = TimeSpan.FromDays(7);
     public static readonly TimeSpan AbsoluteLifetime = TimeSpan.FromDays(30);
+    public static readonly TimeSpan SseTicketLifetime = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan CleanupInterval = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan SseTicketCleanupInterval = TimeSpan.FromMinutes(1);
     private const int TokenByteLength = 32;
     private const int TokenEncodedLength = 43;
 
     private readonly ConcurrentDictionary<string, SessionEntry> _sessions = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SseTicketEntry> _sseTickets = new(StringComparer.Ordinal);
     private readonly TimeProvider _timeProvider;
     private readonly Timer _cleanupTimer;
+    private readonly Timer _sseTicketCleanupTimer;
     private bool _disposed;
 
     public WebSessionService(TimeProvider? timeProvider = null)
@@ -26,6 +30,11 @@ public sealed class WebSessionService : IDisposable
             this,
             CleanupInterval,
             CleanupInterval);
+        _sseTicketCleanupTimer = new Timer(
+            static state => ((WebSessionService)state!).CleanupExpiredSseTickets(),
+            this,
+            SseTicketCleanupInterval,
+            SseTicketCleanupInterval);
     }
 
     public WebSessionToken CreateSession()
@@ -87,7 +96,8 @@ public sealed class WebSessionService : IDisposable
                     current.LastSeenAt,
                     current.ExpiresAt,
                     current.AbsoluteExpiresAt,
-                    current.Revoked.Token);
+                    current.Revoked.Token,
+                    digest);
                 return true;
             }
 
@@ -103,13 +113,50 @@ public sealed class WebSessionService : IDisposable
                     renewed.LastSeenAt,
                     renewed.ExpiresAt,
                     renewed.AbsoluteExpiresAt,
-                    renewed.Revoked.Token);
+                    renewed.Revoked.Token,
+                    digest);
                 return true;
             }
         }
 
         return false;
     }
+
+    private bool TryValidateSessionDigestWithoutRenewal(string digest, out WebSessionSnapshot? session)
+    {
+        session = null;
+        if (_disposed)
+        {
+            return false;
+        }
+
+        while (_sessions.TryGetValue(digest, out var current))
+        {
+            var now = _timeProvider.GetUtcNow();
+            if (now >= current.ExpiresAt || now >= current.AbsoluteExpiresAt)
+            {
+                if (TryRemove(digest, current))
+                {
+                    return false;
+                }
+                continue;
+            }
+
+            session = new WebSessionSnapshot(
+                current.CreatedAt,
+                current.LastSeenAt,
+                current.ExpiresAt,
+                current.AbsoluteExpiresAt,
+                current.Revoked.Token,
+                digest);
+            return true;
+        }
+
+        return false;
+    }
+
+    internal bool TryValidateSseSessionWithoutRenewal(string sessionDigest, out WebSessionSnapshot? session) =>
+        TryValidateSessionDigestWithoutRenewal(sessionDigest, out session);
 
     public bool Revoke(string? token)
     {
@@ -118,12 +165,64 @@ public sealed class WebSessionService : IDisposable
             return false;
         }
 
-        if (!_sessions.TryGetValue(digest, out var entry))
+        while (_sessions.TryGetValue(digest, out var entry))
+        {
+            if (TryRemove(digest, entry))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public bool TryCreateSseTicket(string? sessionToken, out WebSseTicket? ticket)
+    {
+        ticket = null;
+        if (_disposed || !TryGetDigest(sessionToken, out var sessionDigest)
+            || !TryValidateSessionDigestWithoutRenewal(sessionDigest, out _))
         {
             return false;
         }
 
-        return TryRemove(digest, entry);
+        CleanupExpiredSseTickets();
+        while (true)
+        {
+            var ticketBytes = RandomNumberGenerator.GetBytes(TokenByteLength);
+            var ticketToken = EncodeBase64Url(ticketBytes);
+            var ticketDigest = GetDigest(ticketBytes);
+            CryptographicOperations.ZeroMemory(ticketBytes);
+
+            var expiresAt = _timeProvider.GetUtcNow() + SseTicketLifetime;
+            if (_sseTickets.TryAdd(ticketDigest, new SseTicketEntry(sessionDigest, expiresAt)))
+            {
+                // Close the race with logout/expiry while the ticket was being minted.
+                if (!TryValidateSessionDigestWithoutRenewal(sessionDigest, out _))
+                {
+                    _sseTickets.TryRemove(ticketDigest, out _);
+                    return false;
+                }
+
+                ticket = new WebSseTicket(ticketToken, expiresAt);
+                return true;
+            }
+        }
+    }
+
+    public bool TryConsumeSseTicket(string? ticketToken, out WebSessionSnapshot? session)
+    {
+        session = null;
+        if (_disposed || !TryGetDigest(ticketToken, out var ticketDigest)
+            || !_sseTickets.TryRemove(ticketDigest, out var ticket))
+        {
+            return false;
+        }
+
+        if (_timeProvider.GetUtcNow() >= ticket.ExpiresAt)
+        {
+            return false;
+        }
+
+        return TryValidateSessionDigestWithoutRenewal(ticket.SessionDigest, out session);
     }
 
     public int CleanupExpiredSessions()
@@ -146,6 +245,23 @@ public sealed class WebSessionService : IDisposable
         return removed;
     }
 
+    private void CleanupExpiredSseTickets()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        foreach (var (digest, ticket) in _sseTickets)
+        {
+            if (now >= ticket.ExpiresAt)
+            {
+                _sseTickets.TryRemove(digest, out _);
+            }
+        }
+    }
+
     public void Dispose()
     {
         if (_disposed)
@@ -155,6 +271,8 @@ public sealed class WebSessionService : IDisposable
 
         _disposed = true;
         _cleanupTimer.Dispose();
+        _sseTicketCleanupTimer.Dispose();
+        _sseTickets.Clear();
         foreach (var entry in _sessions.Values)
         {
             Cancel(entry.Revoked);
@@ -170,9 +288,7 @@ public sealed class WebSessionService : IDisposable
             return authorization[7..].Trim();
         }
 
-        return context.Request.Path == "/api/events"
-            ? context.Request.Query["access_token"].ToString()
-            : string.Empty;
+        return string.Empty;
     }
 
     private bool TryRemove(string digest, SessionEntry entry)
@@ -182,8 +298,20 @@ public sealed class WebSessionService : IDisposable
         if (removed)
         {
             Cancel(entry.Revoked);
+            RemoveTicketsForSession(digest);
         }
         return removed;
+    }
+
+    private void RemoveTicketsForSession(string sessionDigest)
+    {
+        foreach (var (ticketDigest, ticket) in _sseTickets)
+        {
+            if (ticket.SessionDigest == sessionDigest)
+            {
+                _sseTickets.TryRemove(ticketDigest, out _);
+            }
+        }
     }
 
     private static void Cancel(CancellationTokenSource source)
@@ -242,13 +370,18 @@ public sealed class WebSessionService : IDisposable
         DateTimeOffset ExpiresAt,
         DateTimeOffset AbsoluteExpiresAt,
         CancellationTokenSource Revoked);
+
+    private sealed record SseTicketEntry(string SessionDigest, DateTimeOffset ExpiresAt);
 }
 
 public sealed record WebSessionToken(string Token, DateTimeOffset ExpiresAt);
+
+public sealed record WebSseTicket(string Token, DateTimeOffset ExpiresAt);
 
 public sealed record WebSessionSnapshot(
     DateTimeOffset CreatedAt,
     DateTimeOffset LastSeenAt,
     DateTimeOffset ExpiresAt,
     DateTimeOffset AbsoluteExpiresAt,
-    CancellationToken RevocationToken);
+    CancellationToken RevocationToken,
+    string SessionDigest);
