@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import AppHeader from './components/AppHeader.vue'
 import ConnectionStrip from './components/ConnectionStrip.vue'
+import FlyoutMenu from './components/FlyoutMenu.vue'
 import NoticeBar from './components/NoticeBar.vue'
 import RuntimeStrip from './components/RuntimeStrip.vue'
 import DnsPage from './components/pages/DnsPage.vue'
@@ -349,43 +350,31 @@ onUnmounted(() => {
       <button @click="nodesPageActions.startSpeedTest('udpTest', [contextMenu.profile.indexId])">{{ t('nodes.udp') }}</button>
       <button @click="nodesPageActions.sortProfiles('DelayVal')">{{ t('nodes.sortByTestResults') }}</button>
       <div class="context-separator"></div>
-      <details class="context-submenu">
-        <summary @click.stop>{{ t('nodes.moveGroup') }}<span class="submenu-caret">›</span></summary>
-        <div class="context-submenu-list">
-          <button v-for="group in nodesPageState.groups" :key="group.id || 'all-target'" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.moveSelectedToGroup(group.id)">{{ group.name || t('common.allGroups') }}</button>
-        </div>
-      </details>
-      <details class="context-submenu">
-        <summary @click.stop>{{ t('nodes.move') }}<span class="submenu-caret">›</span></summary>
-        <div class="context-submenu-list">
-          <button @click="nodesPageActions.moveSelected('top')">{{ t('nodes.top') }}</button>
-          <button @click="nodesPageActions.moveSelected('up')">{{ t('nodes.up') }}</button>
-          <button @click="nodesPageActions.moveSelected('down')">{{ t('nodes.down') }}</button>
-          <button @click="nodesPageActions.moveSelected('bottom')">{{ t('nodes.bottom') }}</button>
-        </div>
-      </details>
+      <FlyoutMenu context :label="t('nodes.moveGroup')" :disabled="!nodesPageState.selectedIds.length" @select="contextMenu = null">
+        <button v-for="group in nodesPageState.groups" :key="group.id || 'all-target'" class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.moveSelectedToGroup(group.id)">{{ group.name || t('common.allGroups') }}</button>
+      </FlyoutMenu>
+      <FlyoutMenu context :label="t('nodes.move')" :disabled="!nodesPageState.selectedIds.length" @select="contextMenu = null">
+        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('top')">{{ t('nodes.top') }}</button>
+        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('up')">{{ t('nodes.up') }}</button>
+        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('down')">{{ t('nodes.down') }}</button>
+        <button class="action-menu-item" role="menuitem" @click="nodesPageActions.moveSelected('bottom')">{{ t('nodes.bottom') }}</button>
+      </FlyoutMenu>
       <button :disabled="!nodesPageState.filteredProfiles.length" @click="!nodesPageState.allVisibleSelected && nodesPageActions.toggleAllVisible()">{{ t('nodes.selectAll') }}</button>
       <div class="context-separator"></div>
       <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.shareProfile(contextMenu.profile.indexId)">{{ t('nodes.shareProfile') }}</button>
-      <details class="context-submenu">
-        <summary @click.stop>{{ t('nodes.exportMenu') }}<span class="submenu-caret">›</span></summary>
-        <div class="context-submenu-list">
-          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportProfileConfig(contextMenu.profile.indexId)">{{ t('nodes.exportFullConfig') }}</button>
-          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportProfileConfigToClipboard(contextMenu.profile.indexId)">{{ t('nodes.exportFullConfigClipboard') }}</button>
-          <div class="context-separator"></div>
-          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksToClipboard">{{ t('nodes.exportShareLinkClipboard') }}</button>
-          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksBase64">{{ t('nodes.exportShareLinkBase64') }}</button>
-          <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportInnerUris">{{ t('nodes.exportInnerUri') }}</button>
-        </div>
-      </details>
+      <FlyoutMenu context :label="t('nodes.exportMenu')" :disabled="!nodesPageState.selectedIds.length" @select="contextMenu = null">
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportProfileConfig(contextMenu.profile.indexId)">{{ t('nodes.exportFullConfig') }}</button>
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportProfileConfigToClipboard(contextMenu.profile.indexId)">{{ t('nodes.exportFullConfigClipboard') }}</button>
+        <div class="action-menu-separator" role="separator"></div>
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksToClipboard">{{ t('nodes.exportShareLinkClipboard') }}</button>
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportShareLinksBase64">{{ t('nodes.exportShareLinkBase64') }}</button>
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportInnerUris">{{ t('nodes.exportInnerUri') }}</button>
+      </FlyoutMenu>
       <div class="context-separator"></div>
-      <details class="context-submenu">
-        <summary @click.stop>{{ t('nodes.generatePolicyGroups') }}<span class="submenu-caret">›</span></summary>
-        <div class="context-submenu-list">
-          <button :disabled="!nodesPageState.selectedGroup" @click="nodesPageActions.generateGroups(false)">{{ t('nodes.allProfiles') }}</button>
-          <button :disabled="!nodesPageState.selectedGroup || !nodesPageState.profiles.length" @click="nodesPageActions.generateGroups(true)">{{ t('nodes.generateRegionGroups') }}</button>
-        </div>
-      </details>
+      <FlyoutMenu context :label="t('nodes.generatePolicyGroups')" :disabled="!nodesPageState.selectedGroup" @select="contextMenu = null">
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedGroup" @click="nodesPageActions.generateGroups(false)">{{ t('nodes.allProfiles') }}</button>
+        <button class="action-menu-item" role="menuitem" :disabled="!nodesPageState.selectedGroup || !nodesPageState.profiles.length" @click="nodesPageActions.generateGroups(true)">{{ t('nodes.generateRegionGroups') }}</button>
+      </FlyoutMenu>
       <div class="context-separator"></div>
       <div class="context-web-only-label">{{ t('nodes.webOnlyActions') }}</div>
       <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.moveSelectedPosition">{{ t('nodes.position') }}…</button>

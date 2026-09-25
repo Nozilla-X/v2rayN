@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, provide, ref } from 'vue'
+import { closeActionDropdownKey } from './menuContext'
 
 withDefaults(defineProps<{
   label: string
@@ -19,6 +20,8 @@ function close() {
   open.value = false
 }
 
+provide(closeActionDropdownKey, close)
+
 function closeFromClick(event: MouseEvent) {
   const target = event.target
   if (target instanceof Element && target.closest('.menu-stay-open, .menu-submenu-toggle')) return
@@ -26,6 +29,7 @@ function closeFromClick(event: MouseEvent) {
 }
 
 function onPointerDown(event: PointerEvent) {
+  if (event.target instanceof Element && event.target.closest('.flyout-menu-popup')) return
   if (event.target instanceof Node && !root.value?.contains(event.target)) close()
 }
 

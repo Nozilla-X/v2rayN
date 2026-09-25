@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ActionDropdown from '../ActionDropdown.vue'
+import FlyoutMenu from '../FlyoutMenu.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
@@ -67,30 +68,21 @@ const autoFitColumns = ref(false)
         <button class="action-menu-item" role="menuitem" @click="actions.runProfileAction('deduplicate')">{{ t('nodes.deduplicate') }}</button>
         <button class="action-menu-item" role="menuitem" @click="actions.runProfileAction('remove-invalid')">{{ t('nodes.removeInvalid') }}</button>
         <div class="action-menu-separator" role="separator"></div>
-        <details class="action-menu-submenu" :class="{ disabled: !state.selectedIds.length }">
-          <summary class="action-menu-item menu-submenu-toggle" role="menuitem" :aria-disabled="!state.selectedIds.length" @click="!state.selectedIds.length && $event.preventDefault()">{{ t('nodes.moveGroup') }}<span class="submenu-caret">›</span></summary>
-          <div class="action-menu-submenu-items">
-            <button v-for="group in state.groups" :key="group.id || 'all-target'" class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelectedToGroup(group.id)">{{ group.name || t('common.allGroups') }}</button>
-          </div>
-        </details>
-        <details class="action-menu-submenu" :class="{ disabled: !state.selectedIds.length }">
-          <summary class="action-menu-item menu-submenu-toggle" role="menuitem" :aria-disabled="!state.selectedIds.length" @click="!state.selectedIds.length && $event.preventDefault()">{{ t('nodes.move') }}<span class="submenu-caret">›</span></summary>
-          <div class="action-menu-submenu-items">
-            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('top')">{{ t('nodes.top') }}</button>
-            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('up')">{{ t('nodes.up') }}</button>
-            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('down')">{{ t('nodes.down') }}</button>
-            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('bottom')">{{ t('nodes.bottom') }}</button>
-          </div>
-        </details>
+        <FlyoutMenu :label="t('nodes.moveGroup')" :disabled="!state.selectedIds.length">
+          <button v-for="group in state.groups" :key="group.id || 'all-target'" class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelectedToGroup(group.id)">{{ group.name || t('common.allGroups') }}</button>
+        </FlyoutMenu>
+        <FlyoutMenu :label="t('nodes.move')" :disabled="!state.selectedIds.length">
+          <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('top')">{{ t('nodes.top') }}</button>
+          <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('up')">{{ t('nodes.up') }}</button>
+          <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('down')">{{ t('nodes.down') }}</button>
+          <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('bottom')">{{ t('nodes.bottom') }}</button>
+        </FlyoutMenu>
         <button class="action-menu-item" role="menuitem" :disabled="!state.filteredProfiles.length" @click="!state.allVisibleSelected && actions.toggleAllVisible()">{{ t('nodes.selectAll') }}</button>
         <div class="action-menu-separator" role="separator"></div>
-        <details class="action-menu-submenu" :class="{ disabled: !state.selectedGroup }">
-          <summary class="action-menu-item menu-submenu-toggle" role="menuitem" :aria-disabled="!state.selectedGroup" :title="!state.selectedGroup ? t('nodes.groupGenerationSelectSubscription') : ''" @click="!state.selectedGroup && $event.preventDefault()">{{ t('nodes.generatePolicyGroups') }}<span class="submenu-caret">›</span></summary>
-          <div class="action-menu-submenu-items">
-            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedGroup" @click="actions.generateGroups(false)">{{ t('nodes.allProfiles') }}</button>
-            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedGroup || !state.profiles.length" @click="actions.generateGroups(true)">{{ t('nodes.generateRegionGroups') }}</button>
-          </div>
-        </details>
+        <FlyoutMenu :label="t('nodes.generatePolicyGroups')" :disabled="!state.selectedGroup" :title="!state.selectedGroup ? t('nodes.groupGenerationSelectSubscription') : ''">
+          <button class="action-menu-item" role="menuitem" :disabled="!state.selectedGroup" @click="actions.generateGroups(false)">{{ t('nodes.allProfiles') }}</button>
+          <button class="action-menu-item" role="menuitem" :disabled="!state.selectedGroup || !state.profiles.length" @click="actions.generateGroups(true)">{{ t('nodes.generateRegionGroups') }}</button>
+        </FlyoutMenu>
         <div class="action-menu-separator" role="separator"></div>
         <div class="action-menu-label">{{ t('nodes.webOnlyActions') }}</div>
         <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelectedPosition">{{ t('nodes.position') }}…</button>

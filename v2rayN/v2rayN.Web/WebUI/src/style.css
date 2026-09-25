@@ -105,7 +105,7 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .action-menu-popup { position: absolute; z-index: 15; top: calc(100% + 3px); left: 0; min-width: 220px; max-width: min(320px, calc(100vw - 14px)); max-height: min(68vh, 440px); overflow: auto; display: grid; gap: 1px; padding: 4px; border: 1px solid #555; background: #292929; box-shadow: 0 5px 18px #0008; }
 .nodes-toolbar-main > .action-dropdown:nth-child(7) .action-menu-popup { right: 0; left: auto; }
 .action-menu-item { width: 100%; min-height: 27px; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 3px 8px; color: #ddd; border: 0; border-radius: 1px; background: transparent; text-align: left; white-space: normal; font-size: 11px; }
-.action-menu-item:hover:not(:disabled), .context-menu button:hover:not(:disabled), .context-submenu > summary:hover { background: #3a3a3a; }
+.action-menu-item:hover:not(:disabled), .context-menu button:hover:not(:disabled) { background: #3a3a3a; }
 .action-menu-item:disabled, .context-menu button:disabled { opacity: .42; cursor: not-allowed; }
 .action-menu-item.danger { color: #efb4b4; }
 .action-menu-item.danger:hover:not(:disabled) { color: #ffd6d6; background: #4a2c2c; }
@@ -114,12 +114,17 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .action-menu-check { min-height: 27px; display: flex; align-items: center; gap: 8px; padding: 3px 8px; color: #d2d2d2; font-size: 11px; cursor: pointer; }
 .action-menu-check:hover { background: #343434; }
 .action-menu-check input { flex: 0 0 auto; accent-color: var(--accent); }
-.action-menu-submenu { min-width: 0; }
-.action-menu-submenu > summary { list-style: none; cursor: pointer; }
-.action-menu-submenu > summary::-webkit-details-marker { display: none; }
-.action-menu-submenu.disabled > summary { opacity: .45; cursor: not-allowed; }
+.flyout-menu { min-width: 0; }
+.flyout-menu-trigger { min-height: 27px; }
+.flyout-menu-trigger:hover:not(:disabled) { background: #3a3a3a; }
+.flyout-menu.disabled .flyout-menu-trigger { opacity: .45; cursor: not-allowed; }
 .submenu-caret { flex: 0 0 auto; color: #999; }
-.action-menu-submenu-items { display: grid; max-height: 155px; overflow: auto; margin: 1px 0 3px 8px; padding-left: 5px; border-left: 1px solid #4a4a4a; }
+.flyout-menu-popup { position: fixed; z-index: 45; width: max-content; min-width: 220px; max-width: min(320px, calc(100vw - 16px)); max-height: min(48vh, 340px); overflow: auto; display: grid; align-content: start; gap: 1px; padding: 4px; border: 1px solid #555; background: #292929; box-shadow: 0 5px 18px #0009; }
+.flyout-menu-popup.context-submenu-list { width: 230px; max-width: calc(100vw - 16px); }
+.flyout-menu-popup .action-menu-item { width: 100%; }
+.flyout-menu-popup .action-menu-separator { width: auto; }
+.flyout-menu-popup .context-separator { width: auto; }
+.context-flyout-trigger { min-height: 26px; padding: 3px 8px; }
 .selection-summary { display: inline-flex; align-items: center; gap: 3px; margin-left: 2px; padding-left: 7px; color: #cddfed; border-left: 1px solid #454545; white-space: nowrap; font-size: 10px; }
 .selection-summary strong { font-weight: 500; }
 .selection-clear { width: 20px; height: 22px; padding: 0; color: #aaa; border: 0; background: transparent; font-size: 15px; }
@@ -265,13 +270,8 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .inline-error { color: #e38b8b; font-size: 11px; }
 .context-menu { position: fixed; z-index: 30; width: 244px; max-height: min(420px, calc(100vh - 16px)); overflow-y: auto; display: grid; align-content: start; gap: 1px; padding: 4px; border: 1px solid #555; background: #292929; box-shadow: 0 5px 20px #0008; }
 .context-heading { overflow: hidden; padding: 5px 7px; color: #a9cce5; border-bottom: 1px solid #454545; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
-.context-menu button, .context-submenu > summary { min-height: 26px; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 3px 8px; color: #ddd; border: 0; background: transparent; text-align: left; white-space: normal; font-size: 11px; cursor: pointer; }
+.context-menu button { min-height: 26px; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 3px 8px; color: #ddd; border: 0; background: transparent; text-align: left; white-space: normal; font-size: 11px; cursor: pointer; }
 .context-menu button.danger-text { color: #e18b8b; }
-.context-menu details > summary { list-style: none; }
-.context-menu details > summary::-webkit-details-marker { display: none; }
-.context-submenu { position: relative; }
-.context-submenu-list { max-height: min(180px, 35vh); overflow: auto; display: grid; gap: 1px; margin: 1px 0 3px 8px; padding: 1px 0 1px 5px; border-left: 1px solid #4a4a4a; }
-.context-menu .context-submenu-list button { width: 100%; }
 .context-separator { width: auto; }
 
 @media (max-width: 1120px) {
