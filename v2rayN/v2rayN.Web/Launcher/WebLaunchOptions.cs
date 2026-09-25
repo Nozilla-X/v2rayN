@@ -2,6 +2,7 @@ namespace v2rayN.Web.Launcher;
 
 public enum WebLaunchMode
 {
+    Stop,
     Foreground,
     BackgroundLauncher,
     BackgroundChild,
@@ -9,6 +10,7 @@ public enum WebLaunchMode
 
 public sealed record WebLaunchOptions(WebLaunchMode Mode, bool NoOpen, string[] HostArguments)
 {
+    public const string StopFlag = "--stop";
     public const string ForegroundFlag = "--foreground";
     public const string BackgroundFlag = "--background";
     public const string NoOpenFlag = "--no-open";
@@ -20,18 +22,21 @@ public sealed record WebLaunchOptions(WebLaunchMode Mode, bool NoOpen, string[] 
         bool daemonEnvironment,
         bool containerEnvironment)
     {
-        var mode = arguments.Contains(BackgroundChildFlag, StringComparer.Ordinal)
-            ? WebLaunchMode.BackgroundChild
-            : arguments.Contains(ForegroundFlag, StringComparer.Ordinal)
-                ? WebLaunchMode.Foreground
-                : arguments.Contains(BackgroundFlag, StringComparer.Ordinal)
-                    ? WebLaunchMode.BackgroundLauncher
-                    : isLinux && !daemonEnvironment && !containerEnvironment
+        var mode = arguments.Contains(StopFlag, StringComparer.Ordinal)
+            ? WebLaunchMode.Stop
+            : arguments.Contains(BackgroundChildFlag, StringComparer.Ordinal)
+                ? WebLaunchMode.BackgroundChild
+                : arguments.Contains(ForegroundFlag, StringComparer.Ordinal)
+                    ? WebLaunchMode.Foreground
+                    : arguments.Contains(BackgroundFlag, StringComparer.Ordinal)
                         ? WebLaunchMode.BackgroundLauncher
-                        : WebLaunchMode.Foreground;
+                        : isLinux && !daemonEnvironment && !containerEnvironment
+                            ? WebLaunchMode.BackgroundLauncher
+                            : WebLaunchMode.Foreground;
 
         var hostArguments = arguments
-            .Where(argument => argument is not ForegroundFlag
+            .Where(argument => argument is not StopFlag
+                and not ForegroundFlag
                 and not BackgroundFlag
                 and not NoOpenFlag
                 and not BackgroundChildFlag)
@@ -88,10 +93,25 @@ public static class LauncherMessages
             : LauncherLocale.English;
     }
 
-    public static string Started(string url, LauncherLocale locale) => Format("started", locale, url);
+    public static string Started(string url, string command, LauncherLocale locale) =>
+        Format("started", locale, url, command);
 
-    public static string AlreadyRunning(string url, bool browserOpened, LauncherLocale locale) =>
-        Format(browserOpened ? "alreadyRunningOpening" : "alreadyRunning", locale, url);
+    public static string AlreadyRunning(string url, string command, bool browserOpened, LauncherLocale locale) =>
+        Format(browserOpened ? "alreadyRunningOpening" : "alreadyRunning", locale, url, command);
+
+    public static string ForegroundStarted(string url, LauncherLocale locale) => Format("foregroundStarted", locale, url);
+
+    public static string StopMessage(WebStopResult result, LauncherLocale locale) => Get(result switch
+    {
+        WebStopResult.NotRunning => "stopNotRunning",
+        WebStopResult.Stopped => "stopSucceeded",
+        WebStopResult.IdentityUnverified => "stopIdentityUnverified",
+        WebStopResult.SignalFailed => "stopSignalFailed",
+        WebStopResult.TimedOut => "stopTimedOut",
+        _ => throw new ArgumentOutOfRangeException(nameof(result)),
+    }, locale);
+
+    public static string StopUnsupported(LauncherLocale locale) => Get("stopUnsupported", locale);
 
     public static string StartFailed(LauncherLocale locale) => Get("startFailed", locale);
 
@@ -99,8 +119,22 @@ public static class LauncherMessages
 
     public static string InstanceInUse(LauncherLocale locale) => Get("instanceInUse", locale);
 
-    private static string Format(string key, LauncherLocale locale, string url) =>
-        Get(key, locale).Replace("{url}", url, StringComparison.Ordinal);
+    public static string ExecutableCommand(string executablePath, string? managedEntryPoint = null)
+    {
+        if (Path.GetFileNameWithoutExtension(executablePath).Equals("dotnet", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(managedEntryPoint)
+            && managedEntryPoint.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"\"{executablePath}\" \"{Path.GetFullPath(managedEntryPoint)}\"";
+        }
+
+        return $"./{Path.GetFileName(executablePath)}";
+    }
+
+    private static string Format(string key, LauncherLocale locale, string url, string? command = null) =>
+        Get(key, locale)
+            .Replace("{url}", url, StringComparison.Ordinal)
+            .Replace("{command}", command ?? string.Empty, StringComparison.Ordinal);
 
     private static string Get(string key, LauncherLocale locale)
     {

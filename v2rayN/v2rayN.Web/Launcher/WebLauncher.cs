@@ -172,6 +172,8 @@ public sealed class WebLauncher
         bool noOpen,
         CancellationToken cancellationToken = default)
     {
+        var commandLine = Environment.GetCommandLineArgs();
+        var launcherCommand = LauncherMessages.ExecutableCommand(executablePath, commandLine.FirstOrDefault());
         try
         {
             var existing = await ExistingInstanceHandler.TryReuseAsync(
@@ -185,7 +187,11 @@ public sealed class WebLauncher
                     cancellationToken);
             if (existing.Existing)
             {
-                Print(LauncherMessages.AlreadyRunning(webUiUri.ToString(), existing.BrowserOpened, _locale));
+                Print(LauncherMessages.AlreadyRunning(
+                    webUiUri.ToString(),
+                    launcherCommand,
+                    existing.BrowserOpened,
+                    _locale));
                 return 0;
             }
         }
@@ -216,11 +222,18 @@ public sealed class WebLauncher
                 var opened = !noOpen && _browserOpener.TryOpen(webUiUri);
                 if (ownerProcessId.Value == child.Id)
                 {
-                    Print(LauncherMessages.Started(webUiUri.ToString(), _locale));
+                    Print(LauncherMessages.Started(
+                        webUiUri.ToString(),
+                        launcherCommand,
+                        _locale));
                     return 0;
                 }
 
-                Print(LauncherMessages.AlreadyRunning(webUiUri.ToString(), opened, _locale));
+                Print(LauncherMessages.AlreadyRunning(
+                    webUiUri.ToString(),
+                    launcherCommand,
+                    opened,
+                    _locale));
                 return 0;
             }
 
@@ -231,7 +244,11 @@ public sealed class WebLauncher
                     && health.IsHealthy && health.InstanceProcessId == ownerProcessId)
                 {
                     var opened = !noOpen && _browserOpener.TryOpen(webUiUri);
-                    Print(LauncherMessages.AlreadyRunning(webUiUri.ToString(), opened, _locale));
+                    Print(LauncherMessages.AlreadyRunning(
+                        webUiUri.ToString(),
+                        launcherCommand,
+                        opened,
+                        _locale));
                     return 0;
                 }
 

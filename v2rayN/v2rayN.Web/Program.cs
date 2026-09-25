@@ -18,11 +18,29 @@ internal static class Program
     {
         PrepareDataScope();
 
+        var environment = ReadEnvironment();
+        var daemonEnvironment = LauncherEnvironment.IsDaemonEnvironment(environment);
+        var containerEnvironment = IsContainerEnvironment();
         var launchOptions = WebLaunchOptions.Parse(
             args,
             OperatingSystem.IsLinux(),
-            LauncherEnvironment.IsDaemonEnvironment(ReadEnvironment()),
-            IsContainerEnvironment());
+            daemonEnvironment,
+            containerEnvironment);
+
+        if (launchOptions.Mode == WebLaunchMode.Stop)
+        {
+            if (!OperatingSystem.IsLinux())
+            {
+                Console.Error.WriteLine(LauncherMessages.StopUnsupported(GetLauncherLocale()));
+                return 1;
+            }
+
+            var (stopHealthUri, _) = GetLauncherUris(launchOptions.HostArguments);
+            var stopper = new WebStopper(new HttpWebHealthProbe(), new LinuxProcessSignalSender());
+            var result = await stopper.StopAsync(GetInstanceLockPath(), stopHealthUri);
+            Console.Out.WriteLine(LauncherMessages.StopMessage(result, GetLauncherLocale()));
+            return result is WebStopResult.NotRunning or WebStopResult.Stopped ? 0 : 1;
+        }
 
         if (launchOptions.Mode == WebLaunchMode.BackgroundLauncher)
         {
@@ -70,11 +88,15 @@ internal static class Program
 
         using (instanceLock)
         {
-            return await RunWebHostAsync(launchOptions.HostArguments);
+            var showForegroundPrompt = launchOptions.Mode == WebLaunchMode.Foreground
+                && args.Contains(WebLaunchOptions.ForegroundFlag, StringComparer.Ordinal)
+                && !daemonEnvironment
+                && !containerEnvironment;
+            return await RunWebHostAsync(launchOptions.HostArguments, showForegroundPrompt);
         }
     }
 
-    private static async Task<int> RunWebHostAsync(string[] args)
+    private static async Task<int> RunWebHostAsync(string[] args, bool showForegroundPrompt)
     {
         var configPath = Utils.GetConfigPath("web-auth.json");
         var webAuth = new WebAuthService(configPath, Environment.GetEnvironmentVariable(ManagementKeyEnvironmentVariable));
@@ -187,6 +209,13 @@ internal static class Program
         app.UseDefaultFiles();
         app.UseStaticFiles();
         app.MapFallbackToFile("index.html");
+
+        if (showForegroundPrompt)
+        {
+            var (_, webUiUri) = GetLauncherUris(args);
+            app.Lifetime.ApplicationStarted.Register(() =>
+                Console.Out.WriteLine(LauncherMessages.ForegroundStarted(webUiUri.ToString(), GetLauncherLocale())));
+        }
 
         await app.RunAsync();
         return 0;

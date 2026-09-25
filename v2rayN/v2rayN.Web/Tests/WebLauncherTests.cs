@@ -5,6 +5,19 @@ namespace v2rayN.Web.Tests;
 public class WebLauncherTests
 {
     [Test]
+    public async Task StopFlagSelectsStopModeAndIsNotForwardedToHost()
+    {
+        var options = WebLaunchOptions.Parse(
+            ["--stop", "--foreground", "--background", "--urls", "http://127.0.0.1:5090"],
+            isLinux: true,
+            daemonEnvironment: false,
+            containerEnvironment: false);
+
+        await (options.Mode == WebLaunchMode.Stop).Should().BeTrue();
+        await options.HostArguments.SequenceEqual(["--urls", "http://127.0.0.1:5090"]).Should().BeTrue();
+    }
+
+    [Test]
     public async Task ForegroundFlagAlwaysSelectsForegroundMode()
     {
         var options = WebLaunchOptions.Parse(["--foreground"], isLinux: true, daemonEnvironment: false, containerEnvironment: false);
@@ -140,6 +153,109 @@ public class WebLauncherTests
     }
 
     [Test]
+    public async Task StopTreatsAnUnlockedStaleLockAsAlreadyStopped()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        using var directory = new TemporaryDirectory();
+        var lockPath = Path.Combine(directory.Path, "instance.lock");
+        await File.WriteAllTextAsync(lockPath, "123\n");
+        var signals = new FakeSignalSender();
+        var stopper = new WebStopper(new FakeHealthProbe(true, 123), signals);
+
+        var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
+
+        await (result == WebStopResult.NotRunning).Should().BeTrue();
+        await (signals.ProcessIds.Count == 0).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task StopSendsOneSigTermToVerifiedOwnerAndWaitsForLockRelease()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        using var directory = new TemporaryDirectory();
+        var lockPath = Path.Combine(directory.Path, "instance.lock");
+        var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        using (heldLock)
+        {
+            var signals = new FakeSignalSender();
+            var health = new FakeHealthProbe(true, 123);
+            signals.OnSignal = processId =>
+            {
+                _ = ReleaseLockAfterDelayAsync(heldLock, health);
+            };
+            var stopper = new WebStopper(
+                health,
+                signals,
+                stopTimeout: TimeSpan.FromMilliseconds(500),
+                pollInterval: TimeSpan.FromMilliseconds(10));
+
+            var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
+
+            await (result == WebStopResult.Stopped).Should().BeTrue();
+            await signals.ProcessIds.SequenceEqual([123]).Should().BeTrue();
+            await (health.ProbeCount >= 2).Should().BeTrue();
+        }
+    }
+
+    [Test]
+    public async Task StopNeverSignalsWhenHealthPidDoesNotMatchLockOwner()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        using var directory = new TemporaryDirectory();
+        var lockPath = Path.Combine(directory.Path, "instance.lock");
+        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        var signals = new FakeSignalSender();
+        var stopper = new WebStopper(new FakeHealthProbe(true, 456), signals);
+
+        var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
+
+        await (result == WebStopResult.IdentityUnverified).Should().BeTrue();
+        await (signals.ProcessIds.Count == 0).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task StopNeverSignalsWhenHealthCannotConfirmTheInstance()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        using var directory = new TemporaryDirectory();
+        var lockPath = Path.Combine(directory.Path, "instance.lock");
+        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        var signals = new FakeSignalSender();
+        var stopper = new WebStopper(new FakeHealthProbe(false, 123), signals);
+
+        var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
+
+        await (result == WebStopResult.IdentityUnverified).Should().BeTrue();
+        await (signals.ProcessIds.Count == 0).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task StopTimesOutWithoutEscalatingBeyondOneSigTerm()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        using var directory = new TemporaryDirectory();
+        var lockPath = Path.Combine(directory.Path, "instance.lock");
+        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        var signals = new FakeSignalSender();
+        var stopper = new WebStopper(
+            new FakeHealthProbe(true, 123),
+            signals,
+            stopTimeout: TimeSpan.FromMilliseconds(60),
+            pollInterval: TimeSpan.FromMilliseconds(5));
+
+        var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
+
+        await (result == WebStopResult.TimedOut).Should().BeTrue();
+        await signals.ProcessIds.SequenceEqual([123]).Should().BeTrue();
+        await WebInstanceLock.IsHeld(lockPath).Should().BeTrue();
+    }
+
+    [Test]
     public async Task LockIsReleasedWhenOwnerExitsAndDataHomesUseDistinctLocks()
     {
         if (!OperatingSystem.IsLinux()) return;
@@ -163,20 +279,81 @@ public class WebLauncherTests
     [Test]
     public async Task LauncherMessagesUseTheSharedLocaleResources()
     {
-        var chinese = LauncherMessages.Started("http://127.0.0.1:5080", LauncherLocale.SimplifiedChinese);
-        var english = LauncherMessages.Started("http://127.0.0.1:5080", LauncherLocale.English);
+        var command = LauncherMessages.ExecutableCommand("/opt/v2rayn/v2rayN.Web");
+        var chinese = LauncherMessages.Started("http://127.0.0.1:5080", command, LauncherLocale.SimplifiedChinese);
+        var english = LauncherMessages.Started("http://127.0.0.1:5080", command, LauncherLocale.English);
 
         await chinese.Contains("管理页面", StringComparison.Ordinal).Should().BeTrue();
+        await chinese.Contains("Ctrl+C 不会停止", StringComparison.Ordinal).Should().BeTrue();
+        await chinese.Contains("./v2rayN.Web --stop", StringComparison.Ordinal).Should().BeTrue();
+        await LauncherMessages.AlreadyRunning("http://127.0.0.1:5080", command, false, LauncherLocale.TraditionalChinese)
+            .Contains("--stop", StringComparison.Ordinal).Should().BeTrue();
+        await (LauncherMessages.Started("http://127.0.0.1:5080", command, LauncherLocale.TraditionalChinese)
+            .Contains("--stop", StringComparison.Ordinal)).Should().BeTrue();
         await english.Contains("Web UI", StringComparison.Ordinal).Should().BeTrue();
+        await LauncherMessages.ForegroundStarted("http://127.0.0.1:5080", LauncherLocale.English)
+            .Contains("Ctrl+C", StringComparison.Ordinal).Should().BeTrue();
+        await (LauncherMessages.StopMessage(WebStopResult.NotRunning, LauncherLocale.English)
+            == "v2rayN Web is not running for this data directory.").Should().BeTrue();
+        await LauncherMessages.StopMessage(WebStopResult.NotRunning, LauncherLocale.SimplifiedChinese)
+            .Contains("数据目录", StringComparison.Ordinal).Should().BeTrue();
+        await LauncherMessages.StopMessage(WebStopResult.NotRunning, LauncherLocale.TraditionalChinese)
+            .Contains("資料目錄", StringComparison.Ordinal).Should().BeTrue();
+        await (LauncherMessages.ExecutableCommand("/usr/share/dotnet/dotnet", "/opt/v2rayn/v2rayN.Web.dll")
+            == "\"/usr/share/dotnet/dotnet\" \"/opt/v2rayn/v2rayN.Web.dll\"").Should().BeTrue();
         await (LauncherMessages.ResolveLocale("zh_Hant_TW") == LauncherLocale.TraditionalChinese).Should().BeTrue();
         await (LauncherMessages.ResolveLocale("zh_CN.UTF-8") == LauncherLocale.SimplifiedChinese).Should().BeTrue();
         await (LauncherMessages.ResolveLocale("fr_FR.UTF-8") == LauncherLocale.English).Should().BeTrue();
     }
 
+    private static async Task<WebInstanceLock> AcquireLockWithOwnerAsync(string lockPath, int ownerProcessId)
+    {
+        await File.WriteAllTextAsync(lockPath, $"{ownerProcessId}\n");
+        await WebInstanceLock.TryAcquire(lockPath, writeOwner: false, out var heldLock).Should().BeTrue();
+        return heldLock!;
+    }
+
+    private static async Task ReleaseLockAfterDelayAsync(WebInstanceLock heldLock, FakeHealthProbe health)
+    {
+        await Task.Delay(40);
+        heldLock.Dispose();
+        health.SetResult(false, null);
+    }
+
     private sealed class FakeHealthProbe(bool healthy, int? processId = null) : IWebHealthProbe
     {
+        private bool _healthy = healthy;
+        private int? _processId = processId;
+
+        public int ProbeCount { get; private set; }
+
         public Task<WebHealthProbeResult> ProbeAsync(Uri healthUri, CancellationToken cancellationToken) =>
-            Task.FromResult(new WebHealthProbeResult(healthy, processId));
+            RecordProbe();
+
+        public void SetResult(bool isHealthy, int? instanceProcessId)
+        {
+            _healthy = isHealthy;
+            _processId = instanceProcessId;
+        }
+
+        private Task<WebHealthProbeResult> RecordProbe()
+        {
+            ProbeCount++;
+            return Task.FromResult(new WebHealthProbeResult(_healthy, _processId));
+        }
+    }
+
+    private sealed class FakeSignalSender : IProcessSignalSender
+    {
+        public List<int> ProcessIds { get; } = [];
+        public Action<int>? OnSignal { get; set; }
+
+        public bool SendSigTerm(int processId)
+        {
+            ProcessIds.Add(processId);
+            OnSignal?.Invoke(processId);
+            return true;
+        }
     }
 
     private sealed class FakeBrowserOpener : IBrowserOpener
