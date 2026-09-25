@@ -297,6 +297,27 @@ public static class WebApiEndpoints
             {
                 await WriteUnauthorizedSseResponseAsync(context);
             }
+            finally
+            {
+                // Task.WhenAny can leave either asynchronous wait pending when the stream is revoked.
+                // Cancel and drain both before disposing the async iterator and timer.
+                linkedCancellation.Cancel();
+                try
+                {
+                    await nextEvent;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                try
+                {
+                    await nextHeartbeat;
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
         });
     }
 
