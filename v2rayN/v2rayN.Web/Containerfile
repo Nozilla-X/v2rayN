@@ -1,4 +1,6 @@
-FROM docker.io/library/node:22-bookworm-slim AS webui
+ARG RID=linux-x64
+
+FROM --platform=$BUILDPLATFORM docker.io/library/node:22-bookworm-slim AS webui
 WORKDIR /src
 COPY v2rayN/v2rayN.Web/WebUI/package.json v2rayN/v2rayN.Web/WebUI/package-lock.json ./v2rayN/v2rayN.Web/WebUI/
 COPY v2rayN/v2rayN.Web/Contracts/ApiModels.cs ./v2rayN/v2rayN.Web/Contracts/ApiModels.cs
@@ -6,23 +8,31 @@ RUN npm ci --prefix v2rayN/v2rayN.Web/WebUI
 COPY v2rayN/v2rayN.Web/WebUI/ ./v2rayN/v2rayN.Web/WebUI/
 RUN npm run build --prefix v2rayN/v2rayN.Web/WebUI
 
-FROM mcr.microsoft.com/dotnet/sdk:10.0 AS publish
-ARG RID=linux-x64
+FROM --platform=$BUILDPLATFORM docker.io/library/alpine:3.22 AS core-assets
+ARG RID
+RUN apk add --no-cache ca-certificates curl unzip
+COPY v2rayN/v2rayN.Web/scripts/fetch-core-bundle.sh /usr/local/bin/fetch-core-bundle
+RUN sh /usr/local/bin/fetch-core-bundle "$RID" /out/bin
+
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS publish
+ARG RID
 WORKDIR /src
 COPY v2rayN/ ./v2rayN/
 RUN NUGET_PACKAGES=/src/.packages/nuget dotnet publish v2rayN/v2rayN.Web/v2rayN.Web.csproj \
     --configuration Release \
-    --runtime ${RID} \
+    --runtime "$RID" \
     --self-contained true \
     -p:PublishSingleFile=true \
     -p:IncludeNativeLibrariesForSelfExtract=true \
-    --output /out
+    --output /out \
+    && mkdir -p /runtime-data
 COPY --from=webui /src/v2rayN/v2rayN.Web/WebUI/dist/ /out/wwwroot/
+COPY --from=core-assets /out/bin/ /out/bin/
 
 FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS runtime
 WORKDIR /app
-RUN mkdir -p /data && chown 10001:10001 /data
 COPY --from=publish --chown=10001:10001 /out/ ./
+COPY --from=publish --chown=10001:10001 /runtime-data/ /data/
 ENV ASPNETCORE_URLS=http://0.0.0.0:5080 \
     V2RAYN_DATA_HOME=/data \
     DOTNET_BUNDLE_EXTRACT_BASE_DIR=/data/.net-bundle \

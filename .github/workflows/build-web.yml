@@ -98,6 +98,11 @@ jobs:
           RID: ${{ matrix.rid }}
         run: bash v2rayN/v2rayN.Web/scripts/publish-native.sh "$RID"
 
+      - name: Integrate original Linux Core bundle
+        env:
+          RID: ${{ matrix.rid }}
+        run: sh v2rayN/v2rayN.Web/scripts/fetch-core-bundle.sh "$RID" "v2rayN/v2rayN.Web/publish/$RID/bin"
+
       - name: Package native artifact
         env:
           RID: ${{ matrix.rid }}
@@ -107,12 +112,19 @@ jobs:
           publish_dir="v2rayN/v2rayN.Web/publish/$RID"
           test -x "$publish_dir/v2rayN.Web"
           test -f "$publish_dir/wwwroot/index.html"
+          test -x "$publish_dir/bin/xray/xray"
+          test -x "$publish_dir/bin/sing_box/sing-box"
+          test -x "$publish_dir/bin/mihomo/mihomo"
+          test -f "$publish_dir/bin/sing_box/libcronet.so"
+          test -s "$publish_dir/bin/geosite.dat"
+          test -s "$publish_dir/bin/geoip.dat"
+          test -s "$publish_dir/bin/geoip.metadb"
+          test -s "$publish_dir/bin/Country.mmdb"
+          test -s "$publish_dir/bin/srss/geosite-category-ads-all.srs"
 
-          xray_file="$(find "$publish_dir" -type f -iname '*xray*' -print -quit)"
-          if [[ -n "$xray_file" ]]; then
-            echo "Unexpected Xray Core file in native publish: $xray_file" >&2
-            exit 1
-          fi
+          "$publish_dir/bin/xray/xray" -version
+          "$publish_dir/bin/sing_box/sing-box" version
+          "$publish_dir/bin/mihomo/mihomo" -v
 
           mkdir -p dist
           archive="$GITHUB_WORKSPACE/dist/v2rayN.Web-$RID.tar.gz"
@@ -129,7 +141,15 @@ jobs:
           if-no-files-found: error
 
   container:
-    name: Verify Containerfile build
+    name: Verify Containerfile (${{ matrix.rid }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            platform: linux/amd64
+          - rid: linux-arm64
+            platform: linux/arm64
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -142,8 +162,13 @@ jobs:
 
       - name: Build Containerfile (no push)
         uses: docker/build-push-action@v6
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           file: ./v2rayN/v2rayN.Web/Containerfile
+          platforms: ${{ matrix.platform }}
           tags: v2rayn-web:ci
+          build-args: |
+            RID=${{ matrix.rid }}
           push: false

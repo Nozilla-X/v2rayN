@@ -3,6 +3,8 @@ services:
     build:
       context: ../..
       dockerfile: v2rayN/v2rayN.Web/Containerfile
+      args:
+        RID: ${V2RAYN_BUILD_RID:-linux-x64}
     image: localhost/v2rayn-web:latest
     restart: unless-stopped
     environment:
@@ -18,7 +20,6 @@ services:
       - "127.0.0.1:${V2RAYN_PROXY_PORT:-10808}:${V2RAYN_PROXY_PORT:-10808}/udp"
     volumes:
       - v2rayn-data:/data
-      - ./core-bin:/app/bin:ro
 
 volumes:
   v2rayn-data:

@@ -13,12 +13,21 @@ bash scripts/publish-native.sh linux-x64
 # or: bash scripts/publish-native.sh linux-arm64
 ```
 
-NuGet packages are restored into the repository's `.packages/nuget`; npm packages stay in `WebUI/node_modules` and the npm cache defaults to `.packages/npm-cache`. The publish output is self-contained and includes the built `wwwroot` frontend:
+NuGet packages are restored into the repository's `.packages/nuget`; npm packages stay in `WebUI/node_modules` and the npm cache defaults to `.packages/npm-cache`. The local publish output is self-contained and includes the built `wwwroot` frontend. GitHub's downloadable native artifacts and the Containerfile additionally include the same official Linux Core bundle used by original v2rayN Linux ZIP releases:
 
 ```bash
 cd publish/linux-x64
 ./v2rayN.Web
 ```
+
+To make a local native publish equivalent to the downloadable GitHub artifact, fetch the matching architecture's Core bundle into its `bin/` directory:
+
+```bash
+sh scripts/fetch-core-bundle.sh linux-x64 publish/linux-x64/bin
+# or: sh scripts/fetch-core-bundle.sh linux-arm64 publish/linux-arm64/bin
+```
+
+The bundle contains Xray, sing-box (including `libcronet.so`), Mihomo, geo databases, and the upstream sing-box `.srs` rule sets.
 
 On Linux, running the native binary directly starts a detached backend, waits for its health endpoint, and opens the WebUI when a desktop session is available. On first run, set a management key in the WebUI. Use `./v2rayN.Web --foreground` for development/debugging; `--background` explicitly selects launcher mode and `--no-open` keeps it from opening a browser. The launcher uses a per-data-directory OS lock, so a second launch opens the existing instance instead of starting another one.
 
@@ -34,12 +43,12 @@ Open `http://127.0.0.1:5080`. First Run setup or sign-in uses the Management Key
 
 Subscription interval scheduling is implemented in `Services/V2rayRuntime.Scheduling.cs`; the Web host does not register ServiceLib's desktop `TaskManager`. The Web runtime's `RuntimeMutationGate` serializes its shared configuration and SQLite mutations.
 
-A fresh Web publish contains the management layer but no proxy Core executable. From `v2rayN/v2rayN.Web/`, validate an official Xray release and copy it beside the native publish before enabling Core autostart:
+A fresh output from `scripts/publish-native.sh` is the Web application layer; the GitHub native artifacts and Containerfile add the matching upstream `v2rayN-core-bin` package. The Core files are placed under `bin/` beside the executable, as in the original Linux distribution. When `V2RAYN_DATA_HOME` is set, ServiceLib copies that bundled directory into the writable data home during initialization. Web currently exposes Xray and geodata update operations; including Mihomo and sing-box binaries does not add desktop-only Clash UI features.
+
+For local native publishes, fetch and stage the complete bundle before enabling Core autostart:
 
 ```bash
-bash scripts/bootstrap-xray.sh /path/to/Xray-linux-64.zip
-mkdir -p publish/linux-x64/bin
-cp -a core-bin/xray publish/linux-x64/bin/
+sh scripts/fetch-core-bundle.sh linux-x64 publish/linux-x64/bin
 ```
 
 ### Data and Core paths
@@ -100,12 +109,7 @@ podman compose -f v2rayN/v2rayN.Web/compose.yaml up -d --build
 
 The Compose example binds Web/API `5080` and proxy `10808` to host loopback by default and stores ServiceLib state in a named `/data` volume. Set `V2RAYN_WEB_PORT` or `V2RAYN_PROXY_PORT` to change published/container ports; for local testing beside a v2rayN instance on 10808, set `V2RAYN_PROXY_PORT=1145`. Both listeners are loopback-only from the host by default. No runtime Docker/Podman API or socket is used by the app.
 
-The compose file bind-mounts `./core-bin` at `/app/bin`; the image intentionally does not download a Core during build. Prepare an official Xray Linux release archive on a machine that can reach GitHub, then from `v2rayN/v2rayN.Web/` run:
-
-```bash
-bash scripts/bootstrap-xray.sh /path/to/Xray-linux-64.zip
-docker compose -f compose.yaml up -d --build
-```
+The Containerfile downloads and embeds the matching official Linux Core bundle at build time. The Node/.NET build stages run on the builder architecture and publish for `RID`; the final runtime image follows the target platform. The Compose file intentionally does not mount a host `core-bin` over `/app/bin`, which would hide the bundled files. The default is `linux-x64`; on an ARM64 host use `V2RAYN_BUILD_RID=linux-arm64 docker compose -f v2rayN/v2rayN.Web/compose.yaml up -d --build`, or pass `--build-arg RID=linux-arm64` with `--platform linux/arm64` to Buildx.
 
 ## API and feature map
 
