@@ -31,7 +31,7 @@ const { onModalKeydown } = useModalFocus(dialog)
         <fieldset class="editor-section"><legend>{{ t('subscriptions.filter') }}</legend>
           <div class="form-grid two-col">
             <label>{{ t('subscriptions.filter') }}<input v-model="state.subscriptionForm.filter" /></label>
-            <label>{{ t('subscriptions.convertTarget') }}<input v-model="state.subscriptionForm.convertTarget" /></label>
+            <label>{{ t('subscriptions.convertTarget') }}<select v-model="state.subscriptionForm.convertTarget"><option v-for="target in state.convertTargets" :key="target || 'none'" :value="target">{{ target || t('common.none') }}</option></select></label>
           </div>
         </fieldset>
 

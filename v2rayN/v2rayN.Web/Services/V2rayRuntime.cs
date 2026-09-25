@@ -743,7 +743,7 @@ public sealed partial class V2rayRuntime(
         UpdateTime = existing?.UpdateTime ?? 0,
         PrevProfile = input.PrevProfile ?? existing?.PrevProfile,
         NextProfile = input.NextProfile ?? existing?.NextProfile,
-        PreSocksPort = input.PreSocksPort ?? existing?.PreSocksPort,
+        PreSocksPort = input.PreSocksPort,
         CustomCoreType = input.CustomCoreType ?? existing?.CustomCoreType,
     };
 

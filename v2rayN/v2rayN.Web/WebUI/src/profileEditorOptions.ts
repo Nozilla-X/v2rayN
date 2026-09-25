@@ -16,6 +16,8 @@ export const profileEditorOptions = {
   grpcModes: ['gun', 'multi'],
   vmessSecurities: ['aes-128-gcm', 'chacha20-poly1305', 'auto', 'none', 'zero'],
   flows: ['', 'xtls-rprx-vision', 'xtls-rprx-vision-udp443'],
+  tuicCongestionControls: ['cubic', 'new_reno', 'bbr'],
+  naiveCongestionControls: ['bbr', 'bbr2', 'cubic', 'reno'],
   shadowsocksSecuritiesXray: [
     'aes-256-gcm', 'aes-128-gcm', 'chacha20-poly1305', 'chacha20-ietf-poly1305',
     'xchacha20-poly1305', 'xchacha20-ietf-poly1305', 'none', 'plain',
@@ -42,8 +44,9 @@ export function canonicalNetwork(value: unknown): string {
     : profileEditorOptions.defaultNetwork
 }
 
-export function shadowsocksSecurityOptions(coreType: unknown): readonly string[] {
-  const core = String(coreType ?? '').toLowerCase()
+export function shadowsocksSecurityOptions(coreType: unknown, mappedCoreType: unknown = 'Xray'): readonly string[] {
+  const selectedCore = String(coreType ?? '').trim()
+  const core = (selectedCore || String(mappedCoreType ?? 'Xray')).toLowerCase()
   if (core === 'v2fly') return profileEditorOptions.shadowsocksSecuritiesV2fly
   if (core === 'xray') return profileEditorOptions.shadowsocksSecuritiesXray
   return profileEditorOptions.shadowsocksSecuritiesSingbox

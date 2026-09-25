@@ -7,7 +7,7 @@ import UiIcon from '../UiIcon.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
-const props = defineProps<UiProps>()
+const props = defineProps<UiProps & { coreTypeMappings: Record<string, any>[] }>()
 const state = props.state
 const actions = props.actions
 const dialog = ref<HTMLElement | null>(null)
@@ -15,17 +15,118 @@ const { onModalKeydown } = useModalFocus(dialog)
 const protocol = computed(() => state.profileForm.configType)
 const isGroup = computed(() => ['PolicyGroup', 'ProxyChain'].includes(protocol.value))
 const singboxOnlyConfigTypes: readonly string[] = profileEditorOptions.singboxOnlyConfigTypes
-watch(() => [state.showProfileForm, protocol.value] as const, ([isOpen, configType]) => {
-  if (isOpen && singboxOnlyConfigTypes.includes(configType)) state.profileForm.coreType = 'sing_box'
+const realityConfigTypes = ['VLESS', 'Trojan', 'Anytls']
+const transportlessConfigTypes = ['Hysteria2', 'TUIC', 'WireGuard', 'Anytls', 'Naive']
+const protocolExtraOwners: Record<string, string[]> = {
+  alterId: ['VMess'], vmessSecurity: ['VMess'], flow: ['VLESS', 'Trojan'], vlessEncryption: ['VLESS'],
+  ssMethod: ['Shadowsocks'], uot: ['Shadowsocks', 'Naive'], httpHeaders: ['HTTP'],
+  wgPublicKey: ['WireGuard'], wgPresharedKey: ['WireGuard'], wgInterfaceAddress: ['WireGuard'],
+  wgReserved: ['WireGuard'], wgMtu: ['WireGuard'], wgDns: ['WireGuard'],
+  salamanderPass: ['Hysteria2'], upMbps: ['Hysteria2'], downMbps: ['Hysteria2'], ports: ['Hysteria2'],
+  hopInterval: ['Hysteria2'], hy2RealmUrl: ['Hysteria2'], geckoMinPacketSize: ['Hysteria2'], geckoMaxPacketSize: ['Hysteria2'],
+  congestionControl: ['TUIC', 'Naive'], insecureConcurrency: ['Anytls', 'Naive'], naiveQuic: ['Naive'],
+}
+const transportExtraFields = ['rawHeaderType', 'host', 'path', 'xhttpMode', 'xhttpExtra', 'grpcAuthority', 'grpcServiceName', 'grpcMode', 'kcpHeaderType', 'kcpSeed', 'kcpMtu']
+const realityFields = ['publicKey', 'shortId', 'spiderX', 'mldsa65Verify']
+const wireGuardIncompatibleFields = ['streamSecurity', 'sni', 'alpn', 'fingerprint', ...realityFields, 'allowInsecure', 'cert', 'certSha', 'echConfigList', 'verifyPeerCertByName', 'finalmask']
+
+function parseObject(value: unknown): Record<string, any> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return { ...value }
+  if (typeof value !== 'string' || !value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch { return {} }
+}
+
+function removeKeys(target: Record<string, any>, keys: readonly string[]) {
+  for (const key of keys) delete target[key]
+}
+
+function canonicalizeProtocolChange(configType: string) {
+  const form = state.profileForm
+  let advanced: Record<string, any>
+  try { advanced = parseObject(JSON.parse(state.profileAdvancedJson || '{}')) } catch { return }
+  const protocolExtra = form.protoExtra || (form.protoExtra = {})
+  const advancedProtocolExtra = parseObject(advanced.protoExtra)
+
+  if (!realityConfigTypes.includes(configType) && String(form.streamSecurity).toLowerCase() === 'reality') {
+    form.streamSecurity = ''
+  }
+  if (configType === 'WireGuard') {
+    for (const field of wireGuardIncompatibleFields) form[field] = ''
+    form.allowInsecure = false
+    form.network = profileEditorOptions.defaultNetwork
+  }
+  if (['Hysteria2', 'Naive'].includes(configType)) {
+    form.alpn = ''
+    form.fingerprint = ''
+  } else if (configType === 'TUIC') {
+    form.fingerprint = ''
+  }
+  if (!realityConfigTypes.includes(configType) || String(form.streamSecurity).toLowerCase() !== 'reality') {
+    for (const field of realityFields) form[field] = ''
+  }
+  if (!['VMess', 'VLESS', 'Shadowsocks', 'Trojan'].includes(configType)) form.muxEnabled = null
+
+  for (const [field, owners] of Object.entries(protocolExtraOwners)) {
+    const allowed = owners.includes(configType)
+      && !(field === 'congestionControl' && configType === 'Naive' && protocolExtra.naiveQuic !== true)
+    if (!allowed) {
+      delete protocolExtra[field]
+      delete advancedProtocolExtra[field]
+    }
+  }
+
+  if (transportlessConfigTypes.includes(configType)) {
+    form.network = profileEditorOptions.defaultNetwork
+    removeKeys(form.transportExtra || {}, transportExtraFields)
+    advanced.network = profileEditorOptions.defaultNetwork
+    const advancedTransportExtra = parseObject(advanced.transportExtra)
+    removeKeys(advancedTransportExtra, transportExtraFields)
+    advanced.transportExtra = typeof advanced.transportExtra === 'string' ? JSON.stringify(advancedTransportExtra) : advancedTransportExtra
+    removeKeys(advanced, ['headerType', 'requestHost', 'path', 'extra'])
+  }
+
+  if (configType === 'WireGuard') {
+    for (const field of wireGuardIncompatibleFields) advanced[field] = ''
+  }
+  if (['Hysteria2', 'Naive'].includes(configType)) {
+    advanced.alpn = ''
+    advanced.fingerprint = ''
+  } else if (configType === 'TUIC') {
+    advanced.fingerprint = ''
+  }
+  if (!realityConfigTypes.includes(configType) || String(form.streamSecurity).toLowerCase() !== 'reality') {
+    for (const field of realityFields) advanced[field] = ''
+  }
+
+  advanced.configType = configType
+  advanced.protoExtra = typeof advanced.protoExtra === 'string' ? JSON.stringify(advancedProtocolExtra) : advancedProtocolExtra
+  form.protoExtra = protocolExtra
+  state.profileAdvancedJson = JSON.stringify(advanced, null, 2)
+}
+
+watch(() => [state.showProfileForm, protocol.value] as const, ([isOpen, configType], previous) => {
+  if (!isOpen) return
+  if (singboxOnlyConfigTypes.includes(configType)) state.profileForm.coreType = 'sing_box'
+  if (previous?.[0] && configType !== previous[1]) canonicalizeProtocolChange(configType)
 }, { immediate: true })
 const isTls = computed(() => ['tls', 'reality'].includes(String(state.profileForm.streamSecurity).toLowerCase()))
 const isReality = computed(() => String(state.profileForm.streamSecurity).toLowerCase() === 'reality')
 const supportsTransport = computed(() => !['Hysteria2', 'TUIC', 'WireGuard', 'Anytls', 'Naive'].includes(protocol.value))
 const streamSecurityOptions = computed(() => ['', 'tls', ...(['VLESS', 'Trojan', 'Anytls'].includes(protocol.value) ? ['reality'] : [])])
 const fingerprintDisabled = computed(() => ['Hysteria2', 'TUIC', 'Naive'].includes(protocol.value))
-const shadowsocksMethods = computed(() => shadowsocksSecurityOptions(state.profileForm.coreType))
+const alpnDisabled = computed(() => ['Hysteria2', 'Naive'].includes(protocol.value))
+const shadowsocksMappedCore = computed(() => props.coreTypeMappings.find((mapping) => String(mapping.configType).toLowerCase() === 'shadowsocks')?.coreType || 'Xray')
+const shadowsocksMethods = computed(() => shadowsocksSecurityOptions(state.profileForm.coreType, shadowsocksMappedCore.value))
 const transportOptions = profileEditorOptions
 const showRawHttpFields = computed(() => state.profileForm.network === 'raw' && state.profileForm.transportExtra.rawHeaderType === 'http')
+
+watch([() => state.showProfileForm, protocol, shadowsocksMethods], ([isOpen, configType, methods]) => {
+  if (!isOpen || configType !== 'Shadowsocks') return
+  if (!methods.includes(String(state.profileForm.protoExtra.ssMethod ?? ''))) state.profileForm.protoExtra.ssMethod = methods[0] || ''
+})
 </script>
 
 <template>
@@ -76,8 +177,8 @@ const showRawHttpFields = computed(() => state.profileForm.network === 'raw' && 
               <label v-if="protocol === 'VLESS'">{{ t('nodes.encryption') }}<input v-model="state.profileForm.protoExtra.vlessEncryption" /></label>
               <label v-if="protocol === 'Shadowsocks'">{{ t('nodes.method') }}<select v-model="state.profileForm.protoExtra.ssMethod" required><option v-for="method in shadowsocksMethods" :key="method" :value="method">{{ method }}</option></select></label>
               <label v-if="['Shadowsocks', 'Naive'].includes(protocol)" class="check-inline"><input v-model="state.profileForm.protoExtra.uot" type="checkbox" />{{ t('nodes.udpOverTcp') }}</label>
-              <label v-if="protocol === 'TUIC'">{{ t('nodes.congestionControl') }}<input v-model="state.profileForm.protoExtra.congestionControl" /></label>
-              <label v-if="protocol === 'Naive' && state.profileForm.protoExtra.naiveQuic">{{ t('nodes.congestionControl') }}<input v-model="state.profileForm.protoExtra.congestionControl" /></label>
+              <label v-if="protocol === 'TUIC'">{{ t('nodes.congestionControl') }}<select v-model="state.profileForm.protoExtra.congestionControl"><option v-for="control in transportOptions.tuicCongestionControls" :key="control" :value="control">{{ control }}</option></select></label>
+              <label v-if="protocol === 'Naive' && state.profileForm.protoExtra.naiveQuic">{{ t('nodes.congestionControl') }}<select v-model="state.profileForm.protoExtra.congestionControl"><option v-for="control in transportOptions.naiveCongestionControls" :key="control" :value="control">{{ control }}</option></select></label>
               <template v-if="protocol === 'Hysteria2'">
                 <label>{{ t('nodes.uploadBandwidth') }}<input v-model.number="state.profileForm.protoExtra.upMbps" type="number" min="0" /></label>
                 <label>{{ t('nodes.downloadBandwidth') }}<input v-model.number="state.profileForm.protoExtra.downMbps" type="number" min="0" /></label>
@@ -143,7 +244,7 @@ const showRawHttpFields = computed(() => state.profileForm.network === 'raw' && 
               <label>{{ t('nodes.streamSecurity') }}<select v-model="state.profileForm.streamSecurity"><option v-for="security in streamSecurityOptions" :key="security || 'none'" :value="security">{{ security === 'tls' ? 'TLS' : security === 'reality' ? 'Reality' : t('common.none') }}</option></select></label>
               <template v-if="isTls">
                 <label>{{ t('nodes.sni') }}<input v-model="state.profileForm.sni" /></label>
-                <label>{{ t('nodes.alpn') }}<select v-model="state.profileForm.alpn" :disabled="fingerprintDisabled"><option v-for="alpn in transportOptions.alpns" :key="alpn || 'none'" :value="alpn">{{ alpn || t('common.none') }}</option></select></label>
+                <label>{{ t('nodes.alpn') }}<select v-model="state.profileForm.alpn" :disabled="alpnDisabled"><option v-for="alpn in transportOptions.alpns" :key="alpn || 'none'" :value="alpn">{{ alpn || t('common.none') }}</option></select></label>
                 <label>{{ t('nodes.fingerprint') }}<select v-model="state.profileForm.fingerprint" :disabled="fingerprintDisabled"><option v-for="fingerprint in transportOptions.fingerprints" :key="fingerprint || 'none'" :value="fingerprint">{{ fingerprint || t('common.none') }}</option></select></label>
                 <label class="check-inline"><input v-model="state.profileForm.allowInsecure" type="checkbox" :disabled="protocol === 'Naive'" />{{ t('nodes.allowInsecure') }}</label>
               </template>

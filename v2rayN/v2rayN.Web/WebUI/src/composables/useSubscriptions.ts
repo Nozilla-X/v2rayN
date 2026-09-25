@@ -1,5 +1,6 @@
 import { reactive, ref, type Ref } from 'vue'
 import type { ApiServices, Dict, ErrorHandler, Notice, Translate } from './types'
+import { subscriptionEditorOptions } from '../subscriptionEditorOptions'
 
 export function useSubscriptions(options: ApiServices & {
   t: Translate
@@ -12,13 +13,14 @@ export function useSubscriptions(options: ApiServices & {
   loadProfiles: () => Promise<void>
   selectedGroup: Ref<string>
   groups: Ref<Dict[]>
-  coreTypes: string[]
 }) {
   const t = options.t
   const subscriptions = ref<Dict[]>([])
   const subscriptionUseProxy = ref(false)
   const subscriptionForm = ref<Dict>({})
   const profileOptions = ref<Dict[]>([])
+  const coreTypes: string[] = [...subscriptionEditorOptions.customCoreTypes]
+  const convertTargets: string[] = [...subscriptionEditorOptions.convertTargets]
   const showSubscriptionForm = ref(false)
   const editingSubscriptionId = ref('')
 
@@ -44,7 +46,13 @@ export function useSubscriptions(options: ApiServices & {
   function openEditSubscription(item: Dict) {
     void loadProfileOptions()
     editingSubscriptionId.value = item.id
-    subscriptionForm.value = { ...item, customCoreType: item.customCoreType ? options.canonicalCode(item.customCoreType, options.coreTypes) : null }
+    const customCoreType = options.canonicalCode(item.customCoreType, coreTypes)
+    const convertTarget = String(item.convertTarget ?? '')
+    subscriptionForm.value = {
+      ...item,
+      customCoreType: coreTypes.includes(customCoreType) ? customCoreType : null,
+      convertTarget: convertTargets.includes(convertTarget) ? convertTarget : '',
+    }
     showSubscriptionForm.value = true
   }
 
@@ -59,7 +67,13 @@ export function useSubscriptions(options: ApiServices & {
 
   async function saveSubscription() {
     try {
-      const body = { ...subscriptionForm.value, autoUpdateInterval: Number(subscriptionForm.value.autoUpdateInterval || 0), sort: Number(subscriptionForm.value.sort || 0) }
+      const preSocksPort = subscriptionForm.value.preSocksPort
+      const body = {
+        ...subscriptionForm.value,
+        autoUpdateInterval: Number(subscriptionForm.value.autoUpdateInterval || 0),
+        sort: Number(subscriptionForm.value.sort || 0),
+        preSocksPort: preSocksPort === '' || preSocksPort === undefined || preSocksPort === null ? null : Number(preSocksPort),
+      }
       const result = await options.request(editingSubscriptionId.value ? `/api/subscriptions/${encodeURIComponent(editingSubscriptionId.value)}` : '/api/subscriptions', {
         method: editingSubscriptionId.value ? 'PUT' : 'POST', body,
       })
@@ -111,7 +125,7 @@ export function useSubscriptions(options: ApiServices & {
   }
 
   const subscriptionsPageState = reactive({ subscriptions, subscriptionUseProxy, selectedGroup: options.selectedGroup })
-  const subscriptionModalState = reactive({ showSubscriptionForm, subscriptionForm, editingSubscriptionId, coreTypes: options.coreTypes, profileOptions })
+  const subscriptionModalState = reactive({ showSubscriptionForm, subscriptionForm, editingSubscriptionId, coreTypes, convertTargets, profileOptions })
 
   return {
     subscriptions, subscriptionUseProxy, showSubscriptionForm, loadSubscriptions, subscriptionsPageState, subscriptionModalState,

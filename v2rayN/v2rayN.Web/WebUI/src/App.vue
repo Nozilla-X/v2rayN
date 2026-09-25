@@ -121,7 +121,7 @@ const profiles = useProfiles({
 const subscriptions = useSubscriptions({
   ...api, t, locale, showNotice, showError, confirm: confirmDestructive,
   loadOperations: runtime.loadOperations, loadGroups: profiles.loadGroups, loadProfiles: profiles.loadProfiles,
-  selectedGroup: profiles.selectedGroup, groups: profiles.groups, coreTypes: profiles.coreTypes,
+  selectedGroup: profiles.selectedGroup, groups: profiles.groups,
 })
 const routing = useRouting({ ...api, t, showNotice, showError, confirm: confirmDestructive, loadStatus: runtime.loadStatus })
 const dns = useDns({ ...api, t, showNotice, showError })
@@ -440,6 +440,7 @@ const dnsPageState = dns.dnsPageState
 const dnsPageActions = dns.dnsPageActions
 const settingsPageState = settings.settingsPageState
 const settingsPageActions = settings.settingsPageActions
+const profileCoreTypeMappings = computed(() => settings.settings.value.coreTypes || [])
 const templatesPageState = templates.templatesPageState
 const templatesPageActions = templates.templatesPageActions
 const maintenancePageState = maintenance.maintenancePageState
@@ -597,7 +598,7 @@ function positionOpenContextMenu() {
       <button role="menuitem" :disabled="!nodesPageState.operations.includes('speedtest')" @click="nodesPageActions.stopSpeedTests">{{ t('nodes.stopTest') }}</button>
       <button role="menuitem" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportSelected">{{ t('nodes.customExport') }}…</button>
     </div>
-    <ProfileModal v-if="showProfileForm" :state="profileModalState" :actions="profileModalActions" />
+    <ProfileModal v-if="showProfileForm" :state="profileModalState" :actions="profileModalActions" :core-type-mappings="profileCoreTypeMappings" />
     <ImportProfilesModal v-if="showImportForm" :state="importProfilesModalState" :actions="importProfilesModalActions" />
     <SubscriptionModal v-if="showSubscriptionForm" :state="subscriptionModalState" :actions="subscriptionModalActions" />
     <RouteModal v-if="showRouteForm" :state="routeModalState" :actions="routeModalActions" />
