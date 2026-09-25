@@ -16,7 +16,7 @@ function flatten(value, prefix = '', output = new Set()) {
 
 const locales = new Map()
 for (const name of localeNames) {
-  const content = await readFile(path.join(webUiRoot, 'src', 'locales', `${name}.json`), 'utf8')
+  const content = await readFile(path.join(webUiRoot, 'Src', 'Locales', `${name}.json`), 'utf8')
   locales.set(name, flatten(JSON.parse(content)))
 }
 
@@ -32,13 +32,13 @@ for (const [name, keys] of locales) {
   if (apiNamespaces.length) errors.push(`${name}: legacy API translation namespaces [${apiNamespaces.join(', ')}]`)
 }
 
-const sourceRoot = path.join(webUiRoot, 'src')
-const composablesRoot = path.join(sourceRoot, 'composables')
+const sourceRoot = path.join(webUiRoot, 'Src')
+const composablesRoot = path.join(sourceRoot, 'Composables')
 const composableFiles = (await readdir(composablesRoot)).filter((file) => file.endsWith('.ts'))
 const uiSources = [
   ['App.vue', await readFile(path.join(sourceRoot, 'App.vue'), 'utf8')],
   ...await Promise.all(composableFiles.map(async (file) => [
-    path.join('composables', file), await readFile(path.join(composablesRoot, file), 'utf8'),
+    path.join('Composables', file), await readFile(path.join(composablesRoot, file), 'utf8'),
   ])),
 ]
 const uiKeys = new Set()

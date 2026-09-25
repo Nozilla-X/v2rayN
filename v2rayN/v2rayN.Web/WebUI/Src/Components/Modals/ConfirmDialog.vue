@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useModalFocus } from '../../composables/useModalFocus'
+import { useModalFocus } from '../../Composables/useModalFocus'
 
 defineProps<{ message: string }>()
 const emit = defineEmits<{ resolve: [confirmed: boolean] }>()

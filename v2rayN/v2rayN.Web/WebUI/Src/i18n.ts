@@ -1,7 +1,7 @@
 import { createI18n } from 'vue-i18n'
-import zhCN from './locales/zh-CN.json'
-import zhTW from './locales/zh-TW.json'
-import enUS from './locales/en-US.json'
+import zhCN from './Locales/zh-CN.json'
+import zhTW from './Locales/zh-TW.json'
+import enUS from './Locales/en-US.json'
 
 const savedLocale = localStorage.getItem('v2rayn-web-locale')
 const availableLocales = ['zh-CN', 'zh-TW', 'en-US'] as const

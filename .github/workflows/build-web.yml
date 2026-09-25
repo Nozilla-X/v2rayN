@@ -51,7 +51,7 @@ jobs:
           node-version: '22'
 
       - name: Verify frontend, tests, and native publish
-        run: bash v2rayN/v2rayN.Web/scripts/verify.sh "$RUNNER_TEMP/v2rayN.Web-verify"
+        run: bash v2rayN/v2rayN.Web/Scripts/verify.sh "$RUNNER_TEMP/v2rayN.Web-verify"
 
       - name: Check patch whitespace
         shell: bash
@@ -96,12 +96,12 @@ jobs:
       - name: Publish native Web app
         env:
           RID: ${{ matrix.rid }}
-        run: bash v2rayN/v2rayN.Web/scripts/publish-native.sh "$RID"
+        run: bash v2rayN/v2rayN.Web/Scripts/publish-native.sh "$RID"
 
       - name: Integrate original Linux Core bundle
         env:
           RID: ${{ matrix.rid }}
-        run: sh v2rayN/v2rayN.Web/scripts/fetch-core-bundle.sh "$RID" "v2rayN/v2rayN.Web/publish/$RID/bin"
+        run: sh v2rayN/v2rayN.Web/Scripts/fetch-core-bundle.sh "$RID" "v2rayN/v2rayN.Web/publish/$RID/bin"
 
       - name: Package native artifact
         env:

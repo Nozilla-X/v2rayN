@@ -13,9 +13,9 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="WebUI\src\locales\zh-CN.json" LogicalName="v2rayN.Web.Locales.zh-CN.json" />
-    <EmbeddedResource Include="WebUI\src\locales\zh-TW.json" LogicalName="v2rayN.Web.Locales.zh-TW.json" />
-    <EmbeddedResource Include="WebUI\src\locales\en-US.json" LogicalName="v2rayN.Web.Locales.en-US.json" />
+    <EmbeddedResource Include="WebUI\Src\Locales\zh-CN.json" LogicalName="v2rayN.Web.Locales.zh-CN.json" />
+    <EmbeddedResource Include="WebUI\Src\Locales\zh-TW.json" LogicalName="v2rayN.Web.Locales.zh-TW.json" />
+    <EmbeddedResource Include="WebUI\Src\Locales\en-US.json" LogicalName="v2rayN.Web.Locales.en-US.json" />
   </ItemGroup>
 
   <ItemGroup>

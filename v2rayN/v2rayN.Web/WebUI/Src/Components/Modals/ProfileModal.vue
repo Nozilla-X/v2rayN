@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useModalFocus } from '../../composables/useModalFocus'
+import { useModalFocus } from '../../Composables/useModalFocus'
 import { profileEditorOptions, shadowsocksSecurityOptions } from '../../profileEditorOptions'
 import UiIcon from '../UiIcon.vue'
 import type { UiProps } from '../types'
