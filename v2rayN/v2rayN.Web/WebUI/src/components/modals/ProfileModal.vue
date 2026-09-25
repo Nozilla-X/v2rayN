@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useModalFocus } from '../../composables/useModalFocus'
 import { profileEditorOptions, shadowsocksSecurityOptions } from '../../profileEditorOptions'
@@ -14,6 +14,10 @@ const dialog = ref<HTMLElement | null>(null)
 const { onModalKeydown } = useModalFocus(dialog)
 const protocol = computed(() => state.profileForm.configType)
 const isGroup = computed(() => ['PolicyGroup', 'ProxyChain'].includes(protocol.value))
+const singboxOnlyConfigTypes: readonly string[] = profileEditorOptions.singboxOnlyConfigTypes
+watch(() => [state.showProfileForm, protocol.value] as const, ([isOpen, configType]) => {
+  if (isOpen && singboxOnlyConfigTypes.includes(configType)) state.profileForm.coreType = 'sing_box'
+}, { immediate: true })
 const isTls = computed(() => ['tls', 'reality'].includes(String(state.profileForm.streamSecurity).toLowerCase()))
 const isReality = computed(() => String(state.profileForm.streamSecurity).toLowerCase() === 'reality')
 const supportsTransport = computed(() => !['Hysteria2', 'TUIC', 'WireGuard', 'Anytls', 'Naive'].includes(protocol.value))
@@ -37,7 +41,7 @@ const showRawHttpFields = computed(() => state.profileForm.network === 'raw' && 
           <legend>{{ t('nodes.profileBase') }}</legend>
           <div class="form-grid three-col">
             <label>{{ t('nodes.type') }}<select v-model="state.profileForm.configType"><option v-for="kind in state.protocolTypes" :key="kind" :value="kind">{{ kind === 'Anytls' ? 'AnyTLS' : kind }}</option><option value="PolicyGroup">PolicyGroup</option><option value="ProxyChain">ProxyChain</option></select></label>
-            <label>{{ t('nodes.coreType') }}<select v-model="state.profileForm.coreType" :disabled="['TUIC', 'Anytls', 'Naive'].includes(protocol)"><option v-for="core in state.coreTypes" :key="core" :value="core">{{ core === 'sing_box' ? 'sing-box' : core }}</option></select></label>
+            <label>{{ t('nodes.coreType') }}<select v-model="state.profileForm.coreType" :disabled="singboxOnlyConfigTypes.includes(protocol)"><option value="">{{ t('common.none') }}</option><option v-for="core in state.coreTypes" :key="core" :value="core">{{ core === 'sing_box' ? 'sing-box' : core }}</option></select></label>
             <label>{{ t('nodes.remarks') }}<input v-model="state.profileForm.remarks" required /></label>
             <template v-if="!isGroup">
               <label>{{ t('nodes.address') }}<input v-model="state.profileForm.address" required autocomplete="off" /></label>
@@ -68,7 +72,7 @@ const showRawHttpFields = computed(() => state.profileForm.network === 'raw' && 
               <label v-if="protocol === 'VMess'">{{ t('nodes.configVersion') }}<input v-model.number="state.profileForm.configVersion" type="number" min="1" /></label>
               <label v-if="protocol === 'VMess'">{{ t('nodes.alterId') }}<input v-model="state.profileForm.protoExtra.alterId" /></label>
               <label v-if="protocol === 'VMess'">{{ t('nodes.security') }}<select v-model="state.profileForm.protoExtra.vmessSecurity"><option v-for="security in transportOptions.vmessSecurities" :key="security" :value="security">{{ security }}</option></select></label>
-              <label v-if="protocol === 'VLESS'">{{ t('nodes.flow') }}<select v-model="state.profileForm.protoExtra.flow"><option v-for="flow in transportOptions.vlessFlows" :key="flow || 'none'" :value="flow">{{ flow || t('common.none') }}</option></select></label>
+              <label v-if="['VLESS', 'Trojan'].includes(protocol)">{{ t('nodes.flow') }}<select v-model="state.profileForm.protoExtra.flow"><option v-for="flow in transportOptions.flows" :key="flow || 'none'" :value="flow">{{ flow || t('common.none') }}</option></select></label>
               <label v-if="protocol === 'VLESS'">{{ t('nodes.encryption') }}<input v-model="state.profileForm.protoExtra.vlessEncryption" /></label>
               <label v-if="protocol === 'Shadowsocks'">{{ t('nodes.method') }}<select v-model="state.profileForm.protoExtra.ssMethod" required><option v-for="method in shadowsocksMethods" :key="method" :value="method">{{ method }}</option></select></label>
               <label v-if="['Shadowsocks', 'Naive'].includes(protocol)" class="check-inline"><input v-model="state.profileForm.protoExtra.uot" type="checkbox" />{{ t('nodes.udpOverTcp') }}</label>

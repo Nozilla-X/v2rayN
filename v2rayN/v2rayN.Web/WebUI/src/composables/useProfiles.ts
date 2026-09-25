@@ -35,7 +35,7 @@ export function useProfiles(options: ApiServices & {
   const profileModalError = ref('')
 
   const protocolTypes = ['VMess', 'VLESS', 'Shadowsocks', 'SOCKS', 'Trojan', 'Hysteria2', 'TUIC', 'WireGuard', 'HTTP', 'Anytls', 'Naive']
-  const coreTypes = ['Xray', 'sing_box', 'v2fly', 'v2fly_v5', 'mihomo', 'hysteria', 'naiveproxy', 'tuic', 'juicity', 'brook', 'overtls', 'shadowquic', 'mieru']
+  const coreTypes = [...profileEditorOptions.coreTypes]
   const testActions = [
     { id: 'tcping', key: 'nodes.tcping' },
     { id: 'realping', key: 'nodes.realping' },

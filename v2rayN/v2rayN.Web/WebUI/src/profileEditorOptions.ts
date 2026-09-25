@@ -1,10 +1,13 @@
 /**
  * Static profile-editor options mirrored from the current upstream source:
- * ServiceLib/Global.cs (networks, protocol/security/transport enums) and
+ * ServiceLib/Global.cs (core types, sing-box-only protocols, flows, networks,
+ * protocol/security/transport enums) and
  * ServiceLib/Manager/AppManager.cs:GetShadowsocksSecurities (core-specific methods).
  * Keep these mirrors centralized and re-check them against upstream when updating v2rayN.
  */
 export const profileEditorOptions = {
+  coreTypes: ['Xray', 'sing_box'],
+  singboxOnlyConfigTypes: ['TUIC', 'Anytls', 'Naive'],
   networks: ['raw', 'xhttp', 'kcp', 'grpc', 'ws', 'httpupgrade'],
   defaultNetwork: 'raw',
   rawHeaderTypes: ['none', 'http'],
@@ -12,7 +15,7 @@ export const profileEditorOptions = {
   kcpHeaderTypes: ['none', 'srtp', 'utp', 'wechat-video', 'dtls', 'wireguard', 'dns'],
   grpcModes: ['gun', 'multi'],
   vmessSecurities: ['aes-128-gcm', 'chacha20-poly1305', 'auto', 'none', 'zero'],
-  vlessFlows: ['', 'xtls-rprx-vision', 'xtls-rprx-vision-udp443'],
+  flows: ['', 'xtls-rprx-vision', 'xtls-rprx-vision-udp443'],
   shadowsocksSecuritiesXray: [
     'aes-256-gcm', 'aes-128-gcm', 'chacha20-poly1305', 'chacha20-ietf-poly1305',
     'xchacha20-poly1305', 'xchacha20-ietf-poly1305', 'none', 'plain',
