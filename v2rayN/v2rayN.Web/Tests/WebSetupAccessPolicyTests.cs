@@ -32,15 +32,15 @@ public class WebSetupAccessPolicyTests
     [Test]
     public async Task PrivateNetworkClientCanInitializeUsingTheServerPrivateIp()
     {
-        var serverAddress = IPAddress.Parse("192.168.86.221");
+        var serverAddress = IPAddress.Parse("192.168.1.20");
         await WebSetupAccessPolicy.IsAllowed(
-            IPAddress.Parse("192.168.86.149"), "192.168.86.221", false, serverAddress).Should().BeTrue();
+            IPAddress.Parse("192.168.1.10"), "192.168.1.20", false, serverAddress).Should().BeTrue();
         await WebSetupAccessPolicy.IsAllowed(
-            IPAddress.Parse("10.147.17.168"), "192.168.86.221", false, serverAddress).Should().BeTrue();
+            IPAddress.Parse("10.0.0.25"), "192.168.1.20", false, serverAddress).Should().BeTrue();
         await WebSetupAccessPolicy.IsAllowed(
-            IPAddress.Parse("192.168.86.149"), "192.168.86.222", false, serverAddress).Should().BeFalse();
+            IPAddress.Parse("192.168.1.10"), "192.168.1.21", false, serverAddress).Should().BeFalse();
         await WebSetupAccessPolicy.IsAllowed(
-            IPAddress.Parse("8.8.8.8"), "192.168.86.221", false, serverAddress).Should().BeFalse();
+            IPAddress.Parse("203.0.113.8"), "192.168.1.20", false, serverAddress).Should().BeFalse();
     }
 
     [Test]
