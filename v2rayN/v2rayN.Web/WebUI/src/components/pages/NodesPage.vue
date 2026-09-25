@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import ActionDropdown from '../ActionDropdown.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
@@ -12,16 +13,73 @@ const actions = props.actions
 <section class="page nodes-page">
   <div class="page-toolbar">
     <div class="page-title"><h1>{{ t('nodes.title') }}</h1><span class="count-tag">{{ state.filteredProfiles.length }}</span></div>
-    <div class="toolbar-main">
-      <button class="button primary" @click="actions.openAddProfile">＋ {{ t('nodes.addNode') }}</button>
-      <button class="button" @click="actions.openImportProfiles">{{ t('common.import') }}</button>
-      <button class="button" @click="actions.updateSubscriptions(state.selectedGroup || null, false)">{{ t(actions.subscriptionUpdateMessageKey(state.selectedGroup || null, false)) }}</button>
-      <select class="compact-select test-select" @change="($event.target as HTMLSelectElement).value && actions.startSpeedTest(($event.target as HTMLSelectElement).value)">
-        <option value="">{{ t('nodes.test') }}…</option>
-        <option v-for="action in state.testActions" :key="action.id" :value="action.id">{{ t(action.key) }}</option>
-      </select>
-      <button class="button" @click="actions.runProfileAction('test-group')">{{ t('nodes.testGroup') }}</button>
-      <button class="button" :disabled="!state.operations.includes('speedtest')" @click="actions.stopSpeedTests">{{ t('nodes.stopTest') }}</button>
+    <div class="toolbar-main nodes-toolbar-main">
+      <ActionDropdown :label="t('nodes.addMenu')" prefix="＋" variant="primary">
+        <button class="action-menu-item" role="menuitem" @click="actions.openAddProfile">{{ t('nodes.addNode') }}</button>
+      </ActionDropdown>
+
+      <ActionDropdown :label="t('nodes.importMenu')">
+        <button class="action-menu-item" role="menuitem" @click="actions.openImportProfiles">{{ t('nodes.importNodes') }}…</button>
+      </ActionDropdown>
+
+      <ActionDropdown :label="t('nodes.subscriptionMenu')">
+        <button class="action-menu-item" role="menuitem" @click="actions.updateSubscriptions(state.selectedGroup || null, false)">{{ t(actions.subscriptionUpdateMessageKey(state.selectedGroup || null, false)) }}</button>
+        <button class="action-menu-item" role="menuitem" @click="actions.updateSubscriptions(state.selectedGroup || null, true)">{{ t(actions.subscriptionUpdateMessageKey(state.selectedGroup || null, true)) }}</button>
+        <div class="action-menu-separator" role="separator"></div>
+        <button class="action-menu-item" role="menuitem" @click="actions.updateSubscriptions(null, false)">{{ t(actions.subscriptionUpdateMessageKey(null, false)) }}</button>
+        <button class="action-menu-item" role="menuitem" @click="actions.updateSubscriptions(null, true)">{{ t(actions.subscriptionUpdateMessageKey(null, true)) }}</button>
+      </ActionDropdown>
+
+      <ActionDropdown :label="t('nodes.testMenu')">
+        <button v-for="testAction in state.testActions" :key="testAction.id" class="action-menu-item" role="menuitem" @click="actions.startSpeedTest(testAction.id)">{{ t(testAction.key) }}</button>
+        <div class="action-menu-separator" role="separator"></div>
+        <button class="action-menu-item" role="menuitem" @click="actions.runProfileAction('test-group')">{{ t('nodes.testGroup') }}</button>
+        <button class="action-menu-item" role="menuitem" :disabled="!state.operations.includes('speedtest')" @click="actions.stopSpeedTests">{{ t('nodes.stopTest') }}</button>
+      </ActionDropdown>
+
+      <ActionDropdown :label="t('nodes.organizeMenu')">
+        <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.runProfileAction('copy')">{{ t('nodes.copySelected') }}</button>
+        <details class="action-menu-submenu" :class="{ disabled: !state.selectedIds.length }">
+          <summary class="action-menu-item menu-submenu-toggle" role="menuitem" :aria-disabled="!state.selectedIds.length" @click="!state.selectedIds.length && $event.preventDefault()">{{ t('nodes.moveGroup') }}<span class="submenu-caret">›</span></summary>
+          <div class="action-menu-submenu-items">
+            <button v-for="group in state.groups" :key="group.id || 'all-target'" class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelectedToGroup(group.id)">{{ group.name || t('common.allGroups') }}</button>
+          </div>
+        </details>
+        <details class="action-menu-submenu" :class="{ disabled: !state.selectedIds.length }">
+          <summary class="action-menu-item menu-submenu-toggle" role="menuitem" :aria-disabled="!state.selectedIds.length" @click="!state.selectedIds.length && $event.preventDefault()">{{ t('nodes.move') }}<span class="submenu-caret">›</span></summary>
+          <div class="action-menu-submenu-items">
+            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('top')">{{ t('nodes.top') }}</button>
+            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('up')">{{ t('nodes.up') }}</button>
+            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('down')">{{ t('nodes.down') }}</button>
+            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelected('bottom')">{{ t('nodes.bottom') }}</button>
+            <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.moveSelectedPosition">{{ t('nodes.position') }}…</button>
+          </div>
+        </details>
+        <div class="action-menu-separator" role="separator"></div>
+        <button class="action-menu-item" role="menuitem" @click="actions.runProfileAction('deduplicate')">{{ t('nodes.deduplicate') }}</button>
+        <button class="action-menu-item" role="menuitem" @click="actions.runProfileAction('remove-invalid')">{{ t('nodes.removeInvalid') }}</button>
+        <div class="action-menu-separator" role="separator"></div>
+        <button class="action-menu-item" role="menuitem" :disabled="!state.selectedGroup" :title="!state.selectedGroup ? t('nodes.groupGenerationSelectSubscription') : ''" @click="actions.generateGroups(false)">{{ t('nodes.generateAllGroups') }}</button>
+        <button class="action-menu-item" role="menuitem" :disabled="!state.selectedGroup || !state.profiles.length" :title="!state.selectedGroup ? t('nodes.groupGenerationSelectSubscription') : !state.profiles.length ? t('nodes.noProfile') : ''" @click="actions.generateGroups(true)">{{ t('nodes.generateRegionGroups') }}</button>
+        <div class="action-menu-separator" role="separator"></div>
+        <button class="action-menu-item danger" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.runProfileAction('delete')">{{ t('nodes.deleteSelected') }}</button>
+        <div class="action-menu-separator" role="separator"></div>
+        <button class="action-menu-item" role="menuitem" @click="actions.loadProfiles">{{ t('common.refresh') }}</button>
+      </ActionDropdown>
+
+      <ActionDropdown :label="t('nodes.exportMenu')">
+        <label class="action-menu-check menu-stay-open"><input v-model="state.exportOptions.includeShareUris" type="checkbox" />{{ t('nodes.includeShareUris') }}</label>
+        <label class="action-menu-check menu-stay-open"><input v-model="state.exportOptions.base64ShareUris" type="checkbox" />{{ t('nodes.base64ShareUris') }}</label>
+        <label class="action-menu-check menu-stay-open"><input v-model="state.exportOptions.includeInnerUri" type="checkbox" />{{ t('nodes.includeInnerUri') }}</label>
+        <label class="action-menu-check menu-stay-open"><input v-model="state.exportOptions.includeClientConfig" type="checkbox" />{{ t('nodes.includeClientConfig') }}</label>
+        <div class="action-menu-separator" role="separator"></div>
+        <button class="action-menu-item" role="menuitem" :disabled="!state.selectedIds.length" @click="actions.exportSelected">{{ t('nodes.exportSelected') }}…</button>
+      </ActionDropdown>
+
+      <div v-if="state.selectedIds.length" class="selection-summary">
+        <strong>{{ t('common.selected', { count: state.selectedIds.length }) }}</strong>
+        <button class="selection-clear" :aria-label="t('common.close')" :title="t('common.close')" @click="state.selectedIds = []">×</button>
+      </div>
     </div>
   </div>
 
@@ -32,23 +90,7 @@ const actions = props.actions
         {{ group.name || t('common.allGroups') }}<small>{{ group.profileCount }}</small>
       </button>
     </div>
-    <div class="group-generation"><button class="link-button" :disabled="!state.selectedGroup" :title="!state.selectedGroup ? t('nodes.groupGenerationSelectSubscription') : ''" @click="actions.generateGroups(false)">{{ t('nodes.generateAllGroups') }}</button><button class="link-button" :disabled="!state.selectedGroup || !state.profiles.length" :title="!state.selectedGroup ? t('nodes.groupGenerationSelectSubscription') : !state.profiles.length ? t('nodes.noProfile') : ''" @click="actions.generateGroups(true)">{{ t('nodes.generateRegionGroups') }}</button></div>
     <label class="search-box"><span>⌕</span><input v-model="state.filter" :placeholder="t('nodes.filterPlaceholder')" @keyup.enter="actions.loadProfiles" /><button v-if="state.filter" class="clear-search" :aria-label="t('common.close')" @click="state.filter = ''; actions.loadProfiles()">×</button></label>
-  </div>
-
-  <div v-if="state.selectedIds.length" class="bulk-toolbar">
-    <strong>{{ t('common.selected', { count: state.selectedIds.length }) }}</strong>
-    <button class="button compact" @click="actions.runProfileAction('copy')">{{ t('nodes.copySelected') }}</button>
-    <button class="button compact" @click="actions.exportSelected">{{ t('nodes.exportSelected') }}</button>
-    <select class="compact-select" @change="($event.target as HTMLSelectElement).value !== '' && actions.moveSelectedToGroup(($event.target as HTMLSelectElement).value)">
-      <option value="">{{ t('nodes.moveGroup') }}…</option>
-      <option v-for="group in state.groups" :key="group.id || 'all-target'" :value="group.id">{{ group.name || t('common.allGroups') }}</option>
-    </select>
-    <div class="button-group">
-      <button class="button compact" :title="t('nodes.top')" @click="actions.moveSelected('top')">⇈</button><button class="button compact" :title="t('nodes.up')" @click="actions.moveSelected('up')">↑</button><button class="button compact" :title="t('nodes.down')" @click="actions.moveSelected('down')">↓</button><button class="button compact" :title="t('nodes.bottom')" @click="actions.moveSelected('bottom')">⇊</button><button class="button compact" :title="t('nodes.position')" @click="actions.moveSelectedPosition">#</button>
-    </div>
-    <button class="button compact danger" @click="actions.runProfileAction('delete')">{{ t('nodes.deleteSelected') }}</button>
-    <button class="tool-button" @click="state.selectedIds = []">×</button>
   </div>
 
   <div class="table-wrap">
@@ -92,6 +134,6 @@ const actions = props.actions
       </tbody>
     </table>
   </div>
-  <div class="table-footer"><span>{{ t('nodes.regexHint') }}</span><div class="quick-maintenance"><button class="link-button" @click="actions.runProfileAction('deduplicate')">{{ t('nodes.deduplicate') }}</button><button class="link-button" @click="actions.runProfileAction('remove-invalid')">{{ t('nodes.removeInvalid') }}</button><button class="link-button" @click="actions.loadProfiles">{{ t('common.refresh') }}</button></div></div>
+  <div class="table-footer"><span>{{ t('nodes.regexHint') }}</span></div>
 </section>
 </template>

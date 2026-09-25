@@ -105,6 +105,12 @@
   },
   "nodes": {
     "title": "Configuration list",
+    "addMenu": "Add",
+    "importMenu": "Import",
+    "subscriptionMenu": "Subscriptions",
+    "testMenu": "Test",
+    "organizeMenu": "Organize",
+    "exportMenu": "Export",
     "group": "Subscription group",
     "filterPlaceholder": "Remarks filter (regular expressions)",
     "type": "Type",

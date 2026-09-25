@@ -105,6 +105,12 @@
   },
   "nodes": {
     "title": "設定檔清單",
+    "addMenu": "新增",
+    "importMenu": "匯入",
+    "subscriptionMenu": "訂閱",
+    "testMenu": "測試",
+    "organizeMenu": "整理",
+    "exportMenu": "匯出",
     "group": "訂閱群組",
     "filterPlaceholder": "別名正則過濾",
     "type": "類型",

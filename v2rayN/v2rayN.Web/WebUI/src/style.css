@@ -97,6 +97,33 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .group-chip.selected { color: #dcecf8; border-color: #527899; background: #2c465a; }
 .group-chip small { color: #9cabb5; font-size: 9px; }
 .search-box input { font-size: 10px; }
+.nodes-page .page-toolbar { margin-bottom: 5px; }
+.nodes-toolbar-main { flex-wrap: nowrap; gap: 5px; }
+.action-dropdown { position: relative; flex: 0 0 auto; }
+.action-menu-trigger { min-height: 27px; padding: 0 8px; }
+.menu-caret { margin-left: 1px; color: #aaa; font-size: 9px; }
+.action-menu-popup { position: absolute; z-index: 15; top: calc(100% + 3px); left: 0; min-width: 220px; max-width: min(320px, calc(100vw - 14px)); max-height: min(68vh, 440px); overflow: auto; display: grid; gap: 1px; padding: 4px; border: 1px solid #555; background: #292929; box-shadow: 0 5px 18px #0008; }
+.nodes-toolbar-main > .action-dropdown:nth-child(6) .action-menu-popup { right: 0; left: auto; }
+.action-menu-item { width: 100%; min-height: 27px; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 3px 8px; color: #ddd; border: 0; border-radius: 1px; background: transparent; text-align: left; white-space: normal; font-size: 11px; }
+.action-menu-item:hover:not(:disabled), .context-menu button:hover:not(:disabled), .context-submenu > summary:hover { background: #3a3a3a; }
+.action-menu-item:disabled, .context-menu button:disabled { opacity: .42; cursor: not-allowed; }
+.action-menu-item.danger { color: #efb4b4; }
+.action-menu-item.danger:hover:not(:disabled) { color: #ffd6d6; background: #4a2c2c; }
+.action-menu-separator, .context-separator { height: 1px; margin: 3px 2px; background: #484848; }
+.action-menu-check { min-height: 27px; display: flex; align-items: center; gap: 8px; padding: 3px 8px; color: #d2d2d2; font-size: 11px; cursor: pointer; }
+.action-menu-check:hover { background: #343434; }
+.action-menu-check input { flex: 0 0 auto; accent-color: var(--accent); }
+.action-menu-submenu { min-width: 0; }
+.action-menu-submenu > summary { list-style: none; cursor: pointer; }
+.action-menu-submenu > summary::-webkit-details-marker { display: none; }
+.action-menu-submenu.disabled > summary { opacity: .45; cursor: not-allowed; }
+.submenu-caret { flex: 0 0 auto; color: #999; }
+.action-menu-submenu-items { display: grid; max-height: 155px; overflow: auto; margin: 1px 0 3px 8px; padding-left: 5px; border-left: 1px solid #4a4a4a; }
+.selection-summary { display: inline-flex; align-items: center; gap: 3px; margin-left: 2px; padding-left: 7px; color: #cddfed; border-left: 1px solid #454545; white-space: nowrap; font-size: 10px; }
+.selection-summary strong { font-weight: 500; }
+.selection-clear { width: 20px; height: 22px; padding: 0; color: #aaa; border: 0; background: transparent; font-size: 15px; }
+.selection-clear:hover { color: #fff; }
+.nodes-page .group-toolbar { margin-bottom: 2px; }
 .bulk-toolbar { flex-wrap: wrap; min-height: 35px; padding: 4px 7px; border-bottom: 1px solid #3e3e3e; background: #252525; }
 .bulk-toolbar strong { margin-right: 4px; color: #dceaf5; font-size: 10px; }
 .table-wrap, .subscription-table-wrap, .log-table-wrap { width: 100%; overflow: auto; border: 1px solid #3c3c3c; border-top: 0; background: #1e1e1e; }
@@ -233,10 +260,16 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .import-content { min-height: 220px; }
 .export-area { min-height: min(60vh, 480px); }
 .inline-error { color: #e38b8b; font-size: 11px; }
-.context-menu { position: fixed; z-index: 30; width: 220px; display: grid; gap: 1px; padding: 4px; border: 1px solid #555; background: #292929; box-shadow: 0 5px 20px #0008; }
+.context-menu { position: fixed; z-index: 30; width: 244px; max-height: min(420px, calc(100vh - 16px)); overflow-y: auto; display: grid; align-content: start; gap: 1px; padding: 4px; border: 1px solid #555; background: #292929; box-shadow: 0 5px 20px #0008; }
 .context-heading { overflow: hidden; padding: 5px 7px; color: #a9cce5; border-bottom: 1px solid #454545; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; }
-.context-menu button { min-height: 26px; padding: 0 8px; color: #ddd; border: 0; background: transparent; text-align: left; font-size: 11px; }
-.context-menu button:hover { background: #3a3a3a; }
+.context-menu button, .context-submenu > summary { min-height: 26px; display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 3px 8px; color: #ddd; border: 0; background: transparent; text-align: left; white-space: normal; font-size: 11px; cursor: pointer; }
+.context-menu button.danger-text { color: #e18b8b; }
+.context-menu details > summary { list-style: none; }
+.context-menu details > summary::-webkit-details-marker { display: none; }
+.context-submenu { position: relative; }
+.context-submenu-list { max-height: min(180px, 35vh); overflow: auto; display: grid; gap: 1px; margin: 1px 0 3px 8px; padding: 1px 0 1px 5px; border-left: 1px solid #4a4a4a; }
+.context-menu .context-submenu-list button { width: 100%; }
+.context-separator { width: auto; }
 
 @media (max-width: 1120px) {
   .app-header { gap: 7px; padding: 0 7px; }
@@ -259,6 +292,9 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
   .stats-hint, .runtime-version { margin-left: 0; }
   .page-toolbar { align-items: flex-start; flex-direction: column; }
   .toolbar-main { justify-content: flex-start; }
+  .nodes-toolbar-main { width: 100%; flex-wrap: wrap; }
+  .nodes-page .group-toolbar .group-chips { order: 0; flex-basis: 100%; }
+  .nodes-toolbar-main > .action-dropdown:nth-child(6) .action-menu-popup { right: 0; left: auto; }
   .group-toolbar { align-items: flex-start; flex-wrap: wrap; }
   .group-chips { order: 3; flex-basis: 100%; }
   .search-box { flex: 1; width: auto; }
@@ -267,12 +303,14 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
   .form-grid.two-col, .form-grid.three-col, .template-panel .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .page-title { min-height: 27px; }
   .bulk-toolbar { align-items: flex-start; }
+  .selection-summary { margin-left: auto; }
   .table-footer { align-items: flex-start; flex-direction: column; }
   .logs-page { height: calc(100vh - 225px); }
   .logs-pagination { align-items: flex-start; flex-direction: column; }
   .pagination-controls { width: 100%; justify-content: space-between; }
   .log-search { width: min(100%, 310px); }
   .row-more { display: inline-flex; }
+  .context-menu { width: min(244px, calc(100vw - 12px)); }
   .table-wrap { overflow: visible; border: 0; background: transparent; }
   .profile-table { width: 100%; min-width: 0; display: block; white-space: normal; }
   .profile-table thead { display: none; }

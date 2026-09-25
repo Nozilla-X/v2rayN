@@ -144,7 +144,6 @@ const {
 } = session
 const {
   showProfileForm, showImportForm, showExportDialog, openEditProfile,
-  selectProfile, startSpeedTest, runProfileAction,
 } = profiles
 const { showSubscriptionForm } = subscriptions
 const { showRouteForm, activateRoute } = routing
@@ -166,6 +165,12 @@ function formatBytes(value: number | null | undefined) {
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
 }
 
+function contextMenuStyle(menu: Dict) {
+  const left = Math.max(0, Math.min(Number(menu.x) || 0, window.innerWidth - 250))
+  const top = Math.max(8, Math.min(Number(menu.y) || 0, window.innerHeight - 428))
+  return { left: `${left}px`, top: `${top}px` }
+}
+
 const headerState = reactive({ navItems, brandIconSrc, brandIconTitle, activePage, subscriptions: subscriptions.subscriptions, authenticated, locale, loading })
 const headerActions = { navigate, refreshBase, disconnect }
 const runtimeStripState = reactive({ status: runtime.status, currentProfile, activeRoutingId: routing.activeRoutingId, routes: routing.routes, busy: runtime.busy })
@@ -174,7 +179,7 @@ const connectionStripState = runtime.connectionStripState
 const connectionStripActions = { listenerDescription: runtime.listenerDescription, formatBytes }
 const noticeState = reactive({ notice, noticeKind })
 
-const nodesPageState = profiles.nodesPageState
+const nodesPageState = Object.assign(profiles.nodesPageState, { exportOptions: profiles.exportModalState.exportOptions })
 const nodesPageActions = {
   ...profiles.nodesPageActions,
   updateSubscriptions: subscriptions.subscriptionsPageActions.updateSubscriptions,
@@ -291,9 +296,39 @@ onUnmounted(() => {
           <LogsPage v-else-if="activePage === 'logs'" :state="logsPageState" :actions="logsPageActions" />
         </main>
       </template>
-    <div v-if="contextMenu" class="context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @click.stop>
+    <div v-if="contextMenu" class="context-menu" :style="contextMenuStyle(contextMenu)" @click="contextMenu = null">
       <strong class="context-heading">{{ contextMenu.profile.remarks || contextMenu.profile.address }}</strong>
-      <button @click="selectProfile(contextMenu.profile)">{{ t('nodes.switch') }}</button><button @click="startSpeedTest('tcping', [contextMenu.profile.indexId])">{{ t('nodes.tcping') }}</button><button @click="startSpeedTest('realping', [contextMenu.profile.indexId])">{{ t('nodes.realping') }}</button><button @click="openEditProfile(contextMenu.profile)">{{ t('common.edit') }}</button><button @click="runProfileAction('copy', [contextMenu.profile.indexId])">{{ t('common.copy') }}</button><button class="danger-text" @click="runProfileAction('delete', [contextMenu.profile.indexId])">{{ t('common.delete') }}</button>
+      <button :disabled="contextMenu.profile.isCurrent" @click="nodesPageActions.selectProfile(contextMenu.profile)">{{ contextMenu.profile.isCurrent ? t('nodes.current') : t('nodes.switch') }}</button>
+      <details class="context-submenu">
+        <summary @click.stop>{{ t('nodes.test') }}<span class="submenu-caret">›</span></summary>
+        <div class="context-submenu-list">
+          <button v-for="testAction in nodesPageState.testActions" :key="testAction.id" @click="nodesPageActions.startSpeedTest(testAction.id, [contextMenu.profile.indexId])">{{ t(testAction.key) }}</button>
+          <div class="context-separator"></div>
+          <button :disabled="!nodesPageState.operations.includes('speedtest')" @click="nodesPageActions.stopSpeedTests">{{ t('nodes.stopTest') }}</button>
+        </div>
+      </details>
+      <div class="context-separator"></div>
+      <button @click="openEditProfile(contextMenu.profile)">{{ t('common.edit') }}</button>
+      <button @click="nodesPageActions.runProfileAction('copy', [contextMenu.profile.indexId])">{{ t('common.copy') }}</button>
+      <details class="context-submenu">
+        <summary @click.stop>{{ t('nodes.moveGroup') }}<span class="submenu-caret">›</span></summary>
+        <div class="context-submenu-list">
+          <button v-for="group in nodesPageState.groups" :key="group.id || 'all-target'" :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.moveSelectedToGroup(group.id)">{{ group.name || t('common.allGroups') }}</button>
+        </div>
+      </details>
+      <details class="context-submenu">
+        <summary @click.stop>{{ t('nodes.move') }}<span class="submenu-caret">›</span></summary>
+        <div class="context-submenu-list">
+          <button @click="nodesPageActions.moveSelected('top')">{{ t('nodes.top') }}</button>
+          <button @click="nodesPageActions.moveSelected('up')">{{ t('nodes.up') }}</button>
+          <button @click="nodesPageActions.moveSelected('down')">{{ t('nodes.down') }}</button>
+          <button @click="nodesPageActions.moveSelected('bottom')">{{ t('nodes.bottom') }}</button>
+          <button @click="nodesPageActions.moveSelectedPosition">{{ t('nodes.position') }}…</button>
+        </div>
+      </details>
+      <div class="context-separator"></div>
+      <button :disabled="!nodesPageState.selectedIds.length" @click="nodesPageActions.exportSelected">{{ t('nodes.exportSelected') }}…</button>
+      <button class="danger-text" @click="nodesPageActions.runProfileAction('delete', [contextMenu.profile.indexId])">{{ t('common.delete') }}</button>
     </div>
     <ProfileModal v-if="showProfileForm" :state="profileModalState" :actions="profileModalActions" />
     <ImportProfilesModal v-if="showImportForm" :state="importProfilesModalState" :actions="importProfilesModalActions" />

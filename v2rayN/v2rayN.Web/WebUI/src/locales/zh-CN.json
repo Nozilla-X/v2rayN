@@ -105,6 +105,12 @@
   },
   "nodes": {
     "title": "配置项列表",
+    "addMenu": "添加",
+    "importMenu": "导入",
+    "subscriptionMenu": "订阅",
+    "testMenu": "测试",
+    "organizeMenu": "整理",
+    "exportMenu": "导出",
     "count": "{count} 个节点",
     "group": "订阅分组",
     "filterPlaceholder": "别名正则过滤",
