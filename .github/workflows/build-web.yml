@@ -31,6 +31,8 @@ jobs:
   verify:
     name: Verify Web and tests
     runs-on: ubuntu-24.04
+    env:
+      TUNIT_MAX_PARALLEL_TESTS: 1
     steps:
       - name: Checkout
         uses: actions/checkout@v7
