@@ -25,6 +25,7 @@ export function useApi(options: {
       const error = new Error(options.translateKey(payload?.messageKey) || payload?.code || `${response.status}`) as ApiError
       error.messageKey = payload?.messageKey
       error.code = payload?.code
+      error.data = payload?.data
       throw error
     }
     return payload || {}

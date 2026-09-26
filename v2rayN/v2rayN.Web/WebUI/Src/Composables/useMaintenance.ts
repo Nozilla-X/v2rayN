@@ -33,7 +33,27 @@ export function useMaintenance(options: ApiServices & {
 
   function recordCoreUpdateProgress(progress: Dict) {
     if (typeof progress.coreType !== 'string') return
+    const previous = updateProgress.value[progress.coreType]
     updateProgress.value = { ...updateProgress.value, [progress.coreType]: progress }
+    if (progress.isComplete && !progress.batch && progress.coreType !== 'GeoFiles' && !previous?.isComplete) {
+      options.showNotice(
+        t(progress.success ? 'maintenance.updateCompleted' : 'maintenance.updateFailed'),
+        progress.success ? 'success' : 'error',
+      )
+    }
+  }
+
+  function notifyCoreUpdateBatchComplete(result: Dict) {
+    options.showNotice(
+      t(result.success ? 'maintenance.batchCompleted' : 'maintenance.batchFailed'),
+      result.success ? 'success' : 'error',
+    )
+  }
+
+  function notifyGeoUpdateComplete(result: Dict) {
+    if (result.data?.batch === true) return
+    const key = typeof result.messageKey === 'string' ? result.messageKey : result.success ? 'common.completed' : 'maintenance.updateFailed'
+    options.showNotice(options.translateKey(key), result.success ? 'success' : 'error')
   }
 
   async function loadCoreUpdateProgress() {
@@ -84,6 +104,18 @@ export function useMaintenance(options: ApiServices & {
       if (!await persistUpdateSettings(false)) return
       const result = await options.request(`/api/core-updates/${encodeURIComponent(coreType)}/update`, { method: 'POST' })
       options.showNotice(options.operationMessage(result, 'maintenance.updateStarted'))
+      await options.loadOperations()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function runSelectedUpdateBatch(apply: boolean) {
+    try {
+      if (!await persistUpdateSettings(false)) return
+      const result = await options.request('/api/core-updates/batch', {
+        method: 'POST',
+        body: { apply },
+      })
+      options.showNotice(options.operationMessage(result, apply ? 'maintenance.batchStarted' : 'maintenance.batchCheckStarted'))
       await options.loadOperations()
     } catch (error) { options.showError(error) }
   }
@@ -163,9 +195,10 @@ export function useMaintenance(options: ApiServices & {
   })
 
   return {
-    webdavForm, updateSettings, updateResults, updateProgress, loadMaintenance, loadCoreUpdateProgress, recordCoreUpdateProgress, maintenancePageState,
+    webdavForm, updateSettings, updateResults, updateProgress, loadMaintenance, loadCoreUpdateProgress,
+    recordCoreUpdateProgress, notifyCoreUpdateBatchComplete, notifyGeoUpdateComplete, maintenancePageState,
     maintenancePageActions: {
-      checkCoreUpdate, updateCore, saveUpdateSettings, updateGeo, clearStatistics, saveWebdav,
+      checkCoreUpdate, updateCore, runSelectedUpdateBatch, saveUpdateSettings, updateGeo, clearStatistics, saveWebdav,
       webdavAction, downloadBackup, uploadRestore, loadMaintenance, loadOperations: options.loadOperations,
     },
   }

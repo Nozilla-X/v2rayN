@@ -1,7 +1,7 @@
 import { reactive, ref, type Ref } from 'vue'
 import type { ApiServices, Dict, ErrorHandler, Notice } from './types'
 import type { Translate } from './types'
-import { buildApplicationSettingsBody, buildCoreSettingsBody, buildSaveAllSettingsSections, buildSpeedSettingsBody } from './settingsPayloads.js'
+import { buildApplicationSettingsBody, buildCoreSettingsBody, buildSettingsApplyBody, buildSpeedSettingsBody } from './settingsPayloads.js'
 
 export function useSettings(options: ApiServices & {
   t: Translate
@@ -41,9 +41,9 @@ export function useSettings(options: ApiServices & {
     }
   }
 
-  function toggleDestOverride(protocol: string, event: Event) {
+  function toggleDestOverride(protocol: string, checked: boolean) {
     const selected = new Set<string>(inboundForm.value.destOverride || [])
-    if ((event.target as HTMLInputElement).checked) selected.add(protocol)
+    if (checked) selected.add(protocol)
     else selected.delete(protocol)
     inboundForm.value.destOverride = [...selected]
   }
@@ -95,43 +95,23 @@ export function useSettings(options: ApiServices & {
   }
 
   async function saveAllSettings() {
-    let sections: Array<{ key: string; path: string; body: Dict }>
     try {
-      sections = buildSaveAllSettingsSections({
+      const body = buildSettingsApplyBody({
         inbound: inboundForm.value,
         core: coreForm.value,
         app: appForm.value,
         speed: speedForm.value,
         coreTypes: settings.value.coreTypes || [],
+        routing: options.routingForm.value,
       })
+      const result = await options.request('/api/settings/apply', { method: 'PUT', body })
+      await options.loadStatus()
+      options.showNotice(options.operationMessage(result, 'settings.allSaved'))
+      return { completed: ['settings.allSaved'], failed: null }
     } catch (error) {
       options.showError(error)
-      return { completed: [], failed: 'settings.speedtest' }
+      return { completed: [], failed: 'settings.allSaved' }
     }
-    const savedSections: string[] = []
-    for (const section of sections) {
-      try {
-        await options.request(section.path, { method: 'PUT', body: section.body })
-        savedSections.push(section.key)
-      } catch {
-        const completed = savedSections.length
-          ? savedSections.map((key) => options.t(key)).join(', ')
-          : options.t('common.none')
-        options.showNotice(options.t('settings.saveAllFailed', {
-          section: options.t(section.key),
-          saved: completed,
-        }), 'error')
-        return { completed: savedSections, failed: section.key }
-      }
-    }
-
-    try {
-      await options.loadStatus()
-      options.showNotice(options.t('settings.allSaved'))
-    } catch {
-      options.showNotice(options.t('settings.settingsRefreshFailed'), 'error')
-    }
-    return { completed: savedSections, failed: null }
   }
 
   const settingsPageState = reactive({ inboundForm, coreForm, appForm, speedForm, settings, coreTypes: options.coreTypes })

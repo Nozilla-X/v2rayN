@@ -32,6 +32,8 @@
     "stopNotRunning": "v2rayN Web is not running for this data directory.",
     "stopSucceeded": "v2rayN Web stopped.",
     "stopIdentityUnverified": "Cannot safely stop v2rayN Web: instance identity could not be verified; no signal was sent.",
+    "stopSupervisorManaged": "This instance is managed by systemd. Use systemctl stop for its unit; --stop will not compete with the supervisor.",
+    "stopCoreStillRunning": "The Web host stopped, but a tracked Core child process is still running. Check the service log before force-stopping it.",
     "stopSignalFailed": "Could not send SIGTERM to v2rayN Web.",
     "stopTimedOut": "v2rayN Web received SIGTERM but did not stop within the expected time.",
     "stopTimedOutStage": "Last observed cleanup stage: {stage}.",
@@ -544,7 +546,7 @@
     "saveSpeedtest": "Save speed settings",
     "saveCoreTypes": "Save Core mappings",
     "saveRouting": "Save routing strategy",
-    "restartHint": "A running Core restarts after saving settings.",
+    "restartHint": "Core-affecting settings are validated and applied with at most one automatic restart.",
     "savedRestartRequired": "Settings saved; restart Core to apply",
     "invalidPort": "Invalid port range",
     "invalidCoreLogLevel": "Invalid Core log level",
@@ -557,11 +559,10 @@
     "loaded": "Settings loaded",
     "coreTab": "Core settings",
     "coreTypesHint": "Map configuration protocols to their default Core.",
-    "singleSaveHint": "Save across tabs through the existing settings APIs.",
+    "singleSaveHint": "All sections validate before one config save; the running Core restarts at most once.",
     "saveAll": "Save settings",
     "allSaved": "Settings saved",
-    "saveAllFailed": "Saving stopped at {section}. Previously saved sections remain saved: {saved}.",
-    "settingsRefreshFailed": "Settings were saved, but the runtime status could not be refreshed."
+    "coreApplyFailed": "Settings were saved, but Core could not apply them. The running and configured ports may differ."
   },
   "templates": {
     "title": "Full config template settings",
@@ -587,6 +588,12 @@
     "webUpdateUnsupported": "Safe v2rayN Web self-update is not supported in this deployment mode.",
     "updateUnsupported": "This update target is not supported on the current platform or deployment.",
     "updateSettingsSaved": "Update options saved",
+    "batchCheck": "Check selected",
+    "batchUpdate": "Check and update selected",
+    "batchStarted": "Selected update batch started",
+    "batchCheckStarted": "Selected update checks started",
+    "batchCompleted": "Selected update batch completed",
+    "batchFailed": "Selected update batch failed; see per-target progress for details",
     "updateCheckFailed": "Update check failed",
     "updateStarted": "Update started",
     "updateBusy": "Another update task is already running",
@@ -596,6 +603,7 @@
     "upToDateGeneric": "Already up to date",
     "phase": {
       "checking": "Checking for updates",
+      "waiting": "All packages staged; waiting to apply",
       "downloading": "Downloading; the active proxy Core remains running",
       "verifying": "Extracting and verifying the package",
       "stopping-core": "Stopping the target Core",
@@ -645,8 +653,6 @@
     "backupRestore": "Backup / Restore",
     "checkOnly": "Check only",
     "checkAndUpdate": "Check and update",
-    "xrayOnlyNotice": "The current Web Backend supports Xray Core updates only; other Core updaters are not presented as available.",
-    "backendCurrentCore": "Only Xray check and update are currently supported",
     "geoFiles": "Geo files",
     "geoUpdateHint": "Uses the existing Geo update service.",
     "localBackup": "Local backup / restore",
@@ -684,7 +690,9 @@
     "offline": "Backend offline",
     "coreRunning": "Core running",
     "coreStopped": "Core stopped",
-    "statisticsOff": "Statistics disabled"
+    "statisticsOff": "Statistics disabled",
+    "runtimeFault": "Core runtime fault",
+    "portMismatch": "Configured port {configured}; running port {running}"
   },
   "errors": {
     "notFound": "Resource not found",
@@ -698,6 +706,8 @@
     "stopped": "Core stopped",
     "restarted": "Core restarted",
     "startFailed": "Failed to start Core",
+    "stopFailed": "Core did not stop gracefully; it was not force-killed.",
+    "notRunning": "Core is not running",
     "tunNotSupported": "TUN is enabled in the current configuration, but v2rayN Web does not support it yet. Disable TUN in the desktop app before starting the Core.",
     "binaryMissing": "Xray executable not found",
     "portInUse": "Proxy listener port is already in use",
@@ -708,7 +718,15 @@
     "updateFailed": "Xray update failed",
     "updateCompleted": "Xray update completed",
     "updateAvailable": "Xray update available",
-    "updateCurrent": "Xray is up to date"
+    "updateCurrent": "Xray is up to date",
+    "runtime": {
+      "stopped": "Stopped",
+      "starting": "Starting",
+      "running": "Running",
+      "stopping": "Stopping",
+      "restarting": "Restarting",
+      "faulted": "Faulted"
+    }
   },
   "profiles": {
     "allGroup": "All profiles",
@@ -728,6 +746,7 @@
     "invalidRemoved": "Failed profiles removed",
     "grouped": "Profile groups generated",
     "saved": "Profile saved",
+    "saveFailed": "Profile could not be saved. See the Web backend log for the ServiceLib or SQLite error.",
     "loaded": "Profiles loaded",
     "groupsLoaded": "Profile groups loaded",
     "exportReady": "Export ready"

@@ -5,7 +5,7 @@ import AppHeader from './Components/AppHeader.vue'
 import ConnectionStrip from './Components/ConnectionStrip.vue'
 import ConfirmDialog from './Components/Modals/ConfirmDialog.vue'
 import FlyoutMenu from './Components/FlyoutMenu.vue'
-import NoticeBar from './Components/NoticeBar.vue'
+import ToastViewport from './Components/ToastViewport.vue'
 import RuntimeStrip from './Components/RuntimeStrip.vue'
 import DnsPage from './Components/Pages/DnsPage.vue'
 import LogsPage from './Components/Pages/LogsPage.vue'
@@ -34,7 +34,7 @@ import { useSettings } from './Composables/useSettings'
 import { useSubscriptions } from './Composables/useSubscriptions'
 import { useTemplates } from './Composables/useTemplates'
 import { useTheme } from './Composables/useTheme'
-import type { ApiError, Dict } from './Composables/types'
+import type { ApiError, Dict, NoticeKind } from './Composables/types'
 import { navigateMenu } from './Components/menuContext'
 
 const { t, locale } = useI18n()
@@ -44,9 +44,10 @@ const authenticated = ref(false)
 const loading = ref(false)
 const activePage = ref('nodes')
 const contextMenu = ref<Dict | null>(null)
-const notice = ref('')
-const noticeKind = ref<'success' | 'error'>('success')
-let noticeTimer: ReturnType<typeof setTimeout> | undefined
+interface ToastEntry { id: number; message: string; kind: NoticeKind }
+const toasts = ref<ToastEntry[]>([])
+const toastTimers = new Map<number, ReturnType<typeof setTimeout>>()
+let nextToastId = 1
 
 interface ConfirmationRequest {
   message: string
@@ -97,18 +98,40 @@ function translateKey(key?: string | null): string {
   return translated === key ? key : translated
 }
 
-function showNotice(message: string, kind: 'success' | 'error' = 'success') {
-  notice.value = message
-  noticeKind.value = kind
-  clearTimeout(noticeTimer)
-  noticeTimer = setTimeout(() => { notice.value = '' }, 4000)
+function dismissToast(id: number) {
+  const timer = toastTimers.get(id)
+  if (timer) clearTimeout(timer)
+  toastTimers.delete(id)
+  toasts.value = toasts.value.filter((toast) => toast.id !== id)
+}
+
+function showNotice(message: string, kind: NoticeKind = 'success') {
+  const normalized = String(message || '').trim()
+  if (!normalized) return
+
+  const duplicate = toasts.value.find((toast) => toast.kind === kind && toast.message === normalized)
+  const id = duplicate?.id ?? nextToastId++
+  if (duplicate) {
+    const timer = toastTimers.get(id)
+    if (timer) clearTimeout(timer)
+  } else {
+    if (toasts.value.length >= 4) dismissToast(toasts.value[0].id)
+    toasts.value = [...toasts.value, { id, message: normalized, kind }]
+  }
+
+  const timeout = kind === 'error' ? 12000 : kind === 'warning' ? 9000 : 3500
+  toastTimers.set(id, setTimeout(() => dismissToast(id), timeout))
 }
 
 function showError(error: unknown) {
   const issue = error as ApiError
-  const message = issue.code === 'profile_group_empty'
+  const baseMessage = issue.code === 'profile_group_empty'
     ? t('nodes.groupGenerationEmpty')
     : issue.messageKey ? translateKey(issue.messageKey) : issue.message || t('common.unknownError')
+  const detail = (issue.data as Dict | undefined)?.detail
+  const message = typeof detail === 'string' && detail.length > 0
+    ? `${baseMessage}: ${detail}`
+    : baseMessage
   showNotice(message, 'error')
 }
 
@@ -129,11 +152,12 @@ const routing = useRouting({ ...api, t, showNotice, showError, confirm: confirmD
 const dns = useDns({ ...api, t, showNotice, showError })
 const settings = useSettings({ ...api, t, showNotice, showError, loadStatus: runtime.loadStatus, coreTypes: profiles.coreTypes, routingForm: routing.routingForm, routingOptions: routing.routingOptions })
 const templates = useTemplates({ ...api, showNotice, showError })
+let clearRealtimeLogQueue = (_generation?: number) => {}
 const maintenance = useMaintenance({
   ...api, t, translateKey, showNotice, showError, confirm: confirmDestructive, token: sessionToken,
   status: runtime.status, operations: runtime.operations, loadOperations: runtime.loadOperations, loadProfiles: profiles.loadProfiles,
 })
-const logs = useLogs({ ...api, t, showNotice, showError, confirm: confirmDestructive })
+const logs = useLogs({ ...api, t, showNotice, showError, confirm: confirmDestructive, clearRealtimeQueue: (generation) => clearRealtimeLogQueue(generation) })
 const events = useEvents({
   token: sessionToken, activePage, status: runtime.status,
   logs: logs.logs, logTotal: logs.logTotal, logPage: logs.logPage, logPageSize: logs.logPageSize,
@@ -141,7 +165,11 @@ const events = useEvents({
   loadGroups: profiles.loadGroups, loadProfiles: profiles.loadProfiles, loadSubscriptions: subscriptions.loadSubscriptions,
   loadStatus: runtime.loadStatus, loadRouting: routing.loadRouting, loadOperations: runtime.loadOperations,
   onCoreUpdateProgress: maintenance.recordCoreUpdateProgress,
+  onCoreUpdateBatchComplete: maintenance.notifyCoreUpdateBatchComplete,
+  onGeoUpdateComplete: maintenance.notifyGeoUpdateComplete,
+  onLogsCleared: logs.clearLogsState,
 })
+clearRealtimeLogQueue = events.clearPendingLogQueue
 
 async function loadPageData() {
   if (activePage.value === 'routing') await routing.loadRouting()
@@ -158,7 +186,7 @@ async function loadConnectedData() {
 }
 
 const session = useSession({
-  token: sessionToken, authenticated, loading, notice, request: api.request, t, showNotice, showError,
+  token: sessionToken, authenticated, loading, request: api.request, t, showNotice, showError,
   closeEvents: events.closeEvents, openEvents: events.openEvents,
   refreshData: async () => {
     await profiles.loadGroups()
@@ -171,7 +199,6 @@ const session = useSession({
     profiles.groups.value = []
     subscriptions.subscriptions.value = []
   },
-  loadStatus: runtime.loadStatus,
   loadProfiles: profiles.loadProfiles,
 })
 clearSession = session.clearSession
@@ -187,7 +214,16 @@ const {
 const { showSubscriptionForm } = subscriptions
 const { showRouteForm, activateRoute } = routing
 
-const currentProfile = computed(() => profiles.profiles.value.find((profile) => profile.isCurrent) || null)
+const currentProfile = computed<Dict | null>(() => {
+  const runtimeStatus = runtime.status.value
+  const runningId = runtimeStatus?.runningProfileId
+  const hasRuntimeProfile = ['starting', 'running', 'stopping', 'restarting', 'faulted'].includes(runtimeStatus?.runtimeState)
+  if (hasRuntimeProfile && runningId) {
+    return profiles.profiles.value.find((profile) => profile.indexId === runningId)
+      || { remarks: runtimeStatus.runningProfileName || runningId }
+  }
+  return profiles.profiles.value.find((profile) => profile.isCurrent) || null
+})
 const brandIconMode = computed(() => runtime.status.value?.coreRunning ? 'proxy' : 'off')
 const brandIconSrc = computed(() => ({ proxy: '/NotifyIcon2.ico', off: '/NotifyIcon1.ico' })[brandIconMode.value])
 const brandIconTitle = computed(() => t(`brandState.${brandIconMode.value}`))
@@ -255,8 +291,6 @@ const runtimeStripState = reactive({ status: runtime.status, currentProfile, act
 const runtimeStripActions = { activateRoute, coreAction: runtime.coreAction }
 const connectionStripState = runtime.connectionStripState
 const connectionStripActions = { listenerDescription: runtime.listenerDescription, formatBytes }
-const noticeState = reactive({ notice, noticeKind, closeLabel: computed(() => t('common.close')) })
-
 const nodesPageState = Object.assign(profiles.nodesPageState, { subscriptions: subscriptions.subscriptions })
 const nodesPageActions = {
   ...profiles.nodesPageActions,
@@ -500,7 +534,8 @@ onMounted(async () => {
 onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeydown, true)
   window.removeEventListener('resize', positionOpenContextMenu)
-  clearTimeout(noticeTimer)
+  for (const timer of toastTimers.values()) clearTimeout(timer)
+  toastTimers.clear()
 })
 
 function positionOpenContextMenu() {
@@ -542,13 +577,11 @@ function positionOpenContextMenu() {
           <label class="field-label" for="management-key">{{ t('auth.token') }}</label>
           <div class="inline-field"><input id="management-key" v-model="managementKeyDraft" type="password" autocomplete="current-password" :placeholder="t('auth.placeholder')" /><button class="button primary" type="submit">{{ t('auth.connect') }}</button></div>
         </form>
-        <NoticeBar v-if="notice" :state="noticeState" />
       </div>
     </section>
       <template v-else>
         <RuntimeStrip :state="runtimeStripState" :actions="runtimeStripActions" />
         <ConnectionStrip :state="connectionStripState" :actions="connectionStripActions" />
-        <NoticeBar v-if="notice" :state="noticeState" />
         <main class="workspace">
           <NodesPage v-if="activePage === 'nodes'" :state="nodesPageState" :actions="nodesPageActions" />
           <SubscriptionsPage v-else-if="activePage === 'subscriptions'" :state="subscriptionsPageState" :actions="subscriptionsPageActions" />
@@ -613,5 +646,6 @@ function positionOpenContextMenu() {
     <ExportModal v-if="showExportDialog" :state="exportModalState" :actions="exportModalActions" />
     <ConfirmDialog v-if="activeConfirmation" :message="activeConfirmation.message" @resolve="resolveConfirmation" />
     </template>
+    <ToastViewport :toasts="toasts" :close-label="t('common.close')" @dismiss="dismissToast" />
   </div>
 </template>

@@ -200,6 +200,35 @@ public class WebLauncherTests
     }
 
     [Test]
+    public async Task StopRefusesToCompeteWithSystemdManagedLifecycle()
+    {
+        await WebStopper.IsSystemdServiceCgroup("0::/system.slice/v2rayn-web.service").Should().BeTrue();
+        await WebStopper.IsSystemdServiceCgroup("0::/user.slice/user-1000.slice/session-2.scope").Should().BeFalse();
+    }
+
+    [Test]
+    public async Task StopDoesNotReportSuccessWhileAKnownCoreChildRemainsAlive()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        using var directory = new TemporaryDirectory();
+        var lockPath = Path.Combine(directory.Path, "instance.lock");
+        var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        using (heldLock)
+        {
+            var health = new FakeHealthProbe(true, 123, [Environment.ProcessId]);
+            var signals = new FakeSignalSender();
+            signals.OnSignal = processId => _ = ReleaseLockAfterDelayAsync(heldLock, health);
+            var stopper = new WebStopper(health, signals, TimeSpan.FromMilliseconds(500), TimeSpan.FromMilliseconds(10));
+
+            var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
+
+            await (result == WebStopResult.CoreProcessStillRunning).Should().BeTrue();
+            await signals.ProcessIds.SequenceEqual([123]).Should().BeTrue();
+        }
+    }
+
+    [Test]
     public async Task StopNeverSignalsWhenHealthPidDoesNotMatchLockOwner()
     {
         if (!OperatingSystem.IsLinux()) return;
@@ -323,6 +352,10 @@ public class WebLauncherTests
             .Contains("数据目录", StringComparison.Ordinal).Should().BeTrue();
         await LauncherMessages.StopMessage(WebStopResult.NotRunning, LauncherLocale.TraditionalChinese)
             .Contains("資料目錄", StringComparison.Ordinal).Should().BeTrue();
+        await LauncherMessages.StopMessage(WebStopResult.SupervisorManaged, LauncherLocale.English)
+            .Contains("systemctl stop", StringComparison.Ordinal).Should().BeTrue();
+        await LauncherMessages.StopMessage(WebStopResult.CoreProcessStillRunning, LauncherLocale.SimplifiedChinese)
+            .Contains("Core", StringComparison.Ordinal).Should().BeTrue();
         await (LauncherMessages.ExecutableCommand("/usr/share/dotnet/dotnet", "/opt/v2rayn/v2rayN.Web.dll")
             == "\"/usr/share/dotnet/dotnet\" \"/opt/v2rayn/v2rayN.Web.dll\"").Should().BeTrue();
         await (LauncherMessages.ResolveLocale("zh_Hant_TW") == LauncherLocale.TraditionalChinese).Should().BeTrue();
@@ -344,21 +377,23 @@ public class WebLauncherTests
         health.SetResult(false, null);
     }
 
-    private sealed class FakeHealthProbe(bool healthy, int? processId = null) : IWebHealthProbe
+    private sealed class FakeHealthProbe(bool healthy, int? processId = null, int[]? coreProcessIds = null) : IWebHealthProbe
     {
         private bool _healthy = healthy;
         private int? _processId = processId;
         private string? _shutdownStage;
+        private int[] _coreProcessIds = coreProcessIds ?? [];
 
         public int ProbeCount { get; private set; }
 
         public Task<WebHealthProbeResult> ProbeAsync(Uri healthUri, CancellationToken cancellationToken) =>
             RecordProbe();
 
-        public void SetResult(bool isHealthy, int? instanceProcessId)
+        public void SetResult(bool isHealthy, int? instanceProcessId, int[]? coreProcessIds = null)
         {
             _healthy = isHealthy;
             _processId = instanceProcessId;
+            if (coreProcessIds is not null) _coreProcessIds = coreProcessIds;
         }
 
         public void SetShutdownStage(string? stage) => _shutdownStage = stage;
@@ -366,7 +401,7 @@ public class WebLauncherTests
         private Task<WebHealthProbeResult> RecordProbe()
         {
             ProbeCount++;
-            return Task.FromResult(new WebHealthProbeResult(_healthy, _processId, _shutdownStage));
+            return Task.FromResult(new WebHealthProbeResult(_healthy, _processId, _shutdownStage, _coreProcessIds));
         }
     }
 

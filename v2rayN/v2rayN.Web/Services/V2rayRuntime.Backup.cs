@@ -19,6 +19,7 @@ public sealed partial class V2rayRuntime
     private const long MaxBackupExpandedBytes = 256L * 1024 * 1024;
     private const int MaxBackupEntries = 2048;
     internal const string WebAuthFileName = "web-auth.json";
+    private const string RestoreRuntimeStateFileName = "v2rayn-web-restore-state.json";
 
     public WebDavSettingsView GetWebDavSettings() => new(
         Config.WebDavItem.Url,
@@ -164,6 +165,8 @@ public sealed partial class V2rayRuntime
         var stagingRoot = Utils.GetTempPath($"restore_stage_{Utils.GetGuid(false)}");
         var databaseClosed = false;
         RuntimeOperationCoordinator.Lease? operation = null;
+        var restoreStateWritten = false;
+        RestoreRuntimeState? restoreState = null;
         try
         {
             operation = await _operations.EnterExclusiveAsync(cancellationToken);
@@ -192,8 +195,15 @@ public sealed partial class V2rayRuntime
                 return OperationView.Fail("backup_safety_copy_failed", ApiMessageKeys.BackupRestoreFailed);
             }
 
-            await CoreManager.Instance.CoreStop();
-            _coreStartedAt = null;
+            var previousRuntime = CurrentCoreRuntime;
+            restoreState = new RestoreRuntimeState(
+                previousRuntime.State == CoreRuntimeState.Running,
+                previousRuntime.ProfileId);
+            await WriteRestoreRuntimeStateAsync(restoreState);
+            restoreStateWritten = true;
+            await StopCoreMonitorAsync();
+            await CoreManager.Instance.CoreStopGracefully(cancellationToken);
+            SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
             await ProfileExManager.Instance.SaveTo();
             await StatisticsManager.Instance.SaveTo();
             StatisticsManager.Instance.Close();
@@ -231,6 +241,18 @@ public sealed partial class V2rayRuntime
                 _restoring = true;
                 _operations.RejectNewOperations();
                 ScheduleApplicationRestart();
+            }
+            else if (restoreStateWritten)
+            {
+                TryDeleteRestoreRuntimeState();
+                if (restoreState is { WasRunning: true, ProfileId.Length: > 0 })
+                {
+                    var restart = await StartCoreAsync(restoreState.ProfileId, CancellationToken.None);
+                    if (!restart.Success)
+                    {
+                        AddLog("backup", $"Restore was canceled before database replacement, and the previous Core could not be restored: {restart.Code}");
+                    }
+                }
             }
             return OperationView.Fail("backup_restore_failed", ApiMessageKeys.BackupRestoreFailed);
         }
@@ -278,6 +300,7 @@ public sealed partial class V2rayRuntime
 
     private void ScheduleApplicationRestart()
     {
+        Interlocked.Exchange(ref _applicationRestartRequested, 1);
         lock (_restartGate)
         {
             if (_restartTask is { IsCompleted: false })
@@ -302,6 +325,57 @@ public sealed partial class V2rayRuntime
             });
         }
     }
+
+    private static string RestoreRuntimeStatePath => Path.Combine(Utils.StartupPath(), RestoreRuntimeStateFileName);
+
+    private static async Task WriteRestoreRuntimeStateAsync(RestoreRuntimeState state)
+    {
+        var path = RestoreRuntimeStatePath;
+        var temporary = path + $".{Guid.NewGuid():N}.tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(state));
+            File.Move(temporary, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+    }
+
+    private static async Task<RestoreRuntimeState?> ConsumeRestoreRuntimeStateAsync(CancellationToken cancellationToken)
+    {
+        var path = RestoreRuntimeStatePath;
+        if (!File.Exists(path)) return null;
+        try
+        {
+            var json = await File.ReadAllTextAsync(path, cancellationToken);
+            return JsonSerializer.Deserialize<RestoreRuntimeState>(json);
+        }
+        catch (Exception exception) when (exception is IOException or JsonException)
+        {
+            Logging.SaveLog("Restore runtime-state marker could not be read: " + exception.Message);
+            return null;
+        }
+        finally
+        {
+            TryDeleteRestoreRuntimeState();
+        }
+    }
+
+    private static void TryDeleteRestoreRuntimeState()
+    {
+        try
+        {
+            if (File.Exists(RestoreRuntimeStatePath)) File.Delete(RestoreRuntimeStatePath);
+        }
+        catch (Exception exception)
+        {
+            Logging.SaveLog("Restore runtime-state marker could not be removed: " + exception.Message);
+        }
+    }
+
+    private sealed record RestoreRuntimeState(bool WasRunning, string? ProfileId);
 
     private async Task WaitForScheduledRestartAsync(CancellationToken cancellationToken)
     {

@@ -6,7 +6,6 @@ export function useSession(options: {
   token: Ref<string>
   authenticated: Ref<boolean>
   loading: Ref<boolean>
-  notice: Ref<string>
   request: RequestApi
   t: Translate
   showNotice: Notice
@@ -16,7 +15,6 @@ export function useSession(options: {
   refreshData: () => Promise<void>
   loadConnectedData: () => Promise<void>
   resetSessionData: () => void
-  loadStatus: () => Promise<void>
   loadProfiles: () => Promise<void>
 }) {
   const t = options.t
@@ -183,7 +181,7 @@ export function useSession(options: {
     clearInterval(refreshTimer)
     if (connected) {
       refreshTimer = setInterval(() => {
-        void Promise.all([options.loadStatus(), options.loadProfiles()]).catch(options.showError)
+        void options.loadProfiles().catch(options.showError)
       }, 8000)
     } else {
       options.closeEvents()

@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using v2rayN.Web.Api;
+using v2rayN.Web.Contracts;
 using v2rayN.Web.Security;
 using v2rayN.Web.Services;
 
@@ -104,6 +105,24 @@ public class WebAuthEndpointTests
 
         await (failure.StatusCode == HttpStatusCode.InternalServerError).Should().BeTrue();
         await sessions.TryValidateWithoutRenewal(token, out _).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task CorrectManagementKeyWithSessionCreationFailureIsNotReportedAsWrongPassword()
+    {
+        using var directory = new TemporaryDirectory();
+        using var sessions = new WebSessionService();
+        await using var api = await ApiHarness.StartAsync(
+            new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), ManagementKey),
+            sessions);
+        sessions.Dispose();
+
+        using var response = await api.Client.PostAsJsonAsync("/api/auth/login", new { key = ManagementKey });
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        await (response.StatusCode == HttpStatusCode.InternalServerError).Should().BeTrue();
+        await document.RootElement.GetProperty("code").GetString().Should().BeEqualTo("internal_error");
+        await sessions.TryValidateWithoutRenewal(ManagementKey, out _).Should().BeFalse();
     }
 
     [Test]
@@ -448,6 +467,18 @@ public class WebAuthEndpointTests
             builder.Services.AddRateLimiter(WebAuthRateLimiting.Configure);
 
             var app = builder.Build();
+            app.Use(async (context, next) =>
+            {
+                try
+                {
+                    await next();
+                }
+                catch (Exception) when (context.Request.Path.StartsWithSegments("/api") && !context.Response.HasStarted)
+                {
+                    context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                    await context.Response.WriteAsJsonAsync(ApiEnvelope<object>.Fail("internal_error", ApiMessageKeys.CommonInternal));
+                }
+            });
             app.UseRouting();
             app.UseRateLimiter();
             app.UseMiddleware<WebAuthRequestBodyLimitMiddleware>();

@@ -140,7 +140,7 @@ button, input, select, textarea { font: inherit; }
 button { color: inherit; cursor: pointer; }
 button:disabled { opacity: .45; cursor: not-allowed; }
 input, select, textarea { color: var(--text); }
-input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
+input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; align-self: center; margin: 0; accent-color: var(--accent); vertical-align: middle; }
 
 .app-shell { min-height: 100vh; }
 .app-header { min-height: 47px; display: flex; align-items: stretch; gap: 15px; padding: 0 12px; background: var(--surface); border-bottom: 1px solid var(--border-soft); box-shadow: 0 1px var(--border-soft); }
@@ -179,8 +179,15 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .stats-hint { margin-left: auto; color: var(--warning); }
 .runtime-version { margin-left: auto; color: var(--text-dim); font: 9px Consolas, "Cascadia Mono", monospace; white-space: nowrap; }
 .muted { color: var(--text-muted); }
-.notice-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 8px 12px 0; padding: 6px 9px; color: var(--notice-text); border: 1px solid var(--notice-border); border-radius: 2px; background: var(--notice-surface); font-size: 11px; }
-.notice-bar.error { color: var(--notice-error-text); border-color: var(--notice-error-border); background: var(--notice-error-surface); }
+.toast-viewport { position: fixed; z-index: 120; top: 12px; right: 12px; width: min(380px, calc(100vw - 24px)); display: grid; gap: 8px; pointer-events: none; }
+.toast { min-width: 0; display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding: 9px 10px; color: var(--notice-text); border: 1px solid var(--notice-border); border-radius: 3px; background: var(--notice-surface); box-shadow: var(--shadow-menu); font-size: 12px; line-height: 1.45; pointer-events: auto; animation: toast-enter 140ms ease-out; }
+.toast-message { min-width: 0; overflow-wrap: anywhere; }
+.toast-close { width: 24px; min-width: 24px; height: 24px; min-height: 24px; margin: -3px -4px 0 0; }
+.toast-info { color: var(--accent-text); border-color: var(--accent-border); background: var(--accent-soft); }
+.toast-warning { color: var(--warning-text); border-color: var(--warning-border); background: var(--warning-surface); }
+.toast-error { color: var(--notice-error-text); border-color: var(--notice-error-border); background: var(--notice-error-surface); }
+@keyframes toast-enter { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }
+@media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 
 .workspace { width: min(100%, 1880px); margin-inline: auto; padding: 9px 12px 16px; }
 .page { min-width: 0; }
@@ -200,7 +207,7 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .tool-button { min-width: 28px; min-height: var(--control-height); padding: 0 6px; }
 .link-button { min-height: 22px; padding: 0 4px; color: var(--accent); border-color: transparent; background: transparent; font-size: 10px; }
 .link-button:hover { color: var(--accent-text); text-decoration: underline; }
-.check-inline { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font-size: 11px; }
+.check-inline { min-height: var(--control-height); display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text-muted); font-size: 11px; }
 .search-box { display: flex; align-items: center; gap: 6px; width: min(310px, 100%); min-height: var(--control-height); padding: 0 7px; color: var(--text-muted); border: 1px solid var(--border-strong); border-radius: 2px; background: var(--surface); }
 .search-box input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; font-size: 10px; }
 .search-box input::placeholder { color: var(--text-dim); }
@@ -315,7 +322,7 @@ input[type="checkbox"] { margin: 0; accent-color: var(--accent); }
 .form-grid input, .form-grid select, .form-grid textarea, .modal-panel input:not([type="checkbox"]), .modal-panel select, .modal-panel textarea:not(.code-area) { width: 100%; min-width: 0; min-height: var(--control-height); padding: 3px 6px; color: var(--text); border: 1px solid var(--border-strong); border-radius: 2px; background: var(--surface-input); font-size: 11px; }
 .form-grid textarea:not(.code-area), .modal-panel textarea:not(.code-area) { min-height: 52px; resize: vertical; }
 .form-grid .check-inline { display: inline-flex; align-self: center; justify-self: start; align-items: center; width: max-content; max-width: 100%; min-height: 26px; gap: 6px; white-space: nowrap; }
-.form-grid .check-inline input[type="checkbox"] { flex: 0 0 auto; width: 15px; height: 15px; min-height: 15px; padding: 0; border: 0; background: transparent; }
+.form-grid .check-inline input[type="checkbox"] { flex: 0 0 16px; width: 16px; height: 16px; min-height: 16px; padding: 0; border: 0; background: transparent; }
 .form-grid .wide-field { grid-column: 1 / -1; }
 .settings-multi-select { display: grid; align-content: start; gap: 5px; color: var(--text-muted); font-size: 10px; }
 .check-inline-group { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -387,7 +394,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   outline-offset: 1px;
 }
 .ui-icon { display: inline-block; flex: 0 0 auto; vertical-align: middle; }
-input[type="checkbox"] { width: 14px; height: 14px; flex: 0 0 auto; }
+input[type="checkbox"] { width: 16px; height: 16px; flex: 0 0 16px; }
 .button:focus-visible, .tool-button:focus-visible, .link-button:focus-visible, .action-menu-item:focus-visible, .context-menu button:focus-visible, .flyout-menu-trigger:focus-visible { outline-offset: 1px; }
 .action-menu-item:focus-visible, .context-menu button:focus-visible { background: var(--selected); }
 .action-menu-item.danger, .context-menu button.danger-text { color: var(--danger-text); }
@@ -527,6 +534,8 @@ input[type="checkbox"] { width: 14px; height: 14px; flex: 0 0 auto; }
 .footer-actions > .muted:first-child, .footer-actions > span:first-child { margin-right: auto; }
 
 @media (max-width: 760px) {
+  .toast-viewport { top: auto; right: 8px; bottom: max(56px, calc(env(safe-area-inset-bottom) + 48px)); left: 8px; width: auto; }
+  .check-inline { min-height: var(--control-height-touch); }
   .app-header { flex-wrap: wrap; gap: 0; padding: 0 5px; }
   .brand { min-height: 42px; border: 0; }
   .header-right { min-height: 42px; }

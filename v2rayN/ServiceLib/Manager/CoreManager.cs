@@ -18,6 +18,15 @@ public class CoreManager
     private Func<bool, string, Task>? _updateFunc;
     private const string _tag = "CoreHandler";
 
+    /// <summary>Process IDs still owned by the Core manager (excluding exited children).</summary>
+    public IReadOnlyList<int> ActiveProcessIds => new[] { _processService, _processPreService }
+        .Where(process => process?.IsRunning == true)
+        .Select(process => process!.Id)
+        .Distinct()
+        .ToArray();
+
+    public bool HasActiveCoreProcesses => ActiveProcessIds.Count > 0;
+
     public async Task Init(Config config, Func<bool, string, Task> updateFunc)
     {
         _config = config;
@@ -171,6 +180,56 @@ public class CoreManager
         catch (Exception ex)
         {
             Logging.SaveLog(_tag, ex);
+        }
+    }
+
+    /// <summary>
+    /// Stops Web-owned Core processes without escalating to SIGKILL. Unlike the legacy
+    /// Desktop stop path, failures are observable and the ProcessService remains tracked
+    /// until its child has actually exited.
+    /// </summary>
+    public async Task CoreStopGracefully(CancellationToken cancellationToken = default)
+    {
+        if (_linuxSudo)
+        {
+            throw new InvalidOperationException("A privileged Core process cannot be stopped by the graceful Web stop path.");
+        }
+
+        List<Exception>? failures = null;
+        await StopTrackedProcessAsync(preService: true);
+        await StopTrackedProcessAsync(preService: false);
+        if (failures is { Count: > 0 })
+        {
+            throw new AggregateException("One or more Core child processes did not stop cleanly.", failures);
+        }
+
+        async Task StopTrackedProcessAsync(bool preService)
+        {
+            var process = preService ? _processPreService : _processService;
+            if (process is null)
+            {
+                return;
+            }
+
+            try
+            {
+                await process.StopAsync(graceful: true, cancellationToken);
+                if (preService)
+                {
+                    _processPreService = null;
+                }
+                else
+                {
+                    _processService = null;
+                }
+                process.Dispose();
+            }
+            catch (Exception exception)
+            {
+                failures ??= [];
+                failures.Add(exception);
+                Logging.SaveLog(_tag, exception);
+            }
         }
     }
 

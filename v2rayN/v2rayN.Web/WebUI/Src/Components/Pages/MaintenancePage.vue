@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { UiProps } from '../types'
 import UiIcon from '../UiIcon.vue'
+import UiCheckbox from '../UiCheckbox.vue'
 
 const { t } = useI18n()
 const props = defineProps<UiProps>()
@@ -20,9 +21,11 @@ const activeTab = ref('updates')
       <div class="panel update-preferences">
         <div class="section-heading"><div><h2>{{ t('maintenance.updateSettings') }}</h2><small>{{ t('maintenance.updateSettingsHint') }}</small></div></div>
         <div class="settings-checks">
-          <label class="check-inline"><input v-model="state.updateSettings.preRelease" type="checkbox" />{{ t('maintenance.preRelease') }}</label>
-          <label class="check-inline"><input v-model="state.updateSettings.useProxy" type="checkbox" />{{ t('maintenance.useProxy') }}</label>
+          <label class="check-inline"><UiCheckbox v-model="state.updateSettings.preRelease" />{{ t('maintenance.preRelease') }}</label>
+          <label class="check-inline"><UiCheckbox v-model="state.updateSettings.useProxy" />{{ t('maintenance.useProxy') }}</label>
           <button class="button" @click="actions.saveUpdateSettings">{{ t('maintenance.saveUpdateSettings') }}</button>
+          <button class="button" :disabled="state.operations.includes('core-update-batch')" @click="actions.runSelectedUpdateBatch(false)">{{ t('maintenance.batchCheck') }}</button>
+          <button class="button primary" :disabled="state.operations.includes('core-update-batch')" @click="actions.runSelectedUpdateBatch(true)">{{ t('maintenance.batchUpdate') }}</button>
         </div>
       </div>
 
@@ -33,22 +36,22 @@ const activeTab = ref('updates')
           <span v-else-if="state.updateResults[target.coreType]?.isUpToDate" class="muted">{{ t('maintenance.upToDateGeneric') }}</span>
         </div>
         <div class="update-core-row">
-          <label class="check-inline"><input v-model="target.selected" type="checkbox" :disabled="!target.isSupported" />{{ t('maintenance.includeCoreUpdate') }}</label>
+          <label class="check-inline"><UiCheckbox v-model="target.selected" :disabled="!target.isSupported" />{{ t('maintenance.includeCoreUpdate') }}</label>
           <span v-if="state.updateProgress[target.coreType] && !state.updateProgress[target.coreType].isComplete" class="update-state">{{ t(`maintenance.phase.${state.updateProgress[target.coreType].phase}`) }}</span>
           <span v-else-if="state.updateProgress[target.coreType]?.isComplete" :class="state.updateProgress[target.coreType].success ? 'update-state' : 'danger-note'">{{ t(state.updateProgress[target.coreType].success ? 'maintenance.phase.completed' : 'maintenance.phase.failed') }}</span>
         </div>
         <p v-if="state.updateProgress[target.coreType]?.detail" class="field-hint update-detail">{{ state.updateProgress[target.coreType].detail }}</p>
         <div class="button-row">
-          <button class="button" :disabled="!target.isSupported || !target.selected || state.operations.includes(`core-update-${String(target.coreType).toLowerCase()}`)" @click="actions.checkCoreUpdate(target.coreType)">{{ t('maintenance.checkOnly') }}</button>
-          <button class="button primary" :disabled="!target.canInstall || !target.selected || state.operations.includes(`core-update-${String(target.coreType).toLowerCase()}`)" @click="actions.updateCore(target.coreType)">{{ t('maintenance.checkAndUpdate') }}</button>
+          <button class="button" :disabled="!target.isSupported || !target.selected || state.operations.includes('core-update-batch') || state.operations.includes(`core-update-${String(target.coreType).toLowerCase()}`)" @click="actions.checkCoreUpdate(target.coreType)">{{ t('maintenance.checkOnly') }}</button>
+          <button class="button primary" :disabled="!target.canInstall || !target.selected || state.operations.includes('core-update-batch') || state.operations.includes(`core-update-${String(target.coreType).toLowerCase()}`)" @click="actions.updateCore(target.coreType)">{{ t('maintenance.checkAndUpdate') }}</button>
         </div>
       </div>
 
       <div class="form-section settings-subsection">
         <div class="section-heading"><div><h2>{{ t('maintenance.geoFiles') }}</h2><small>{{ t('maintenance.geoUpdateHint') }}</small></div></div>
-        <div class="update-core-row"><label class="check-inline"><input v-model="state.updateSettings.geoFilesSelected" type="checkbox" />{{ t('maintenance.includeGeoFiles') }}</label><span v-if="state.updateProgress.GeoFiles && !state.updateProgress.GeoFiles.isComplete" class="update-state">{{ t(`maintenance.phase.${state.updateProgress.GeoFiles.phase}`) }}</span></div>
+        <div class="update-core-row"><label class="check-inline"><UiCheckbox v-model="state.updateSettings.geoFilesSelected" />{{ t('maintenance.includeGeoFiles') }}</label><span v-if="state.updateProgress.GeoFiles && !state.updateProgress.GeoFiles.isComplete" class="update-state">{{ t(`maintenance.phase.${state.updateProgress.GeoFiles.phase}`) }}</span></div>
         <p v-if="state.updateProgress.GeoFiles?.detail" class="field-hint update-detail">{{ state.updateProgress.GeoFiles.detail }}</p>
-        <button class="button" :disabled="!state.updateSettings.geoFilesSelected || state.operations.includes('geo-update')" @click="actions.updateGeo">{{ t('maintenance.updateGeo') }}</button>
+        <button class="button" :disabled="!state.updateSettings.geoFilesSelected || state.operations.includes('core-update-batch') || state.operations.includes('geo-update')" @click="actions.updateGeo">{{ t('maintenance.updateGeo') }}</button>
       </div>
       <div class="form-section settings-subsection"><div class="section-heading"><div><h2>{{ t('maintenance.statistics') }}</h2><small>{{ t('maintenance.statistics') }} · {{ state.status?.statisticsEnabled ? t('common.enabled') : t('status.statisticsOff') }}</small></div></div><button class="button danger" @click="actions.clearStatistics">{{ t('maintenance.clearStatistics') }}</button></div>
       <div class="form-section settings-subsection"><div class="section-heading"><h2>{{ t('maintenance.operationList') }}</h2><button class="tool-button" :aria-label="t('common.refresh')" :title="t('common.refresh')" @click="actions.loadOperations"><UiIcon name="refresh" /></button></div><div v-if="state.operations.length" class="operation-list"><span v-for="operation in state.operations" :key="operation" class="operation-pill"><i class="status-led on"></i>{{ operation }}</span></div><p v-else class="muted">{{ t('maintenance.noOperations') }}</p></div>

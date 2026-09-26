@@ -1,6 +1,6 @@
 export type Dict = Record<string, any>
-export type ApiError = Error & { messageKey?: string; code?: string }
-export type NoticeKind = 'success' | 'error'
+export type ApiError = Error & { messageKey?: string; code?: string; data?: unknown }
+export type NoticeKind = 'success' | 'info' | 'warning' | 'error'
 export type Translate = (...args: any[]) => any
 export type Notice = (message: string, kind?: NoticeKind) => void
 export type ErrorHandler = (error: unknown) => void

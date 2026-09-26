@@ -4,11 +4,11 @@ namespace v2rayN.Web.Services;
 
 internal static class RuntimeShutdownBudgets
 {
-    // Runtime cleanup owns 42 seconds; the host retains an 8-second teardown margin,
-    // and the --stop launcher waits 10 seconds beyond the host deadline.
-    public static readonly TimeSpan RuntimeCleanup = TimeSpan.FromSeconds(42);
-    public static readonly TimeSpan HostShutdown = TimeSpan.FromSeconds(50);
-    public static readonly TimeSpan LauncherWait = TimeSpan.FromSeconds(60);
+    // Runtime cleanup owns 20 seconds; the host retains 5 seconds, systemd is
+    // configured to 30 seconds, and the native --stop launcher waits 5 seconds more.
+    public static readonly TimeSpan RuntimeCleanup = TimeSpan.FromSeconds(20);
+    public static readonly TimeSpan HostShutdown = TimeSpan.FromSeconds(25);
+    public static readonly TimeSpan LauncherWait = TimeSpan.FromSeconds(35);
 }
 
 internal static class ShutdownDiagnostics

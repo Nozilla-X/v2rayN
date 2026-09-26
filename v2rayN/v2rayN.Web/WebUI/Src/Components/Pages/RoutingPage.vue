@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ActionDropdown from '../ActionDropdown.vue'
 import UiIcon from '../UiIcon.vue'
+import UiCheckbox from '../UiCheckbox.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
@@ -25,9 +26,9 @@ const allRulesSelected = computed(() => state.routingRules.length > 0 && state.s
 
     <div class="split-pane split-workspace routing-workspace">
       <section class="panel subpanel route-list-panel">
-        <div class="subpanel-heading"><div class="heading-check"><input type="checkbox" :checked="allRoutesSelected" :aria-label="t('common.selectAll')" @change="actions.toggleAllRoutes" /><h2>{{ t('routing.profiles') }}</h2><span class="count-tag">{{ state.routes.length }}</span></div><div class="row-actions"><button class="tool-button" :aria-label="t('common.selectAll')" :title="t('common.selectAll')" @click="actions.toggleAllRoutes"><UiIcon name="check-all" /></button><button class="tool-button" :aria-label="t('common.refresh')" :title="t('common.refresh')" @click="actions.loadRouting"><UiIcon name="refresh" /></button></div></div>
+        <div class="subpanel-heading"><div class="heading-check"><UiCheckbox :model-value="allRoutesSelected" :aria-label="t('common.selectAll')" @change="actions.toggleAllRoutes" /><h2>{{ t('routing.profiles') }}</h2><span class="count-tag">{{ state.routes.length }}</span></div><div class="row-actions"><button class="tool-button" :aria-label="t('common.selectAll')" :title="t('common.selectAll')" @click="actions.toggleAllRoutes"><UiIcon name="check-all" /></button><button class="tool-button" :aria-label="t('common.refresh')" :title="t('common.refresh')" @click="actions.loadRouting"><UiIcon name="refresh" /></button></div></div>
         <div v-for="route in state.routes" :key="route.id" :class="['route-row', { selected: route.id === state.selectedRoutingId, current: route.id === state.activeRoutingId }]">
-          <input type="checkbox" :checked="state.selectedRouteIds.includes(route.id)" :aria-label="route.remarks" @change="state.selectedRouteIds = state.selectedRouteIds.includes(route.id) ? state.selectedRouteIds.filter((id: string) => id !== route.id) : [...state.selectedRouteIds, route.id]" @click.stop />
+          <UiCheckbox :model-value="state.selectedRouteIds.includes(route.id)" :aria-label="route.remarks" @change="state.selectedRouteIds = state.selectedRouteIds.includes(route.id) ? state.selectedRouteIds.filter((id: string) => id !== route.id) : [...state.selectedRouteIds, route.id]" @click.stop />
           <button class="route-select" @click="actions.selectRoutingProfile(route.id)"><span class="route-info"><strong>{{ route.remarks }}</strong><small>{{ route.ruleNum }} · {{ route.enabled ? t('common.enabled') : t('common.disabled') }}</small></span><span v-if="route.id === state.activeRoutingId" class="current-label">{{ t('routing.default') }}</span></button>
           <div class="row-actions"><button class="tool-button" :aria-label="t('common.edit')" :title="t('common.edit')" @click="actions.openEditRoute(route)"><UiIcon name="edit" /></button><button class="tool-button danger-text" :aria-label="t('common.delete')" :title="t('common.delete')" @click="actions.deleteRoute(route)"><UiIcon name="close" /></button></div>
         </div>
@@ -51,11 +52,11 @@ const allRulesSelected = computed(() => state.routingRules.length > 0 && state.s
           <button class="button compact" @click="actions.importRulesFromClipboard">{{ t('routing.importFromClipboard') }}</button>
           <button class="button compact" :disabled="!state.selectedRoute?.url" :title="state.selectedRoute?.url || t('routing.urlRequired')" @click="actions.importRulesFromUrl">{{ t('routing.importFromUrl') }}</button>
         </div>
-        <div class="rule-import-options"><label class="check-inline"><input v-model="state.appendRules" type="checkbox" />{{ t('routing.append') }}</label><small>{{ t('routing.importParserHint') }}</small></div>
+        <div class="rule-import-options"><label class="check-inline"><UiCheckbox v-model="state.appendRules" />{{ t('routing.append') }}</label><small>{{ t('routing.importParserHint') }}</small></div>
         <div class="rules-mini-table">
-          <div class="rule-grid-head"><input type="checkbox" :checked="allRulesSelected" :aria-label="t('common.selectAll')" @change="actions.toggleAllRules" /><span>{{ t('routing.remarks') }}</span><span>{{ t('routing.ruleType') }}</span><span>{{ t('routing.outboundTag') }}</span><span>{{ t('routing.matchers') }}</span><span>{{ t('nodes.actions') }}</span></div>
+          <div class="rule-grid-head"><UiCheckbox :model-value="allRulesSelected" :aria-label="t('common.selectAll')" @change="actions.toggleAllRules" /><span>{{ t('routing.remarks') }}</span><span>{{ t('routing.ruleType') }}</span><span>{{ t('routing.outboundTag') }}</span><span>{{ t('routing.matchers') }}</span><span>{{ t('nodes.actions') }}</span></div>
           <div v-for="rule in state.routingRules" :key="rule.id" class="rule-row" :class="{ selected: state.selectedRuleIds.includes(rule.id) }" @dblclick="actions.openEditRoutingRule(rule)">
-            <input type="checkbox" :checked="state.selectedRuleIds.includes(rule.id)" :aria-label="rule.remarks || rule.outboundTag" @change="state.selectedRuleIds = state.selectedRuleIds.includes(rule.id) ? state.selectedRuleIds.filter((id: string) => id !== rule.id) : [...state.selectedRuleIds, rule.id]" @click.stop />
+            <UiCheckbox :model-value="state.selectedRuleIds.includes(rule.id)" :aria-label="rule.remarks || rule.outboundTag" @change="state.selectedRuleIds = state.selectedRuleIds.includes(rule.id) ? state.selectedRuleIds.filter((id: string) => id !== rule.id) : [...state.selectedRuleIds, rule.id]" @click.stop />
             <button class="rule-edit-button" :title="t('common.edit')" @click="actions.openEditRoutingRule(rule)"><i :class="['rule-state', { off: !rule.enabled }]" aria-hidden="true"></i><strong>{{ rule.remarks || '—' }}</strong></button>
             <span>{{ rule.ruleType || '—' }}</span><span class="rule-outbound">{{ rule.outboundTag || '—' }}</span>
             <span class="rule-details" :title="[...(rule.domain || []), ...(rule.ip || []), ...(rule.process || []), rule.port, rule.network, ...(rule.protocol || [])].filter(Boolean).join(', ')">{{ [...(rule.domain || []), ...(rule.ip || []), ...(rule.process || []), rule.port, rule.network, ...(rule.protocol || [])].filter(Boolean).join(', ') || '—' }}</span>

@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useModalFocus } from '../../Composables/useModalFocus'
 import UiIcon from '../UiIcon.vue'
+import UiCheckbox from '../UiCheckbox.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
@@ -20,7 +21,7 @@ const { onModalKeydown } = useModalFocus(dialog)
       <div class="modal-content">
         <label class="form-label">{{ t('subscriptions.source') }}<select v-model="state.importForm.subscriptionId"><option value="">{{ t('common.allGroups') }}</option><option v-for="group in state.groups.filter((item: Record<string, any>) => item.id)" :key="group.id" :value="group.id">{{ group.name }}</option></select></label>
         <label class="form-label">{{ t('nodes.importContent') }}<textarea v-model="state.importForm.content" class="code-area import-content" required :placeholder="t('nodes.importHint')" /></label>
-        <label class="check-inline"><input v-model="state.importForm.isSubscription" type="checkbox" />{{ t('nodes.isSubscription') }}</label>
+        <label class="check-inline"><UiCheckbox v-model="state.importForm.isSubscription" />{{ t('nodes.isSubscription') }}</label>
         <div class="button-row"><label class="button file-button">{{ t('common.openFile') }}<input type="file" accept=".txt,.json,.conf" @change="actions.readImportFile" /></label><button class="button" type="button" @click="actions.pasteImport">{{ t('common.paste') }}</button></div>
       </div>
       <footer class="modal-actions"><button class="button" type="button" @click="state.showImportForm = false">{{ t('common.cancel') }}</button><button class="button primary" type="submit">{{ t('common.import') }}</button></footer>

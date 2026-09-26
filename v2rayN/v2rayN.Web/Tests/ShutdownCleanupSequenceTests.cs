@@ -77,7 +77,7 @@ public class ShutdownCleanupSequenceTests
         await (RuntimeShutdownBudgets.RuntimeCleanup < RuntimeShutdownBudgets.HostShutdown).Should().BeTrue();
         await (RuntimeShutdownBudgets.HostShutdown < RuntimeShutdownBudgets.LauncherWait).Should().BeTrue();
         await (RuntimeShutdownBudgets.HostShutdown - RuntimeShutdownBudgets.RuntimeCleanup)
-            .Should().BeEqualTo(TimeSpan.FromSeconds(8));
+            .Should().BeEqualTo(TimeSpan.FromSeconds(5));
         await (RuntimeShutdownBudgets.LauncherWait - RuntimeShutdownBudgets.HostShutdown)
             .Should().BeEqualTo(TimeSpan.FromSeconds(10));
     }

@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ActionDropdown from '../ActionDropdown.vue'
 import UiIcon from '../UiIcon.vue'
+import UiCheckbox from '../UiCheckbox.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
@@ -38,7 +39,7 @@ const autoFitColumns = ref(false)
   <div class="table-container table-wrap" :class="{ 'auto-fit-columns': autoFitColumns }">
     <table class="profile-table">
       <thead><tr>
-        <th class="check-cell"><input type="checkbox" :checked="state.allVisibleSelected" :aria-label="t('common.selected', { count: state.filteredProfiles.length })" @change="actions.toggleAllVisible" /></th>
+        <th class="check-cell"><UiCheckbox :model-value="state.allVisibleSelected" :aria-label="t('common.selected', { count: state.filteredProfiles.length })" @change="actions.toggleAllVisible" /></th>
         <th><button class="sort-button" @click="actions.sortProfiles('ConfigType')">{{ t('nodes.type') }}</button></th>
         <th><button class="sort-button" @click="actions.sortProfiles('Remarks')">{{ t('nodes.remarks') }}</button></th>
         <th><button class="sort-button" @click="actions.sortProfiles('Address')">{{ t('nodes.address') }}</button></th>
@@ -57,7 +58,7 @@ const autoFitColumns = ref(false)
       </tr></thead>
       <tbody>
         <tr v-for="profile in state.filteredProfiles" :key="profile.indexId" :data-profile-id="profile.indexId" :tabindex="state.focusedProfileId === profile.indexId ? 0 : -1" :aria-current="profile.isCurrent ? 'true' : undefined" :aria-selected="state.selectedIds.includes(profile.indexId)" :class="{ current: profile.isCurrent, selected: state.selectedIds.includes(profile.indexId) }" @focus="actions.setFocusedProfile(profile.indexId)" @click="actions.focusProfile($event, profile)" @keydown="actions.handleRowKeydown($event, profile)" @dblclick="actions.selectProfile(profile)" @contextmenu="actions.openContext($event, profile)">
-          <td class="check-cell"><input type="checkbox" :checked="state.selectedIds.includes(profile.indexId)" :aria-label="profile.remarks || profile.address" @change="actions.toggleProfile(profile.indexId)" @click.stop /></td>
+          <td class="check-cell"><UiCheckbox :model-value="state.selectedIds.includes(profile.indexId)" :aria-label="profile.remarks || profile.address" @change="actions.toggleProfile(profile.indexId)" @click.stop /></td>
           <td :data-label="t('nodes.type')"><span class="protocol-code">{{ profile.protocol }}</span></td>
           <td class="remark-cell" :data-label="t('nodes.remarks')"><UiIcon v-if="profile.isCurrent" class="current-marker" name="check" :size="12" :title="t('nodes.current')" /><span class="remark-text" :title="profile.remarks">{{ profile.remarks || '—' }}</span></td>
           <td class="address-cell" :data-label="t('nodes.address')" :title="profile.address">{{ profile.address }}</td>

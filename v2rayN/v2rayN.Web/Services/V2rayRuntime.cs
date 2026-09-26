@@ -32,19 +32,131 @@ public sealed partial class V2rayRuntime(
     private readonly RuntimeOperationCoordinator _operations = operations;
     private readonly RuntimeMutationGate _mutations = new();
     private readonly SemaphoreSlim _coreGate = new(1, 1);
+    private readonly SemaphoreSlim _coreMonitorGate = new(1, 1);
     private readonly object _subscriptionGate = new();
     private readonly object _speedtestGate = new();
     private readonly Dictionary<string, Task> _subscriptionTasks = new(StringComparer.Ordinal);
     private SpeedtestService? _speedtestService;
     private Task? _speedtestTask;
     private CancellationTokenSource? _speedtestCancellation;
-    private DateTimeOffset? _coreStartedAt;
+    private CoreRuntimeSnapshot _coreRuntime = CoreRuntimeSnapshot.Stopped;
+    private CancellationTokenSource? _coreMonitorCancellation;
+    private Task? _coreMonitorTask;
     private string? _xrayPath;
     private ServerSpeedItem? _latestTraffic;
     private bool _initialized;
     private bool _restoring;
+    private int _applicationRestartRequested;
 
     private Config Config => AppManager.Instance.Config;
+    private CoreRuntimeSnapshot CurrentCoreRuntime => Volatile.Read(ref _coreRuntime);
+    public bool ApplicationRestartRequested => Volatile.Read(ref _applicationRestartRequested) != 0;
+
+    public int[] GetCoreProcessIds() => CoreManager.Instance.ActiveProcessIds.ToArray();
+
+    public string GetCoreRuntimeState() => CurrentCoreRuntime.State.ToString().ToLowerInvariant();
+
+    private void SetCoreRuntime(CoreRuntimeSnapshot snapshot)
+    {
+        Volatile.Write(ref _coreRuntime, snapshot);
+        if (snapshot.State != CoreRuntimeState.Running)
+        {
+            _coreMonitorCancellation?.Cancel();
+        }
+        _events.Publish("core-state", new
+        {
+            state = snapshot.State.ToString().ToLowerInvariant(),
+            profileId = snapshot.ProfileId,
+            coreType = snapshot.CoreType is { } coreType
+                ? System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(coreType.ToString())
+                : null,
+            startedAt = snapshot.StartedAt,
+            proxyPort = snapshot.ProxyPort,
+            apiPort = snapshot.ApiPort,
+            processIds = snapshot.ProcessIds,
+            lastFailure = snapshot.LastFailure,
+        });
+    }
+
+    private async Task StartCoreMonitorAsync()
+    {
+        await StopCoreMonitorAsync();
+        var cancellation = new CancellationTokenSource();
+        _coreMonitorCancellation = cancellation;
+        _coreMonitorTask = Task.Run(() => MonitorCoreRuntimeAsync(cancellation.Token));
+    }
+
+    private async Task StopCoreMonitorAsync()
+    {
+        await _coreMonitorGate.WaitAsync();
+        try
+        {
+            var cancellation = _coreMonitorCancellation;
+            var task = _coreMonitorTask;
+            _coreMonitorCancellation = null;
+            _coreMonitorTask = null;
+            if (cancellation is null) return;
+            cancellation.Cancel();
+            if (task is not null)
+            {
+                try { await task.WaitAsync(TimeSpan.FromSeconds(2)); }
+                catch (OperationCanceledException) { }
+                catch (TimeoutException) { AddLog("core", "Core runtime monitor did not stop within its cleanup budget."); }
+            }
+            cancellation.Dispose();
+        }
+        finally
+        {
+            _coreMonitorGate.Release();
+        }
+    }
+
+    private async Task MonitorCoreRuntimeAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(750), cancellationToken);
+                var snapshot = CurrentCoreRuntime;
+                if (snapshot.State != CoreRuntimeState.Running || snapshot.ProxyPort is not int port)
+                {
+                    continue;
+                }
+
+                var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+                var listening = await IsListeningAsync(port, cancellationToken);
+                if (!ReferenceEquals(snapshot, CurrentCoreRuntime) || CurrentCoreRuntime.State != CoreRuntimeState.Running)
+                {
+                    continue;
+                }
+                if (processIds.Length > 0 && listening)
+                {
+                    continue;
+                }
+
+                var failure = processIds.Length == 0
+                    ? "The tracked Core child process exited unexpectedly."
+                    : "The running Core no longer owns its expected proxy listener.";
+                SetCoreRuntime(snapshot with
+                {
+                    State = CoreRuntimeState.Faulted,
+                    ProcessIds = processIds,
+                    LastFailure = failure,
+                });
+                AddLog("core", failure);
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Expected when the Core is stopped, restarted, or the Web host shuts down.
+        }
+        catch (Exception exception)
+        {
+            AddLog("core", $"Core runtime monitor failed: {exception}");
+        }
+    }
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
@@ -81,10 +193,22 @@ public sealed partial class V2rayRuntime(
         });
         await ConfigHandler.InitBuiltinDNS(Config);
         await ConfigHandler.InitBuiltinFullConfigTemplate(Config);
-        if ((await AppManager.Instance.RoutingItems() ?? []).Count == 0)
+        // Keep startup aligned with Desktop's StatusBarViewModel. In particular,
+        // InitBuiltinRouting owns the RoutingIndexId -> IsActive migration and must
+        // run even when a restored Desktop database already has routing rows.
+        await ConfigHandler.InitBuiltinRouting(Config);
+        _ = await ConfigHandler.GetDefaultRouting(Config);
+        var restoredSubscriptions = await AppManager.Instance.SubItems() ?? [];
+        var normalizedSubIndexId = NormalizeSelectedSubscriptionId(
+            Config.SubIndexId,
+            restoredSubscriptions.Select(item => item.Id).ToArray());
+        if (Config.SubIndexId != normalizedSubIndexId)
         {
-            await ConfigHandler.InitBuiltinRouting(Config);
+            AddLog("restore", "The selected subscription group no longer exists; normalized the selection to all profiles.");
+            Config.SubIndexId = normalizedSubIndexId;
         }
+        _ = await ConfigHandler.GetDefaultServer(Config);
+        await _mutations.RunAsync(() => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)));
         await ProfileExManager.Instance.Init();
         await CertPemManager.Instance.Init(Config);
         // ServiceLib remains unchanged; this frontend rejects generated launch contexts that enable TUN.
@@ -103,7 +227,16 @@ public sealed partial class V2rayRuntime(
         AddLog("web", "serviceLib.initialized");
         StartScheduledOperations(cancellationToken);
 
-        if (_configuration.GetValue("V2RAYN_WEB_AUTOSTART", false))
+        var restoreState = await ConsumeRestoreRuntimeStateAsync(cancellationToken);
+        if (restoreState is { WasRunning: true, ProfileId.Length: > 0 } priorRuntime)
+        {
+            var result = await StartCoreAsync(priorRuntime.ProfileId, cancellationToken);
+            if (!result.Success)
+            {
+                AddLog("core", $"Could not restore the pre-backup Core state: {result.Code}");
+            }
+        }
+        else if (restoreState is null && _configuration.GetValue("V2RAYN_WEB_AUTOSTART", false))
         {
             var result = await StartCoreAsync(null, cancellationToken);
             if (!result.Success)
@@ -137,10 +270,30 @@ public sealed partial class V2rayRuntime(
         var saveServiceLibState = _initialized && !_restoring;
         if (saveServiceLibState)
         {
-            steps.Add(new("Core stop", async _ =>
+            steps.Add(new("Core stop", async deadline =>
             {
-                await CoreManager.Instance.CoreStop();
-                return true;
+                try
+                {
+                    await StopCoreMonitorAsync();
+                    await CoreManager.Instance.CoreStopGracefully(deadline.Token);
+                    var remaining = CoreManager.Instance.ActiveProcessIds;
+                    if (remaining.Count > 0)
+                    {
+                        throw new InvalidOperationException($"Core child processes remain: {string.Join(",", remaining)}.");
+                    }
+                    SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
+                    return true;
+                }
+                catch (Exception exception)
+                {
+                    SetCoreRuntime(CurrentCoreRuntime with
+                    {
+                        State = CoreRuntimeState.Faulted,
+                        ProcessIds = CoreManager.Instance.ActiveProcessIds.ToArray(),
+                        LastFailure = exception.Message,
+                    });
+                    throw;
+                }
             }));
             steps.Add(new("profile save", async _ =>
             {
@@ -398,37 +551,50 @@ public sealed partial class V2rayRuntime(
         var selectedProfile = await AppManager.Instance.GetProfileItem(Config.IndexId);
         var profileItems = await AppManager.Instance.ProfileItems(string.Empty) ?? [];
         var subscriptions = await AppManager.Instance.SubItems() ?? [];
-        var firstInbound = Config.Inbound.FirstOrDefault();
-        var port = firstInbound?.LocalPort ?? 0;
-        var listeners = new List<ListenerView>();
-        if (firstInbound is not null && port is > 0 and <= 65535)
+        var snapshot = CurrentCoreRuntime;
+        var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+        var listenerDefinitions = snapshot.ProxyPort.HasValue && snapshot.State != CoreRuntimeState.Stopped
+            ? snapshot.Listeners
+            : GetConfiguredListenerSnapshots();
+        var listeners = new List<ListenerView>(listenerDefinitions.Length);
+        foreach (var listener in listenerDefinitions)
         {
-            var localAddress = firstInbound.AllowLANConn && !firstInbound.NewPort4LAN ? "0.0.0.0" : "127.0.0.1";
-            listeners.Add(new ListenerView("local", ["http", "socks"], localAddress, port,
-                await IsListeningAsync(port, CancellationToken.None)));
-            if (firstInbound.SecondLocalPortEnabled && port + (int)EInboundProtocol.socks2 <= 65535)
-            {
-                var secondaryPort = AppManager.Instance.GetLocalPort(EInboundProtocol.socks2);
-                listeners.Add(new ListenerView("local-secondary", ["http", "socks"], "127.0.0.1", secondaryPort,
-                    await IsListeningAsync(secondaryPort, CancellationToken.None)));
-            }
-            if (firstInbound.AllowLANConn && firstInbound.NewPort4LAN
-                && port + (int)EInboundProtocol.socks3 <= 65535)
-            {
-                var lanPort = AppManager.Instance.GetLocalPort(EInboundProtocol.socks3);
-                listeners.Add(new ListenerView("lan", ["http", "socks"], "0.0.0.0", lanPort,
-                    await IsListeningAsync(lanPort, CancellationToken.None)));
-            }
+            listeners.Add(new ListenerView(
+                listener.Name,
+                listener.Protocols,
+                listener.ListenAddress,
+                listener.Port,
+                await IsListeningAsync(listener.Port, CancellationToken.None)));
         }
-        var listening = listeners.FirstOrDefault()?.Listening ?? false;
+
+        var mainListener = listeners.FirstOrDefault(listener => listener.Name == "local");
+        var listening = mainListener?.Listening == true;
+        var coreRunning = snapshot.State == CoreRuntimeState.Running && processIds.Length > 0 && listening;
+        if (snapshot.State == CoreRuntimeState.Running && !coreRunning)
+        {
+            snapshot = snapshot with
+            {
+                State = CoreRuntimeState.Faulted,
+                ProcessIds = processIds,
+                LastFailure = processIds.Length == 0
+                    ? "The tracked Core child process exited unexpectedly."
+                    : "The running Core no longer owns its expected proxy listener.",
+            };
+            SetCoreRuntime(snapshot);
+        }
+
+        var runningProfile = string.IsNullOrEmpty(snapshot.ProfileId)
+            ? null
+            : await AppManager.Instance.GetProfileItem(snapshot.ProfileId);
+        var configuredProxyPort = Config.Inbound.FirstOrDefault()?.LocalPort;
         return new StatusView(
-            _coreStartedAt is not null && listening,
-            _coreStartedAt is not null && listening
-                ? System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(AppManager.Instance.RunningCoreType.ToString())
+            coreRunning,
+            snapshot.CoreType is { } coreType
+                ? System.Text.Json.JsonNamingPolicy.CamelCase.ConvertName(coreType.ToString())
                 : null,
             selectedProfile?.IndexId,
             selectedProfile?.Remarks,
-            listening ? _coreStartedAt : null,
+            snapshot.StartedAt,
             listeners.ToArray(),
             !string.IsNullOrEmpty(_xrayPath),
             Utils.GetRuntimeInfo(),
@@ -440,7 +606,16 @@ public sealed partial class V2rayRuntime(
                 _latestTraffic.ProxyUp,
                 _latestTraffic.ProxyDown,
                 _latestTraffic.DirectUp,
-                _latestTraffic.DirectDown));
+                _latestTraffic.DirectDown),
+            snapshot.State.ToString().ToLowerInvariant(),
+            configuredProxyPort,
+            snapshot.State == CoreRuntimeState.Stopped ? null : snapshot.ProxyPort,
+            snapshot.ProfileId,
+            runningProfile?.Remarks,
+            snapshot.ApiPort,
+            processIds,
+            snapshot.LastFailure);
+
     }
 
     public async Task<OperationView> SelectProfileAsync(string profileId, CancellationToken cancellationToken)
@@ -488,6 +663,15 @@ public sealed partial class V2rayRuntime(
         if (profile is null)
         {
             return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
+        }
+
+        var current = CurrentCoreRuntime;
+        if (!selectProfile
+            && current.State == CoreRuntimeState.Running
+            && current.ProfileId == profile.IndexId
+            && CoreManager.Instance.HasActiveCoreProcesses)
+        {
+            return OperationView.Ok(ApiMessageKeys.CoreStarted, new { profileId = profile.IndexId, alreadyRunning = true });
         }
 
         var preflight = await BuildAndValidateCoreLaunchAsync(profile);
@@ -553,35 +737,157 @@ public sealed partial class V2rayRuntime(
         var profile = preflight.Profile;
         var built = preflight.BuiltContext;
         var port = Config.Inbound.FirstOrDefault()?.LocalPort ?? 0;
-        if (_coreStartedAt is null && await IsListeningAsync(port, cancellationToken))
+        if (!CoreManager.Instance.HasActiveCoreProcesses && await IsListeningAsync(port, cancellationToken))
         {
             return OperationView.Fail("proxy_port_in_use", ApiMessageKeys.CorePortInUse, new { port });
         }
 
-        await CoreManager.Instance.LoadCore(built.MainResult.Context, built.PreSocksResult?.Context);
-        var started = await WaitForListenerAsync(port, cancellationToken);
-        _coreStartedAt = started ? DateTimeOffset.UtcNow : null;
-        var operation = started
-            ? OperationView.Ok(ApiMessageKeys.CoreStarted, new { profileId = profile.IndexId })
-            : OperationView.Fail("core_start_failed", ApiMessageKeys.CoreStartFailed, new { profileId = profile.IndexId });
-        AddLog("core", operation.MessageKey);
-        _events.Publish("status", await GetStatusAsync());
-        return operation;
+        if (CoreManager.Instance.HasActiveCoreProcesses)
+        {
+            SetCoreRuntime(CurrentCoreRuntime with { State = CoreRuntimeState.Stopping, LastFailure = null });
+            try
+            {
+                await StopCoreMonitorAsync();
+                await CoreManager.Instance.CoreStopGracefully(cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                var failedStop = CurrentCoreRuntime with
+                {
+                    State = CoreRuntimeState.Faulted,
+                    ProcessIds = CoreManager.Instance.ActiveProcessIds.ToArray(),
+                    LastFailure = exception.Message,
+                };
+                SetCoreRuntime(failedStop);
+                AddLog("core", $"Core stop before launch failed: {exception}");
+                return OperationView.Fail("core_stop_failed", ApiMessageKeys.CoreStopFailed,
+                    new { detail = exception.Message, processIds = failedStop.ProcessIds });
+            }
+        }
+
+        var expectedCoreType = built.PreSocksResult?.Context.RunCoreType ?? built.MainResult.Context.RunCoreType;
+        var listeners = GetConfiguredListenerSnapshots();
+        SetCoreRuntime(new CoreRuntimeSnapshot(
+            CoreRuntimeState.Starting,
+            profile.IndexId,
+            expectedCoreType,
+            null,
+            listeners.FirstOrDefault(listener => listener.Name == "local")?.Port,
+            AppManager.Instance.StatePort,
+            listeners,
+            [],
+            null));
+
+        try
+        {
+            await CoreManager.Instance.LoadCore(built.MainResult.Context, built.PreSocksResult?.Context);
+            var started = await WaitForListenerAsync(port, cancellationToken);
+            var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+            if (!started || processIds.Length == 0)
+            {
+                var failure = !started
+                    ? "The Core process did not open its configured proxy listener."
+                    : "ServiceLib did not retain a live Core child process.";
+                if (processIds.Length > 0)
+                {
+                    try
+                    {
+                        await CoreManager.Instance.CoreStopGracefully(CancellationToken.None);
+                        processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+                    }
+                    catch (Exception stopException)
+                    {
+                        failure += $" Cleanup also failed: {stopException.Message}";
+                    }
+                }
+                SetCoreRuntime(CurrentCoreRuntime with
+                {
+                    State = CoreRuntimeState.Faulted,
+                    ProcessIds = processIds,
+                    LastFailure = failure,
+                });
+                AddLog("core", failure);
+                _events.Publish("status", await GetStatusAsync());
+                return OperationView.Fail("core_start_failed", ApiMessageKeys.CoreStartFailed,
+                    new { profileId = profile.IndexId, detail = failure, processIds });
+            }
+
+            SetCoreRuntime(CurrentCoreRuntime with
+            {
+                State = CoreRuntimeState.Running,
+                CoreType = AppManager.Instance.RunningCoreType,
+                StartedAt = DateTimeOffset.UtcNow,
+                ProcessIds = processIds,
+                LastFailure = null,
+            });
+            await StartCoreMonitorAsync();
+            AddLog("core", ApiMessageKeys.CoreStarted);
+            _events.Publish("status", await GetStatusAsync());
+            return OperationView.Ok(ApiMessageKeys.CoreStarted, new { profileId = profile.IndexId, processIds });
+        }
+        catch (Exception exception)
+        {
+            AddLog("core", $"Core start failed: {exception}");
+            var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+            SetCoreRuntime(CurrentCoreRuntime with
+            {
+                State = CoreRuntimeState.Faulted,
+                ProcessIds = processIds,
+                LastFailure = exception.Message,
+            });
+            _events.Publish("status", await GetStatusAsync());
+            return OperationView.Fail("core_start_failed", ApiMessageKeys.CoreStartFailed,
+                new { profileId = profile.IndexId, detail = exception.Message, processIds });
+        }
     }
 
     internal static OperationView? GetTunLaunchRejection(CoreConfigContextBuilderAllResult built) =>
         CoreLaunchPreflight.GetTunLaunchRejection(built);
+
+    internal static string NormalizeSelectedSubscriptionId(string? selectedId, IReadOnlyCollection<string> availableIds) =>
+        string.IsNullOrEmpty(selectedId) || availableIds.Contains(selectedId, StringComparer.Ordinal)
+            ? selectedId ?? string.Empty
+            : string.Empty;
 
     public async Task<OperationView> StopCoreAsync(CancellationToken cancellationToken)
     {
         await _coreGate.WaitAsync(cancellationToken);
         try
         {
-            await CoreManager.Instance.CoreStop();
-            _coreStartedAt = null;
-            AddLog("core", ApiMessageKeys.CoreStopped);
-            _events.Publish("status", await GetStatusAsync());
-            return OperationView.Ok(ApiMessageKeys.CoreStopped);
+            if (CurrentCoreRuntime.State == CoreRuntimeState.Stopped && !CoreManager.Instance.HasActiveCoreProcesses)
+            {
+                return OperationView.Ok(ApiMessageKeys.CoreStopped);
+            }
+
+            SetCoreRuntime(CurrentCoreRuntime with { State = CoreRuntimeState.Stopping, LastFailure = null });
+            try
+            {
+                await StopCoreMonitorAsync();
+                await CoreManager.Instance.CoreStopGracefully(cancellationToken);
+                var remaining = CoreManager.Instance.ActiveProcessIds.ToArray();
+                if (remaining.Length > 0)
+                {
+                    throw new InvalidOperationException($"Core child processes remain after graceful stop: {string.Join(",", remaining)}.");
+                }
+                SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
+                AddLog("core", ApiMessageKeys.CoreStopped);
+                _events.Publish("status", await GetStatusAsync());
+                return OperationView.Ok(ApiMessageKeys.CoreStopped);
+            }
+            catch (Exception exception)
+            {
+                var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+                SetCoreRuntime(CurrentCoreRuntime with
+                {
+                    State = CoreRuntimeState.Faulted,
+                    ProcessIds = processIds,
+                    LastFailure = exception.Message,
+                });
+                AddLog("core", $"Core graceful stop failed: {exception}");
+                _events.Publish("status", await GetStatusAsync());
+                return OperationView.Fail("core_stop_failed", ApiMessageKeys.CoreStopFailed,
+                    new { detail = exception.Message, processIds });
+            }
         }
         finally
         {
@@ -594,17 +900,64 @@ public sealed partial class V2rayRuntime(
         await _coreGate.WaitAsync(cancellationToken);
         try
         {
-            var profile = await GetDefaultProfileAsync();
-            if (profile is null)
+            var previous = CurrentCoreRuntime;
+            if (previous.State != CoreRuntimeState.Running || string.IsNullOrEmpty(previous.ProfileId))
             {
-                return OperationView.Fail("profile_not_selected", ApiMessageKeys.ProfileNoneSelected);
+                return OperationView.Fail("core_not_running", ApiMessageKeys.CoreNotRunning,
+                    new { runtimeState = previous.State.ToString() });
             }
 
-            return await CoreRestartFlow.ExecuteAsync(
-                () => BuildAndValidateCoreLaunchAsync(profile),
-                () => CoreManager.Instance.CoreStop(),
-                () => _coreStartedAt = null,
-                preflight => LaunchPreflightedCoreLockedAsync(preflight, cancellationToken));
+            var profile = await AppManager.Instance.GetProfileItem(previous.ProfileId);
+            if (profile is null)
+            {
+                return OperationView.Fail("profile_not_found", ApiMessageKeys.ProfileNotFound,
+                    new { profileId = previous.ProfileId });
+            }
+
+            AppManager.Instance.Reset();
+            var restartStage = "preflight";
+            try
+            {
+                return await CoreRestartFlow.ExecuteAsync(
+                    () => BuildAndValidateCoreLaunchAsync(profile),
+                    async () =>
+                    {
+                        restartStage = "stop";
+                        SetCoreRuntime(previous with { State = CoreRuntimeState.Restarting, LastFailure = null });
+                        await StopCoreMonitorAsync();
+                        await CoreManager.Instance.CoreStopGracefully(cancellationToken);
+                        var remaining = CoreManager.Instance.ActiveProcessIds;
+                        if (remaining.Count > 0)
+                        {
+                            throw new InvalidOperationException($"Core child processes remain after restart stop: {string.Join(",", remaining)}.");
+                        }
+                    },
+                    () =>
+                    {
+                        SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
+                        restartStage = "start";
+                    },
+                    preflight => LaunchPreflightedCoreLockedAsync(preflight, cancellationToken));
+            }
+            catch (Exception exception)
+            {
+                var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+                if (restartStage != "preflight")
+                {
+                    SetCoreRuntime(CurrentCoreRuntime with
+                    {
+                        State = CoreRuntimeState.Faulted,
+                        ProcessIds = processIds,
+                        LastFailure = exception.Message,
+                    });
+                }
+                AddLog("core", $"Core restart failed during {restartStage}: {exception}");
+                return restartStage == "stop"
+                    ? OperationView.Fail("core_stop_failed", ApiMessageKeys.CoreStopFailed,
+                        new { detail = exception.Message, processIds })
+                    : OperationView.Fail("core_restart_failed", ApiMessageKeys.CoreStartFailed,
+                        new { stage = restartStage, detail = exception.Message, processIds });
+            }
         }
         finally
         {
@@ -633,7 +986,12 @@ public sealed partial class V2rayRuntime(
 
     public LogPageView GetRecentLogsPage(int page, int pageSize, string? filter = null) => _logs.RecentPage(page, pageSize, filter);
 
-    public void ClearLogs() => _logs.Clear();
+    public long ClearLogs()
+    {
+        var generation = _logs.Clear();
+        _events.Publish("logs-cleared", new { generation });
+        return generation;
+    }
 
     private async Task OnCoreMessageAsync(bool notify, string message)
     {
@@ -788,6 +1146,36 @@ public sealed partial class V2rayRuntime(
         {
             config.Inbound[0].LocalPort = 10808;
         }
+    }
+
+    private RuntimeListenerSnapshot[] GetConfiguredListenerSnapshots()
+    {
+        var inbound = Config.Inbound.FirstOrDefault();
+        if (inbound is null || inbound.LocalPort is <= 0 or > 65535)
+        {
+            return [];
+        }
+
+        var listeners = new List<RuntimeListenerSnapshot>();
+        var localAddress = inbound.AllowLANConn && !inbound.NewPort4LAN ? "0.0.0.0" : "127.0.0.1";
+        listeners.Add(new RuntimeListenerSnapshot("local", ["http", "socks"], localAddress, inbound.LocalPort));
+        if (inbound.SecondLocalPortEnabled)
+        {
+            var secondaryPort = AppManager.Instance.GetLocalPort(EInboundProtocol.socks2);
+            if (secondaryPort is > 0 and <= 65535)
+            {
+                listeners.Add(new RuntimeListenerSnapshot("local-secondary", ["http", "socks"], "127.0.0.1", secondaryPort));
+            }
+        }
+        if (inbound.AllowLANConn && inbound.NewPort4LAN)
+        {
+            var lanPort = AppManager.Instance.GetLocalPort(EInboundProtocol.socks3);
+            if (lanPort is > 0 and <= 65535)
+            {
+                listeners.Add(new RuntimeListenerSnapshot("lan", ["http", "socks"], "0.0.0.0", lanPort));
+            }
+        }
+        return listeners.ToArray();
     }
 
     private static string? FindXrayExecutable(out string message)

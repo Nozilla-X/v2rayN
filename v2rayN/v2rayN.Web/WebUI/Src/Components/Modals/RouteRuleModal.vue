@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useModalFocus } from '../../Composables/useModalFocus'
 import UiIcon from '../UiIcon.vue'
+import UiCheckbox from '../UiCheckbox.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
@@ -22,7 +23,7 @@ const { onModalKeydown } = useModalFocus(dialog)
           <div class="form-grid three-col">
             <label>{{ t('routing.remarks') }}<input v-model="state.ruleForm.remarks" /></label>
             <label>{{ t('routing.ruleType') }}<select v-model="state.ruleForm.ruleType"><option :value="null">{{ t('common.none') }}</option><option value="ALL">ALL</option><option value="Routing">Routing</option><option value="DNS">DNS</option></select></label>
-            <label class="check-inline"><input v-model="state.ruleForm.enabled" type="checkbox" />{{ t('common.enabled') }}</label>
+            <label class="check-inline"><UiCheckbox v-model="state.ruleForm.enabled" />{{ t('common.enabled') }}</label>
             <label>{{ t('routing.outboundTag') }}<input v-model="state.ruleForm.outboundTag" required /></label>
             <label>{{ t('routing.port') }}<input v-model="state.ruleForm.port" placeholder="80,443,1000-2000" /></label>
             <label>{{ t('routing.network') }}<select v-model="state.ruleForm.network"><option value="">{{ t('common.any') }}</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="tcp,udp">TCP, UDP</option></select></label>

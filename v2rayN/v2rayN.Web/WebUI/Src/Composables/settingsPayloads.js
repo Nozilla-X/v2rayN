@@ -13,6 +13,14 @@ export function nullableNumber(value) {
   return number
 }
 
+export function normalizeNullableNumbers(value, fields) {
+  const normalized = { ...value }
+  for (const field of fields) {
+    if (Object.hasOwn(normalized, field)) normalized[field] = nullableNumber(normalized[field])
+  }
+  return normalized
+}
+
 function requiredNumber(value) {
   const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() !== '' ? Number(value) : Number.NaN
   if (!Number.isFinite(number)) {
@@ -57,32 +65,14 @@ export function buildApplicationSettingsBody(app) {
   return { ...app, geoAutoUpdateInterval: defaultedNumber(app.geoAutoUpdateInterval) }
 }
 
-export function buildSaveAllSettingsSections({ inbound, core, app, speed, coreTypes }) {
-  return [
-    {
-      key: 'settings.inbound',
-      path: '/api/settings/inbound',
-      body: { ...inbound, localPort: requiredNumber(inbound.localPort), destOverride: inbound.destOverride || [] },
-    },
-    {
-      key: 'settings.core',
-      path: '/api/settings/core',
-      body: buildCoreSettingsBody(core),
-    },
-    {
-      key: 'settings.application',
-      path: '/api/settings/application',
-      body: buildApplicationSettingsBody(app),
-    },
-    {
-      key: 'settings.speedtest',
-      path: '/api/settings/speedtest',
-      body: buildSpeedSettingsBody(speed),
-    },
-    {
-      key: 'settings.coreTypes',
-      path: '/api/settings/core-types',
-      body: { mappings: coreTypes || [] },
-    },
-  ]
+export function buildSettingsApplyBody({ inbound, core, app, speed, coreTypes, routing }) {
+  return {
+    inbound: { ...inbound, localPort: requiredNumber(inbound.localPort), destOverride: inbound.destOverride || [] },
+    core: buildCoreSettingsBody(core),
+    application: buildApplicationSettingsBody(app),
+    speedTest: buildSpeedSettingsBody(speed),
+    coreTypes: coreTypes || [],
+    domainStrategy: routing?.domainStrategy || '',
+    domainStrategy4Singbox: routing?.domainStrategy4Singbox || '',
+  }
 }

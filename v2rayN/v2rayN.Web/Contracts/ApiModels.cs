@@ -286,6 +286,8 @@ public sealed record CoreUpdateSettingsView(
 
 public sealed record CoreUpdateSettingsInput(string[] SelectedCoreTypes, bool PreRelease, bool UseProxy);
 
+public sealed record CoreUpdateBatchInput(bool Apply);
+
 public sealed record CoreUpdateProgressView(
     string CoreType,
     string Phase,
@@ -293,7 +295,8 @@ public sealed record CoreUpdateProgressView(
     bool Success,
     bool CoreWasRunning,
     string? Version,
-    string? Detail);
+    string? Detail,
+    bool Batch = false);
 
 public sealed record WebDavSettingsView(string? Url, string? UserName, string? DirName, bool HasPassword);
 
@@ -302,6 +305,15 @@ public sealed record WebDavSettingsInput(string? Url, string? UserName, string? 
 public sealed record RouteRulesMoveRequest(string RuleId, EMove Direction, int Position = -1);
 
 public sealed record CoreTypeMappingsInput(IReadOnlyList<CoreTypeMapping> Mappings);
+
+public sealed record SettingsApplyInput(
+    InboundSettingsInput Inbound,
+    CoreSettingsInput Core,
+    AppSettingsInput Application,
+    SpeedTestSettingsInput SpeedTest,
+    IReadOnlyList<CoreTypeMapping> CoreTypes,
+    string? DomainStrategy,
+    string? DomainStrategy4Singbox);
 
 public sealed record ApiEnvelope<T>(bool Success, string Code, string MessageKey, T? Data)
 {
@@ -333,6 +345,8 @@ public static class ApiMessageKeys
     public const string CoreStopped = "core.stopped";
     public const string CoreRestarted = "core.restarted";
     public const string CoreStartFailed = "core.startFailed";
+    public const string CoreStopFailed = "core.stopFailed";
+    public const string CoreNotRunning = "core.notRunning";
     public const string CoreBinaryMissing = "core.binaryMissing";
     public const string CorePortInUse = "core.portInUse";
     public const string CoreTunNotSupported = "core.tunNotSupported";
@@ -353,6 +367,7 @@ public static class ApiMessageKeys
     public const string ProfileInvalidRemoved = "profiles.invalidRemoved";
     public const string ProfileGrouped = "profiles.grouped";
     public const string ProfileSaved = "profiles.saved";
+    public const string ProfileSaveFailed = "profiles.saveFailed";
     public const string SubscriptionNotFound = "subscriptions.notFound";
     public const string SubscriptionAdded = "subscriptions.added";
     public const string SubscriptionSaved = "subscriptions.saved";
@@ -374,6 +389,7 @@ public static class ApiMessageKeys
     public const string SettingsInvalidCoreValue = "settings.invalidCoreValue";
     public const string SettingsInvalidFragment = "settings.invalidFragment";
     public const string SettingsInvalidSpeedTest = "settings.invalidSpeedTest";
+    public const string SettingsCoreApplyFailed = "settings.coreApplyFailed";
     public const string SettingsInvalidRoutingStrategy = "settings.invalidRoutingStrategy";
     public const string DnsProfileNotFound = "dns.profileNotFound";
     public const string DnsSaveFailed = "dns.saveFailed";
@@ -393,6 +409,7 @@ public static class ApiMessageKeys
     public const string XrayUpdateCurrent = "core.updateCurrent";
     public const string CoreUpdateCheckFailed = "maintenance.updateCheckFailed";
     public const string CoreUpdateStarted = "maintenance.updateStarted";
+    public const string CoreUpdateBatchStarted = "maintenance.batchStarted";
     public const string CoreUpdateBusy = "maintenance.updateBusy";
     public const string CoreUpdateFailed = "maintenance.updateFailed";
     public const string CoreUpdateCompleted = "maintenance.updateCompleted";
@@ -438,9 +455,17 @@ public sealed record StatusView(
     int SubscriptionCount,
     DateTimeOffset CheckedAt,
     bool StatisticsEnabled,
-    TrafficView? Traffic);
+    TrafficView? Traffic,
+    string RuntimeState = "stopped",
+    int? ConfiguredProxyPort = null,
+    int? RunningProxyPort = null,
+    string? RunningProfileId = null,
+    string? RunningProfileName = null,
+    int? ApiPort = null,
+    int[]? CoreProcessIds = null,
+    string? RuntimeFailure = null);
 
-public sealed record LogView(DateTimeOffset Timestamp, string Source, string Message);
+public sealed record LogView(DateTimeOffset Timestamp, string Source, string Message, long Generation = 0);
 
 public sealed record LogPageView(IReadOnlyList<LogView> Items, int Page, int PageSize, int Total, int TotalPages);
 

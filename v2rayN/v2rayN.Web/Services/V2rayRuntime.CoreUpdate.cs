@@ -22,6 +22,7 @@ public sealed partial class V2rayRuntime
     private readonly ConcurrentDictionary<ECoreType, Task> _coreUpdateTasks = new();
     private readonly ConcurrentDictionary<string, CoreUpdateProgressView> _updateProgress = new(StringComparer.Ordinal);
     private Task? _geoUpdateTask;
+    private Task? _coreUpdateBatchTask;
 
     public CoreUpdateSettingsView GetCoreUpdateSettings()
     {
@@ -166,6 +167,41 @@ public sealed partial class V2rayRuntime
     public bool StartXrayUpdate(bool preRelease, bool useProxy) =>
         StartCoreUpdate(ECoreType.Xray, preRelease, useProxy).Success;
 
+    public OperationView StartSelectedCoreUpdateBatch(bool apply)
+    {
+        var selected = Config.CheckUpdateItem.SelectedCoreTypes;
+        var selectedNames = selected is null
+            ? GetAvailableWebCoreUpdateTypes().Select(coreType => coreType.ToString()).Append(GeoFilesUpdateTarget).ToArray()
+            : selected.ToArray();
+        var targets = GetAvailableWebCoreUpdateTypes()
+            .Where(coreType => selectedNames.Contains(coreType.ToString(), StringComparer.Ordinal))
+            .ToArray();
+        var includeGeoFiles = selectedNames.Contains(GeoFilesUpdateTarget, StringComparer.Ordinal);
+        if (targets.Length == 0 && !includeGeoFiles)
+        {
+            return OperationView.Fail("core_update_batch_empty", ApiMessageKeys.CommonInvalidInput);
+        }
+
+        lock (_updateTaskGate)
+        {
+            if (IsUpdateRunningLocked())
+            {
+                return OperationView.Fail("core_update_busy", ApiMessageKeys.CoreUpdateBusy);
+            }
+
+            _coreUpdateBatchTask = Task.Run(() => RunSelectedCoreUpdateBatchAsync(
+                targets,
+                includeGeoFiles,
+                apply,
+                Config.CheckUpdateItem.CheckPreReleaseUpdate,
+                Config.CheckUpdateItem.UpdateViaProxy));
+        }
+
+        var targetNames = targets.Select(coreType => coreType.ToString()).ToList();
+        if (includeGeoFiles) targetNames.Add(GeoFilesUpdateTarget);
+        return OperationView.Ok(ApiMessageKeys.CoreUpdateBatchStarted, new { apply, targets = targetNames });
+    }
+
     public OperationView StartGeoUpdate(bool? useProxy = null)
     {
         var selected = Config.CheckUpdateItem.SelectedCoreTypes;
@@ -199,13 +235,228 @@ public sealed partial class V2rayRuntime
             {
                 operations.Add("geo-update");
             }
+            if (_coreUpdateBatchTask is { IsCompleted: false })
+            {
+                operations.Add("core-update-batch");
+            }
             return operations;
         }
     }
 
     private bool IsUpdateRunningLocked() =>
         _coreUpdateTasks.Values.Any(task => !task.IsCompleted)
-        || _geoUpdateTask is { IsCompleted: false };
+        || _geoUpdateTask is { IsCompleted: false }
+        || _coreUpdateBatchTask is { IsCompleted: false };
+
+    private async Task RunSelectedCoreUpdateBatchAsync(
+        IReadOnlyList<ECoreType> coreTypes,
+        bool includeGeoFiles,
+        bool apply,
+        bool preRelease,
+        bool useProxy)
+    {
+        var staged = new List<CoreUpdateStage>();
+        var overallSuccess = true;
+        var currentTarget = string.Empty;
+        try
+        {
+            // Holding the runtime's exclusive mutation lease prevents a restore or profile
+            // mutation from invalidating the checked/staged targets. Read-only status and log
+            // requests remain available. No Core process is stopped during this stage.
+            await using var maintenance = await _operations.EnterExclusiveAsync(
+                _operations.ShutdownToken,
+                allowReadOnlyObservations: true);
+            var token = maintenance.Token;
+            var checks = new List<CoreUpdateBatchCheck>(coreTypes.Count);
+
+            foreach (var coreType in coreTypes)
+            {
+                currentTarget = coreType.ToString();
+                var wasRunning = IsCoreTypeRunning(coreType);
+                PublishCoreUpdateProgress(coreType, "checking", false, false, wasRunning, null, null, batch: true);
+                var checkedUpdate = await CheckCoreUpdateResultAsync(coreType, preRelease, useProxy, token);
+                var check = checkedUpdate.Result;
+                if (checkedUpdate.IsUpToDate)
+                {
+                    checks.Add(new CoreUpdateBatchCheck(coreType, check, IsUpToDate: true));
+                    PublishCoreUpdateProgress(coreType, "completed", true, true, wasRunning,
+                        check.Version?.ToString(), check.Msg ?? "Already up to date.", batch: true);
+                    continue;
+                }
+
+                if (!check.Success || check.Version is null || string.IsNullOrWhiteSpace(check.Url))
+                {
+                    overallSuccess = false;
+                    PublishCoreUpdateProgress(coreType, "failed", true, false, wasRunning, null, check.Msg, batch: true);
+                    AddLog("update", $"Batch update check failed for {coreType}: {check.Msg}");
+                    checks.Add(new CoreUpdateBatchCheck(coreType, check, IsUpToDate: false, CheckFailed: true));
+                    continue;
+                }
+
+                checks.Add(new CoreUpdateBatchCheck(coreType, check, IsUpToDate: false));
+                if (!apply)
+                {
+                    PublishCoreUpdateProgress(coreType, "completed", true, true, wasRunning,
+                        check.Version.ToString(), check.Msg ?? "An update is available.", batch: true);
+                }
+            }
+
+            if (includeGeoFiles)
+            {
+                PublishGeoUpdateProgress("checking", false, false,
+                    "GeoFiles have no read-only check operation in ServiceLib; they are checked while staging the update.", batch: true);
+                if (!apply)
+                {
+                    PublishGeoUpdateProgress("completed", true, true,
+                        "GeoFiles will be downloaded and verified only when the batch update is applied.", batch: true);
+                }
+            }
+
+            if (!apply)
+            {
+                _events.Publish("core-update-batch-completed", new { success = overallSuccess, apply = false });
+                return;
+            }
+
+            if (checks.Any(item => item.CheckFailed))
+            {
+                overallSuccess = false;
+                foreach (var item in checks.Where(item => !item.CheckFailed && !item.IsUpToDate))
+                {
+                    PublishCoreUpdateProgress(item.CoreType, "failed", true, false, IsCoreTypeRunning(item.CoreType),
+                        item.Check.Version?.ToString(), "No targets were installed because at least one selected update check failed.", batch: true);
+                }
+                if (includeGeoFiles)
+                {
+                    PublishGeoUpdateProgress("failed", true, false, "No updates were installed because a selected update check failed.", batch: true);
+                }
+                _events.Publish("core-update-batch-completed", new { success = false, apply = true });
+                return;
+            }
+
+            var targetsToStage = checks.Where(item => !item.IsUpToDate).ToArray();
+            var unsupportedTargets = targetsToStage.Where(item => !CanInstallCoreUpdate(item.CoreType)).ToArray();
+            if (unsupportedTargets.Length > 0)
+            {
+                overallSuccess = false;
+                foreach (var item in unsupportedTargets)
+                {
+                    PublishCoreUpdateProgress(item.CoreType, "failed", true, false, IsCoreTypeRunning(item.CoreType),
+                        item.Check.Version?.ToString(), "This Web deployment can check but cannot safely install this target.", batch: true);
+                }
+                targetsToStage = targetsToStage.Where(item => CanInstallCoreUpdate(item.CoreType)).ToArray();
+            }
+            if (targetsToStage.Length == 0 && !includeGeoFiles)
+            {
+                _events.Publish("core-update-batch-completed", new { success = overallSuccess, apply = true });
+                return;
+            }
+
+            await CoreUpdateWorkflow.StageAllThenApplyAsync(
+                targetsToStage,
+                async target =>
+                {
+                    currentTarget = target.CoreType.ToString();
+                    var result = await DownloadAndVerifyCoreUpdateAsync(target.CoreType, target.Check, useProxy, token, batch: true);
+                    staged.Add(result);
+                    return result;
+                },
+                async completeStage =>
+                {
+                    // This callback is reached only after every selected package has been
+                    // downloaded, extracted, and version-verified successfully.
+                    foreach (var stage in completeStage)
+                    {
+                        PublishCoreUpdateProgress(stage.CoreType, "waiting", false, false,
+                            IsCoreTypeRunning(stage.CoreType), stage.VersionOutput, "All selected Core packages are staged and verified.", batch: true);
+                    }
+
+                    foreach (var stage in completeStage)
+                    {
+                        currentTarget = stage.CoreType.ToString();
+                        var result = await ApplyCoreUpdateAsync(stage, token, batch: true);
+                        overallSuccess &= result.Success;
+                        PublishCoreUpdateProgress(stage.CoreType,
+                            result.Success ? "completed" : "failed",
+                            isComplete: true,
+                            success: result.Success,
+                            result.CoreWasRunning,
+                            result.Version ?? stage.VersionOutput,
+                            result.Detail,
+                            batch: true);
+                    }
+                    return true;
+                });
+
+            if (includeGeoFiles)
+            {
+                currentTarget = GeoFilesUpdateTarget;
+                PublishGeoUpdateProgress("downloading", false, false, null, batch: true);
+                var geoUpdater = new UpdateService(Config, (success, message) =>
+                {
+                    AddLog("update", message);
+                    _events.Publish("geo-update-progress", new
+                    {
+                        success,
+                        code = success ? "ok" : "geo_update_progress",
+                        messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
+                        rawLog = message,
+                    });
+                    return Task.CompletedTask;
+                });
+                await geoUpdater.UpdateGeoFileAll(useProxy, token);
+                PublishGeoUpdateProgress("completed", true, true, null, batch: true);
+            }
+
+            _events.Publish("core-update-batch-completed", new { success = overallSuccess, apply = true });
+        }
+        catch (OperationCanceledException) when (_operations.IsStopping)
+        {
+            overallSuccess = false;
+            if (currentTarget == GeoFilesUpdateTarget)
+            {
+                PublishGeoUpdateProgress("failed", true, false, "Canceled during graceful shutdown.", batch: true);
+            }
+            else if (Enum.TryParse<ECoreType>(currentTarget, out var coreType))
+            {
+                PublishCoreUpdateProgress(coreType, "failed", true, false, IsCoreTypeRunning(coreType), null,
+                    "Canceled during graceful shutdown.", batch: true);
+            }
+            _events.Publish("core-update-batch-completed", new { success = false, apply });
+        }
+        catch (Exception exception)
+        {
+            overallSuccess = false;
+            AddLog("update", $"Core update batch failed at {currentTarget}: {exception}");
+            if (Enum.TryParse<ECoreType>(currentTarget, out var coreType))
+            {
+                PublishCoreUpdateProgress(coreType, "failed", true, false, IsCoreTypeRunning(coreType), null, exception.Message, batch: true);
+            }
+            else if (currentTarget == GeoFilesUpdateTarget)
+            {
+                PublishGeoUpdateProgress("failed", true, false, exception.Message, batch: true);
+            }
+            foreach (var notApplied in staged)
+            {
+                var progress = _updateProgress.GetValueOrDefault(notApplied.CoreType.ToString());
+                if (progress is { IsComplete: false })
+                {
+                    PublishCoreUpdateProgress(notApplied.CoreType, "failed", true, false,
+                        IsCoreTypeRunning(notApplied.CoreType), notApplied.VersionOutput,
+                        "The staged package was not applied because another selected target failed.", batch: true);
+                }
+            }
+            _events.Publish("core-update-batch-completed", new { success = false, apply });
+        }
+        finally
+        {
+            foreach (var stage in staged) CleanupCoreUpdateStage(stage);
+            lock (_updateTaskGate)
+            {
+                _coreUpdateBatchTask = null;
+            }
+        }
+    }
 
     private IReadOnlyList<ECoreType> GetAvailableWebCoreUpdateTypes()
     {
@@ -249,7 +500,7 @@ public sealed partial class V2rayRuntime
     private async Task RunCoreUpdateAsync(ECoreType coreType, bool preRelease, bool useProxy)
     {
         CoreUpdateStage? stage = null;
-        var wasRunning = _coreStartedAt is not null && AppManager.Instance.RunningCoreType == coreType;
+        var wasRunning = IsCoreTypeRunning(coreType);
         try
         {
             var result = await CoreUpdateWorkflow.StageThenApplyAsync(
@@ -320,7 +571,8 @@ public sealed partial class V2rayRuntime
         ECoreType coreType,
         UpdateResult check,
         bool useProxy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool batch = false)
     {
         var installPath = Path.GetFullPath(Utils.GetBinPath(string.Empty, coreType.ToString()));
         var installParent = Path.GetDirectoryName(installPath)
@@ -331,13 +583,13 @@ public sealed partial class V2rayRuntime
 
         try
         {
-            PublishCoreUpdateProgress(coreType, "downloading", isComplete: false, success: false, IsCoreTypeRunning(coreType), check.Version?.ToString(), check.Url);
+            PublishCoreUpdateProgress(coreType, "downloading", isComplete: false, success: false, IsCoreTypeRunning(coreType), check.Version?.ToString(), check.Url, batch);
             var download = new DownloadService();
             var downloadFailure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
             download.Error += (_, args) => downloadFailure.TrySetResult(args.GetException());
             download.UpdateCompleted += (_, progress) =>
             {
-                PublishCoreUpdateProgress(coreType, "downloading", isComplete: false, success: false, IsCoreTypeRunning(coreType), check.Version?.ToString(), progress.Msg);
+                PublishCoreUpdateProgress(coreType, "downloading", isComplete: false, success: false, IsCoreTypeRunning(coreType), check.Version?.ToString(), progress.Msg, batch);
             };
             await download.DownloadFileAsync(new FileDownloadRequest
             {
@@ -357,7 +609,7 @@ public sealed partial class V2rayRuntime
                 throw new IOException("The core package download did not produce an archive.");
             }
 
-            PublishCoreUpdateProgress(coreType, "verifying", isComplete: false, success: false, IsCoreTypeRunning(coreType), check.Version?.ToString(), null);
+            PublishCoreUpdateProgress(coreType, "verifying", isComplete: false, success: false, IsCoreTypeRunning(coreType), check.Version?.ToString(), null, batch);
             await CoreUpdatePackageStager.ExtractAsync(coreType, archivePath, packagePath, cancellationToken);
             var coreInfo = CoreInfoManager.Instance.GetCoreInfo(coreType)
                 ?? throw new InvalidOperationException($"{coreType} version metadata is unavailable.");
@@ -375,7 +627,7 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private async Task<CoreUpdateApplyResult> ApplyCoreUpdateAsync(CoreUpdateStage stage, CancellationToken cancellationToken)
+    private async Task<CoreUpdateApplyResult> ApplyCoreUpdateAsync(CoreUpdateStage stage, CancellationToken cancellationToken, bool batch = false)
     {
         await _coreGate.WaitAsync(cancellationToken);
         var installPath = stage.InstallPath;
@@ -393,7 +645,7 @@ public sealed partial class V2rayRuntime
         {
             if (originalCoreWasRunning)
             {
-                runningProfile = await AppManager.Instance.GetProfileItem(Config.IndexId);
+                runningProfile = await AppManager.Instance.GetProfileItem(CurrentCoreRuntime.ProfileId ?? string.Empty);
                 if (runningProfile is null)
                 {
                     return new CoreUpdateApplyResult(false, false, true, "The active profile could not be loaded; the running Core was left unchanged.");
@@ -430,15 +682,17 @@ public sealed partial class V2rayRuntime
             cancellationToken.ThrowIfCancellationRequested();
 
             PublishCoreUpdateProgress(stage.CoreType, "stopping-core", isComplete: false, success: false, originalCoreWasRunning, stage.VersionOutput,
-                originalCoreWasRunning ? null : "The updated Core was not running and will remain stopped.");
+                originalCoreWasRunning ? null : "The updated Core was not running and will remain stopped.", batch);
             if (originalCoreWasRunning)
             {
-                await CoreManager.Instance.CoreStop();
-                _coreStartedAt = null;
+                SetCoreRuntime(CurrentCoreRuntime with { State = CoreRuntimeState.Stopping, LastFailure = null });
+                await StopCoreMonitorAsync();
+                await CoreManager.Instance.CoreStopGracefully(cancellationToken);
+                SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
                 oldCoreWasStopped = true;
             }
 
-            PublishCoreUpdateProgress(stage.CoreType, "installing", isComplete: false, success: false, originalCoreWasRunning, stage.VersionOutput, null);
+            PublishCoreUpdateProgress(stage.CoreType, "installing", isComplete: false, success: false, originalCoreWasRunning, stage.VersionOutput, null, batch);
             if (hadInstalledCore)
             {
                 Directory.Move(installPath, backupPath);
@@ -469,7 +723,7 @@ public sealed partial class V2rayRuntime
 
             if (originalCoreWasRunning && runningProfile is not null)
             {
-                PublishCoreUpdateProgress(stage.CoreType, "restarting-core", isComplete: false, success: false, true, stage.VersionOutput, null);
+                PublishCoreUpdateProgress(stage.CoreType, "restarting-core", isComplete: false, success: false, true, stage.VersionOutput, null, batch);
                 var restart = await StartCoreLockedAsync(runningProfile, cancellationToken);
                 if (!restart.Success)
                 {
@@ -495,7 +749,7 @@ public sealed partial class V2rayRuntime
         {
             if (candidateInstalled || oldCoreWasStopped || Directory.Exists(backupPath))
             {
-                var rolledBack = await RollBackCoreUpdateAsync(
+                var rollback = await RollBackCoreUpdateAsync(
                     stage.CoreType,
                     installPath,
                     backupPath,
@@ -503,10 +757,13 @@ public sealed partial class V2rayRuntime
                     hadInstalledCore,
                     oldCoreWasStopped,
                     originalCoreWasRunning,
-                    runningProfile);
-                if (!rolledBack)
+                    runningProfile,
+                    batch);
+                if (!rollback.Completed)
                 {
-                    AddLog("update", $"{stage.CoreType} rollback did not complete; previous files remain at {backupPath}.");
+                    AddLog("update", rollback.FilesRestored
+                        ? $"{stage.CoreType} previous files were restored, but the old Core process could not be relaunched."
+                        : $"{stage.CoreType} rollback did not complete; previous files remain at {backupPath}.");
                 }
             }
             throw;
@@ -514,10 +771,19 @@ public sealed partial class V2rayRuntime
         catch (Exception exception)
         {
             AddLog("update", $"{stage.CoreType} apply failed: {exception.Message}");
-            var rolledBack = true;
+            if (CurrentCoreRuntime.State is CoreRuntimeState.Stopping or CoreRuntimeState.Restarting or CoreRuntimeState.Starting)
+            {
+                SetCoreRuntime(CurrentCoreRuntime with
+                {
+                    State = CoreRuntimeState.Faulted,
+                    ProcessIds = CoreManager.Instance.ActiveProcessIds.ToArray(),
+                    LastFailure = exception.Message,
+                });
+            }
+            var rollback = new CoreUpdateRollbackResult(FilesRestored: true, CoreRestarted: true);
             if (candidateInstalled || oldCoreWasStopped || Directory.Exists(backupPath))
             {
-                rolledBack = await RollBackCoreUpdateAsync(
+                rollback = await RollBackCoreUpdateAsync(
                     stage.CoreType,
                     installPath,
                     backupPath,
@@ -525,12 +791,15 @@ public sealed partial class V2rayRuntime
                     hadInstalledCore,
                     oldCoreWasStopped,
                     originalCoreWasRunning,
-                    runningProfile);
+                    runningProfile,
+                    batch);
             }
-            var detail = rolledBack
+            var detail = rollback.Completed
                 ? $"{exception.Message} The previous Core was restored."
-                : $"{exception.Message} Rollback did not complete; see the runtime log for the retained backup path.";
-            return new CoreUpdateApplyResult(false, rolledBack, originalCoreWasRunning, detail, stage.VersionOutput);
+                : rollback.FilesRestored
+                    ? $"{exception.Message} The previous Core files were restored, but its process could not be restarted."
+                    : $"{exception.Message} Rollback did not complete; see the runtime log for the retained backup path.";
+            return new CoreUpdateApplyResult(false, rollback.Completed, originalCoreWasRunning, detail, stage.VersionOutput);
         }
         finally
         {
@@ -549,7 +818,7 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private async Task<bool> RollBackCoreUpdateAsync(
+    private async Task<CoreUpdateRollbackResult> RollBackCoreUpdateAsync(
         ECoreType coreType,
         string installPath,
         string backupPath,
@@ -557,41 +826,52 @@ public sealed partial class V2rayRuntime
         bool hadInstalledCore,
         bool oldCoreWasStopped,
         bool wasRunning,
-        ProfileItem? runningProfile)
+        ProfileItem? runningProfile,
+        bool batch = false)
     {
+        var filesRestored = false;
         try
         {
-            // Do not stop an unrelated active Core when the target being updated was idle.
-            if (oldCoreWasStopped && wasRunning)
-            {
-                await CoreManager.Instance.CoreStop();
-                _coreStartedAt = null;
-            }
-            if (candidateInstalled && Directory.Exists(installPath))
-            {
-                Directory.Delete(installPath, recursive: true);
-            }
-            if (hadInstalledCore && Directory.Exists(backupPath) && !Directory.Exists(installPath))
-            {
-                Directory.Move(backupPath, installPath);
-            }
-
-            await CoreManager.Instance.Init(Config, OnCoreMessageAsync);
-            if (coreType == ECoreType.Xray)
-            {
-                _xrayPath = FindXrayExecutable(out _);
-            }
-            if (wasRunning && runningProfile is not null)
-            {
-                PublishCoreUpdateProgress(coreType, "restarting-core", isComplete: false, success: false, true, null, "Restarting the restored Core.");
-                return (await StartCoreLockedAsync(runningProfile, CancellationToken.None)).Success;
-            }
-            return true;
+            return await CoreUpdateWorkflow.RollBackAndRestoreAsync(
+                async () =>
+                {
+                    // Do not stop an unrelated active Core when the target being updated was idle.
+                    if (oldCoreWasStopped && wasRunning)
+                    {
+                        await StopCoreMonitorAsync();
+                        await CoreManager.Instance.CoreStopGracefully();
+                        SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
+                    }
+                    CoreUpdateWorkflow.RestorePreviousDirectory(
+                        installPath, backupPath, candidateInstalled, hadInstalledCore);
+                    filesRestored = true;
+                },
+                async () =>
+                {
+                    await CoreManager.Instance.Init(Config, OnCoreMessageAsync);
+                    if (coreType == ECoreType.Xray)
+                    {
+                        _xrayPath = FindXrayExecutable(out _);
+                    }
+                },
+                wasRunning && runningProfile is not null,
+                async () =>
+                {
+                    PublishCoreUpdateProgress(coreType, "restarting-core", isComplete: false, success: false,
+                        true, null, "Restarting the restored Core.", batch);
+                    return (await StartCoreLockedAsync(runningProfile!, CancellationToken.None)).Success;
+                });
         }
         catch (Exception exception)
         {
             AddLog("update", $"{coreType} rollback failed: {exception.Message}");
-            return false;
+            SetCoreRuntime(CurrentCoreRuntime with
+            {
+                State = CoreRuntimeState.Faulted,
+                ProcessIds = CoreManager.Instance.ActiveProcessIds.ToArray(),
+                LastFailure = exception.Message,
+            });
+            return new CoreUpdateRollbackResult(filesRestored, CoreRestarted: false);
         }
     }
 
@@ -683,7 +963,9 @@ public sealed partial class V2rayRuntime
     }
 
     private bool IsCoreTypeRunning(ECoreType coreType) =>
-        CoreUpdateRuntimePolicy.IsTargetRunning(coreType, AppManager.Instance.RunningCoreType, _coreStartedAt);
+        CurrentCoreRuntime.State == CoreRuntimeState.Running
+        && CurrentCoreRuntime.CoreType == coreType
+        && CoreManager.Instance.HasActiveCoreProcesses;
 
     private static string GetArchiveSuffix(string downloadUrl)
     {
@@ -787,9 +1069,10 @@ public sealed partial class V2rayRuntime
         bool success,
         bool coreWasRunning,
         string? version,
-        string? detail)
+        string? detail,
+        bool batch = false)
     {
-        var progress = new CoreUpdateProgressView(coreType.ToString(), phase, isComplete, success, coreWasRunning, version, detail);
+        var progress = new CoreUpdateProgressView(coreType.ToString(), phase, isComplete, success, coreWasRunning, version, detail, batch);
         if (!_updateProgress.TryGetValue(coreType.ToString(), out var previous) || previous.Phase != phase)
         {
             AddLog("update", $"{coreType} update phase: {phase}");
@@ -804,9 +1087,9 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private void PublishGeoUpdateProgress(string phase, bool isComplete, bool success, string? detail)
+    private void PublishGeoUpdateProgress(string phase, bool isComplete, bool success, string? detail, bool batch = false)
     {
-        var progress = new CoreUpdateProgressView(GeoFilesUpdateTarget, phase, isComplete, success, false, null, detail);
+        var progress = new CoreUpdateProgressView(GeoFilesUpdateTarget, phase, isComplete, success, false, null, detail, batch);
         if (!_updateProgress.TryGetValue(GeoFilesUpdateTarget, out var previous) || previous.Phase != phase)
         {
             AddLog("update", $"GeoFiles update phase: {phase}");
@@ -816,8 +1099,8 @@ public sealed partial class V2rayRuntime
         if (isComplete)
         {
             _events.Publish("geo-update-completed", success
-                ? OperationView.Ok(ApiMessageKeys.CommonCompleted)
-                : OperationView.Fail("geo_update_failed", ApiMessageKeys.CoreUpdateFailed));
+                ? OperationView.Ok(ApiMessageKeys.CommonCompleted, new { batch })
+                : OperationView.Fail("geo_update_failed", ApiMessageKeys.CoreUpdateFailed, new { batch }));
         }
     }
 
@@ -847,6 +1130,7 @@ public sealed partial class V2rayRuntime
 
     internal sealed record CoreUpdateStage(ECoreType CoreType, string InstallPath, string ArchivePath, string PackagePath, string VersionOutput);
     private sealed record CoreUpdateCheckResult(UpdateResult Result, bool IsUpToDate);
+    private sealed record CoreUpdateBatchCheck(ECoreType CoreType, UpdateResult Check, bool IsUpToDate, bool CheckFailed = false);
     private sealed record CoreUpdatePrepareResult(CoreUpdateStage? Stage, UpdateResult Check);
     private sealed record CoreUpdateApplyResult(bool Success, bool RolledBack, bool CoreWasRunning, string Detail, string? Version = null);
 }
@@ -859,6 +1143,34 @@ internal static class CoreUpdateRuntimePolicy
 
 internal static class CoreUpdateWorkflow
 {
+    public static void RestorePreviousDirectory(
+        string installPath,
+        string backupPath,
+        bool candidateInstalled,
+        bool hadInstalledCore)
+    {
+        if (candidateInstalled && Directory.Exists(installPath))
+        {
+            Directory.Delete(installPath, recursive: true);
+        }
+        if (hadInstalledCore && Directory.Exists(backupPath) && !Directory.Exists(installPath))
+        {
+            Directory.Move(backupPath, installPath);
+        }
+    }
+
+    public static async Task<CoreUpdateRollbackResult> RollBackAndRestoreAsync(
+        Func<Task> restoreFilesAsync,
+        Func<Task> initializePreviousCoreAsync,
+        bool wasRunning,
+        Func<Task<bool>> restartPreviousCoreAsync)
+    {
+        await restoreFilesAsync();
+        await initializePreviousCoreAsync();
+        var restarted = !wasRunning || await restartPreviousCoreAsync();
+        return new CoreUpdateRollbackResult(FilesRestored: true, CoreRestarted: restarted);
+    }
+
     public static async Task<TResult> StageThenApplyAsync<TStage, TResult>(
         Func<Task<TStage>> stageAsync,
         Func<TStage, Task<TResult>> applyAsync)
@@ -866,4 +1178,22 @@ internal static class CoreUpdateWorkflow
         var staged = await stageAsync();
         return await applyAsync(staged);
     }
+
+    public static async Task<TResult> StageAllThenApplyAsync<TTarget, TStage, TResult>(
+        IReadOnlyList<TTarget> targets,
+        Func<TTarget, Task<TStage>> stageAsync,
+        Func<IReadOnlyList<TStage>, Task<TResult>> applyAsync)
+    {
+        var staged = new List<TStage>(targets.Count);
+        foreach (var target in targets)
+        {
+            staged.Add(await stageAsync(target));
+        }
+        return await applyAsync(staged);
+    }
+}
+
+internal sealed record CoreUpdateRollbackResult(bool FilesRestored, bool CoreRestarted)
+{
+    public bool Completed => FilesRestored && CoreRestarted;
 }

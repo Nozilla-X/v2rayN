@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useModalFocus } from '../../Composables/useModalFocus'
 import UiIcon from '../UiIcon.vue'
+import UiCheckbox from '../UiCheckbox.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
@@ -22,7 +23,7 @@ const { onModalKeydown } = useModalFocus(dialog)
           <div class="form-grid two-col">
             <label>{{ t('subscriptions.name') }}<input v-model="state.subscriptionForm.remarks" required /></label>
             <label>{{ t('subscriptions.url') }}<input v-model="state.subscriptionForm.url" inputmode="url" /></label>
-            <label class="check-inline"><input v-model="state.subscriptionForm.enabled" type="checkbox" />{{ t('subscriptions.enabled') }}</label>
+            <label class="check-inline"><UiCheckbox v-model="state.subscriptionForm.enabled" />{{ t('subscriptions.enabled') }}</label>
             <label>{{ t('subscriptions.interval') }}<input v-model.number="state.subscriptionForm.autoUpdateInterval" type="number" min="0" /></label>
           </div>
           <details class="secondary-fields"><summary>{{ t('subscriptions.moreUrl') }}</summary><label>{{ t('subscriptions.moreUrl') }}<textarea v-model="state.subscriptionForm.moreUrl" /></label></details>

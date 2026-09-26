@@ -18,9 +18,11 @@ public static class WebApiEndpoints
 
     public static void MapWebApi(this WebApplication app)
     {
-        app.MapGet("/api/health", (HttpContext context) =>
+        app.MapGet("/api/health", (HttpContext context, V2rayRuntime runtime) =>
         {
             context.Response.Headers["X-v2rayn-web-instance-pid"] = Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            context.Response.Headers["X-v2rayn-web-core-state"] = runtime.GetCoreRuntimeState();
+            context.Response.Headers["X-v2rayn-web-core-process-ids"] = string.Join(',', runtime.GetCoreProcessIds());
             if (ShutdownDiagnostics.CurrentStage is { Length: > 0 } stage)
             {
                 context.Response.Headers["X-v2rayn-web-shutdown-stage"] = stage;
@@ -35,8 +37,8 @@ public static class WebApiEndpoints
             ApiReplies.Ok(runtime.GetRecentLogsPage(page ?? 1, pageSize ?? 100, filter), "logs.loaded"));
         app.MapDelete("/api/logs", (V2rayRuntime runtime) =>
         {
-            runtime.ClearLogs();
-            return ApiReplies.Ok(new { cleared = true }, "logs.cleared");
+            var generation = runtime.ClearLogs();
+            return ApiReplies.Ok(new { cleared = true, generation }, "logs.cleared");
         });
 
         MapSubscriptions(app);
@@ -111,7 +113,11 @@ public static class WebApiEndpoints
         app.MapPost("/api/profiles", async (ProfileItem profile, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.SaveProfileAsync(profile)));
         app.MapPut("/api/profiles/{id}", async (string id, ProfileItem profile, V2rayRuntime runtime) =>
-            ApiReplies.Operation(await runtime.SaveProfileAsync(profile, id), failureStatus: StatusCodes.Status404NotFound));
+        {
+            var result = await runtime.SaveProfileAsync(profile, id);
+            return ApiReplies.Operation(result,
+                failureStatus: result.Code == "profile_not_found" ? StatusCodes.Status404NotFound : StatusCodes.Status400BadRequest);
+        });
         app.MapDelete("/api/profiles", async ([FromBody] ProfileIdsRequest request, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.DeleteProfilesAsync(request.ProfileIds)));
         app.MapPost("/api/profiles/copy", async (ProfileIdsRequest request, V2rayRuntime runtime) =>
@@ -141,6 +147,8 @@ public static class WebApiEndpoints
     private static void MapSettings(WebApplication app)
     {
         app.MapGet("/api/settings", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetSettingsAsync(), "settings.loaded"));
+        app.MapPut("/api/settings/apply", async (SettingsApplyInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.ApplySettingsAsync(input)));
         app.MapPut("/api/settings/inbound", async (InboundSettingsInput input, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.UpdateInboundSettingsAsync(input)));
         app.MapPut("/api/settings/core", async (CoreSettingsInput input, V2rayRuntime runtime) =>
@@ -232,6 +240,10 @@ public static class WebApiEndpoints
             ApiReplies.Ok(runtime.GetCoreUpdateProgress(), "maintenance.updatesLoaded"));
         app.MapPut("/api/core-updates/settings", async (CoreUpdateSettingsInput input, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.SaveCoreUpdateSettingsAsync(input)));
+        app.MapPost("/api/core-updates/batch", (CoreUpdateBatchInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(runtime.StartSelectedCoreUpdateBatch(input.Apply),
+                successStatus: StatusCodes.Status202Accepted,
+                failureStatus: StatusCodes.Status409Conflict));
         app.MapGet("/api/core-updates/{coreType}/check", async (ECoreType coreType, bool? preRelease, bool? useProxy, V2rayRuntime runtime, CancellationToken cancellationToken) =>
             Results.Ok(await runtime.CheckCoreUpdateAsync(coreType, preRelease, useProxy, cancellationToken)));
         app.MapPost("/api/core-updates/{coreType}/update", (ECoreType coreType, bool? preRelease, bool? useProxy, V2rayRuntime runtime) =>
@@ -284,7 +296,8 @@ public static class WebApiEndpoints
             context.Response.Headers["X-Accel-Buffering"] = "no";
 
             using var heartbeat = new PeriodicTimer(TimeSpan.FromMinutes(1));
-            await using var subscription = events.Subscribe(cancellationToken).GetAsyncEnumerator(cancellationToken);
+            var includeLogs = string.Equals(context.Request.Query["include_logs"], "true", StringComparison.OrdinalIgnoreCase);
+            await using var subscription = events.Subscribe(cancellationToken, includeLogs).GetAsyncEnumerator(cancellationToken);
             var nextEvent = subscription.MoveNextAsync().AsTask();
             var nextHeartbeat = heartbeat.WaitForNextTickAsync(cancellationToken).AsTask();
             try

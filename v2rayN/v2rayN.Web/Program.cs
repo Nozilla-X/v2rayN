@@ -86,17 +86,26 @@ internal static class Program
             return 73;
         }
 
+        WebHostRunResult hostResult;
         using (instanceLock)
         {
             var showForegroundPrompt = launchOptions.Mode == WebLaunchMode.Foreground
                 && args.Contains(WebLaunchOptions.ForegroundFlag, StringComparer.Ordinal)
                 && !daemonEnvironment
                 && !containerEnvironment;
-            return await RunWebHostAsync(launchOptions.HostArguments, showForegroundPrompt);
+            hostResult = await RunWebHostAsync(launchOptions.HostArguments, showForegroundPrompt);
         }
+
+        if (hostResult.RestartRequested && launchOptions.Mode == WebLaunchMode.BackgroundChild
+            && !StartNativeRestartChild(launchOptions.HostArguments))
+        {
+            Console.Error.WriteLine("The Web instance stopped after restore, but the native launcher could not start its replacement process.");
+            return 1;
+        }
+        return hostResult.ExitCode;
     }
 
-    private static async Task<int> RunWebHostAsync(string[] args, bool showForegroundPrompt)
+    private static async Task<WebHostRunResult> RunWebHostAsync(string[] args, bool showForegroundPrompt)
     {
         var configPath = WebAuthStorage.MigrateAndGetPath(
             Utils.StartupPath(),
@@ -133,6 +142,7 @@ internal static class Program
             options.SerializerOptions.Converters.Add(new JsonStringEnumConverter(JsonNamingPolicy.CamelCase)));
 
         var app = builder.Build();
+        var runtime = app.Services.GetRequiredService<V2rayRuntime>();
         app.UseMiddleware<WebAuthRequestBodyLimitMiddleware>();
         app.UseRouting();
         app.UseRateLimiter();
@@ -196,6 +206,9 @@ internal static class Program
             await using var operation = leaseKind switch
             {
                 RuntimeRequestOperationKind.Exclusive => await operations.EnterExclusiveAsync(context.RequestAborted),
+                RuntimeRequestOperationKind.ExclusiveReadOnly => await operations.EnterExclusiveAsync(
+                    context.RequestAborted,
+                    allowReadOnlyObservations: true),
                 RuntimeRequestOperationKind.Observation => await operations.EnterObservationAsync(context.RequestAborted),
                 _ => await operations.EnterOperationAsync(context.RequestAborted),
             };
@@ -221,8 +234,42 @@ internal static class Program
         }
 
         await app.RunAsync();
-        return 0;
+        return new WebHostRunResult(0, runtime.ApplicationRestartRequested);
     }
+
+    private static bool StartNativeRestartChild(string[] hostArguments)
+    {
+        var setsid = LinuxXdgBrowserOpener.FindExecutable("setsid");
+        var processPath = Environment.ProcessPath;
+        if (setsid is null || string.IsNullOrWhiteSpace(processPath)) return false;
+
+        var startInfo = new System.Diagnostics.ProcessStartInfo { FileName = setsid, UseShellExecute = false };
+        var commandLine = Environment.GetCommandLineArgs();
+        if (Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase)
+            && commandLine.Length > 0
+            && commandLine[0].EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+        {
+            startInfo.ArgumentList.Add(processPath);
+            startInfo.ArgumentList.Add(commandLine[0]);
+        }
+        else
+        {
+            startInfo.ArgumentList.Add(processPath);
+        }
+
+        startInfo.ArgumentList.Add(WebLaunchOptions.BackgroundChildFlag);
+        foreach (var argument in hostArguments) startInfo.ArgumentList.Add(argument);
+        try
+        {
+            return System.Diagnostics.Process.Start(startInfo) is not null;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    private sealed record WebHostRunResult(int ExitCode, bool RestartRequested);
 
     private static void PrepareDataScope()
     {

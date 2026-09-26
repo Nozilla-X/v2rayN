@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.IO;
 using v2rayN.Web.Services;
 
 namespace v2rayN.Web.Launcher;
@@ -9,6 +10,8 @@ public enum WebStopResult
     NotRunning,
     Stopped,
     IdentityUnverified,
+    SupervisorManaged,
+    CoreProcessStillRunning,
     SignalFailed,
     TimedOut,
 }
@@ -76,6 +79,11 @@ public sealed class WebStopper
             return WebStopResult.IdentityUnverified;
         }
 
+        if (IsManagedBySystemd(ownerProcessId.Value))
+        {
+            return WebStopResult.SupervisorManaged;
+        }
+
         var health = await _healthProbe.ProbeAsync(healthUri, cancellationToken);
         if (!health.IsHealthy || health.InstanceProcessId != ownerProcessId)
         {
@@ -93,6 +101,8 @@ public sealed class WebStopper
             return WebStopResult.IdentityUnverified;
         }
 
+        var coreProcessIds = new HashSet<int>(health.CoreProcessIds ?? []);
+
         if (!_signalSender.SendSigTerm(ownerProcessId.Value))
         {
             return WebStopResult.SignalFailed;
@@ -107,13 +117,17 @@ public sealed class WebStopper
             // instance has released its lock (after host cleanup and service shutdown).
             var currentHealth = await _healthProbe.ProbeAsync(healthUri, cancellationToken);
             LastObservedShutdownStage = currentHealth.ShutdownStage ?? LastObservedShutdownStage;
+            coreProcessIds.UnionWith(currentHealth.CoreProcessIds ?? []);
             var lockHeld = IsLockHeld(lockPath);
             var currentOwnerProcessId = lockHeld ? WebInstanceLock.ReadOwnerProcessId(lockPath) : null;
             var endpointStillIdentifiesOwner = currentHealth.IsHealthy
                 && currentHealth.InstanceProcessId == ownerProcessId;
             if (!endpointStillIdentifiesOwner && (!lockHeld || currentOwnerProcessId != ownerProcessId))
             {
-                return WebStopResult.Stopped;
+                var remainingCoreProcesses = coreProcessIds.Where(IsProcessAlive).ToArray();
+                return remainingCoreProcesses.Length == 0
+                    ? WebStopResult.Stopped
+                    : WebStopResult.CoreProcessStillRunning;
             }
 
             var remaining = _stopTimeout - timeout.Elapsed;
@@ -128,4 +142,43 @@ public sealed class WebStopper
 
     private static bool IsLockHeld(string lockPath) =>
         File.Exists(lockPath) && WebInstanceLock.IsHeld(lockPath);
+
+    internal static bool IsManagedBySystemd(int processId)
+    {
+        if (!OperatingSystem.IsLinux()) return false;
+        try
+        {
+            return IsSystemdServiceCgroup(File.ReadAllText($"/proc/{processId}/cgroup"));
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    internal static bool IsSystemdServiceCgroup(string? cgroup) =>
+        !string.IsNullOrWhiteSpace(cgroup)
+        && cgroup.Contains("system.slice/", StringComparison.Ordinal)
+        && cgroup.Contains(".service", StringComparison.Ordinal);
+
+    private static bool IsProcessAlive(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
 }

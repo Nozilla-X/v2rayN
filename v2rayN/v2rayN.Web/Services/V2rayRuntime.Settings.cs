@@ -99,6 +99,128 @@ public sealed partial class V2rayRuntime
                 Global.DomainStrategies4Sbox.ToArray())));
     }
 
+    public async Task<OperationView> ApplySettingsAsync(SettingsApplyInput input)
+    {
+        var inbound = input.Inbound;
+        var core = input.Core;
+        var application = input.Application;
+        var speed = input.SpeedTest;
+        var highestPortOffset = inbound.SecondLocalPortEnabled || (inbound.AllowLANConn && inbound.NewPort4LAN) ? 2 : 0;
+        if (inbound.LocalPort <= 0 || inbound.LocalPort > 65535 - highestPortOffset
+            || !AreDestOverrideProtocolsValid(inbound.DestOverride))
+        {
+            return OperationView.Fail("inbound_port_invalid", ApiMessageKeys.SettingsInvalidPort);
+        }
+        if (!ValidateCoreSettingsInput(core))
+        {
+            return OperationView.Fail("core_setting_invalid", ApiMessageKeys.SettingsInvalidCoreValue);
+        }
+        if (application.GeoAutoUpdateInterval < 0
+            || speed.SpeedTestTimeout <= 0 || speed.MixedConcurrencyCount <= 0
+            || speed.SpeedTestPageSize is <= 0 || speed.SpeedTestDelayInterval is < 0
+            || !IsHttpUrl(speed.SpeedTestUrl) || !IsHttpUrl(speed.SpeedPingTestUrl))
+        {
+            return OperationView.Fail("settings_apply_invalid", ApiMessageKeys.SettingsInvalidSpeedTest);
+        }
+        if (!AreWebCoreTypeMappingsValid(input.CoreTypes)
+            || !Global.DomainStrategies.Contains(input.DomainStrategy ?? string.Empty)
+            || !Global.DomainStrategies4Sbox.Contains(input.DomainStrategy4Singbox ?? string.Empty))
+        {
+            return OperationView.Fail("settings_apply_invalid", ApiMessageKeys.CommonInvalidInput);
+        }
+
+        var coreFingerprintBefore = GetCoreConfigurationFingerprint();
+        var oldConfig = JsonUtils.DeepCopy(Config)
+            ?? throw new InvalidOperationException("The current configuration could not be copied for an atomic settings apply.");
+        var statisticsChanged = Config.GuiItem.EnableStatistics != application.EnableStatistics
+            || Config.GuiItem.DisplayRealTimeSpeed != application.DisplayRealTimeSpeed;
+        try
+        {
+            await _mutations.RunAsync(async () =>
+            {
+                var targetInbound = Config.Inbound[0];
+                targetInbound.LocalPort = inbound.LocalPort;
+                targetInbound.SecondLocalPortEnabled = inbound.SecondLocalPortEnabled;
+                targetInbound.UdpEnabled = inbound.UdpEnabled;
+                targetInbound.SniffingEnabled = inbound.SniffingEnabled;
+                targetInbound.DestOverride = inbound.DestOverride?.Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+                targetInbound.RouteOnly = inbound.RouteOnly;
+                targetInbound.AllowLANConn = inbound.AllowLANConn;
+                targetInbound.NewPort4LAN = inbound.AllowLANConn && inbound.NewPort4LAN;
+                targetInbound.User = inbound.User?.Trim() ?? string.Empty;
+                targetInbound.Pass = inbound.Pass?.Trim() ?? string.Empty;
+
+                ApplyCoreSettingsToConfig(core);
+                Config.GuiItem.EnableStatistics = application.EnableStatistics;
+                Config.GuiItem.DisplayRealTimeSpeed = application.DisplayRealTimeSpeed;
+                Config.GuiItem.KeepOlderDedupl = application.KeepOlderDedupl;
+                Config.GuiItem.AutoUpdateInterval = Math.Max(0, application.GeoAutoUpdateInterval);
+                Config.GuiItem.RootCertProvider = application.RootCertProvider;
+                Config.ConstItem.GeoSourceUrl = application.GeoSourceUrl;
+                Config.ConstItem.SrsSourceUrl = application.SrsSourceUrl;
+                Config.ConstItem.RouteRulesTemplateSourceUrl = application.RouteRulesTemplateSourceUrl;
+                Config.ConstItem.SubConvertUrl = application.SubConvertUrl;
+
+                Config.SpeedTestItem.SpeedTestTimeout = speed.SpeedTestTimeout;
+                Config.SpeedTestItem.SpeedTestUrl = speed.SpeedTestUrl;
+                Config.SpeedTestItem.SpeedPingTestUrl = speed.SpeedPingTestUrl;
+                Config.SpeedTestItem.MixedConcurrencyCount = Math.Max(speed.MixedConcurrencyCount, Global.SpeedTestConcurrencyCountMin);
+                Config.SpeedTestItem.IPAPIUrl = speed.IPAPIUrl;
+                Config.SpeedTestItem.UdpTestTarget = speed.UdpTestTarget;
+                Config.SpeedTestItem.SpeedTestPageSize = speed.SpeedTestPageSize;
+                Config.SpeedTestItem.SpeedTestDelayInterval = speed.SpeedTestDelayInterval;
+
+                EnsureCoreTypeMappings();
+                foreach (var mapping in input.CoreTypes)
+                {
+                    var existing = Config.CoreTypeItem.FirstOrDefault(item => item.ConfigType == mapping.ConfigType);
+                    if (existing is not null)
+                    {
+                        existing.CoreType = mapping.CoreType;
+                    }
+                }
+                Config.RoutingBasicItem.DomainStrategy = input.DomainStrategy!;
+                Config.RoutingBasicItem.DomainStrategy4Singbox = input.DomainStrategy4Singbox!;
+                await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+            });
+        }
+        catch (Exception exception)
+        {
+            RestoreConfigValues(Config, oldConfig);
+            try
+            {
+                await _mutations.RunAsync(() => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)));
+            }
+            catch (Exception rollbackException)
+            {
+                AddLog("settings", $"Settings rollback persistence failed: {rollbackException}");
+            }
+            AddLog("settings", $"Settings transaction failed before Core apply: {exception}");
+            return OperationView.Fail("settings_transaction_failed", ApiMessageKeys.CommonInternal,
+                new { stage = "config_save", exceptionType = exception.GetType().Name, detail = exception.Message });
+        }
+
+        if (statisticsChanged)
+        {
+            StatisticsManager.Instance.Close();
+            _latestTraffic = null;
+            if (Config.GuiItem.EnableStatistics || Config.GuiItem.DisplayRealTimeSpeed)
+            {
+                try
+                {
+                    await StatisticsManager.Instance.Init(Config, OnStatisticsUpdateAsync);
+                }
+                catch (Exception exception)
+                {
+                    AddLog("settings", $"Statistics reinitialization failed after settings were saved: {exception}");
+                }
+            }
+        }
+
+        var coreChanged = coreFingerprintBefore != GetCoreConfigurationFingerprint();
+        return await CompleteCoreAffectingChangeAsync("all-settings", coreChanged);
+    }
+
     public async Task<OperationView> UpdateInboundSettingsAsync(InboundSettingsInput input)
     {
         var highestPortOffset = input.SecondLocalPortEnabled || (input.AllowLANConn && input.NewPort4LAN) ? 2 : 0;
@@ -111,6 +233,7 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("inbound_dest_override_invalid", ApiMessageKeys.CommonInvalidInput);
         }
 
+        var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
             var inbound = Config.Inbound[0];
@@ -127,9 +250,7 @@ public sealed partial class V2rayRuntime
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
 
-        var restartRequired = _coreStartedAt is not null;
-        _events.Publish("settings-changed", new { section = "inbound", restartRequired });
-        return OperationView.Ok(restartRequired ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved, new { restartRequired });
+        return await CompleteCoreAffectingChangeAsync("inbound", fingerprint != GetCoreConfigurationFingerprint());
     }
 
     public async Task<OperationView> UpdateCoreSettingsAsync(CoreSettingsInput input)
@@ -157,6 +278,7 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("fragment_setting_invalid", ApiMessageKeys.SettingsInvalidFragment);
         }
 
+        var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
             Config.CoreBasicItem.LogEnabled = input.LogEnabled;
@@ -184,9 +306,7 @@ public sealed partial class V2rayRuntime
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
 
-        var restartRequired = _coreStartedAt is not null;
-        _events.Publish("settings-changed", new { section = "core", restartRequired });
-        return OperationView.Ok(restartRequired ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved, new { restartRequired });
+        return await CompleteCoreAffectingChangeAsync("core", fingerprint != GetCoreConfigurationFingerprint());
     }
 
     public async Task<OperationView> UpdateAppSettingsAsync(AppSettingsInput input)
@@ -255,6 +375,7 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("core_type_mapping_invalid", ApiMessageKeys.CommonInvalidInput);
         }
 
+        var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
             EnsureCoreTypeMappings();
@@ -268,9 +389,7 @@ public sealed partial class V2rayRuntime
             }
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
-        var restartRequired = _coreStartedAt is not null;
-        _events.Publish("settings-changed", new { section = "core-types", restartRequired });
-        return OperationView.Ok(restartRequired ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved, new { restartRequired });
+        return await CompleteCoreAffectingChangeAsync("core-types", fingerprint != GetCoreConfigurationFingerprint());
     }
 
     private void EnsureCoreTypeMappings()
@@ -293,27 +412,27 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("routing_strategy_invalid", ApiMessageKeys.SettingsInvalidRoutingStrategy);
         }
 
+        var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
             Config.RoutingBasicItem.DomainStrategy = input.DomainStrategy!;
             Config.RoutingBasicItem.DomainStrategy4Singbox = input.DomainStrategy4Singbox!;
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
-        _events.Publish("settings-changed", new { section = "routing", restartRequired = _coreStartedAt is not null });
-        return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved, new { restartRequired = _coreStartedAt is not null });
+        return await CompleteCoreAffectingChangeAsync("routing", fingerprint != GetCoreConfigurationFingerprint());
     }
 
     public Task<SimpleDNSItem> GetSimpleDNSAsync() => Task.FromResult(Config.SimpleDNSItem);
 
     public async Task<OperationView> UpdateSimpleDNSAsync(SimpleDNSItem input)
     {
+        var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
             Config.SimpleDNSItem = input;
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
-        _events.Publish("settings-changed", new { section = "dns", restartRequired = _coreStartedAt is not null });
-        return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved, new { restartRequired = _coreStartedAt is not null });
+        return await CompleteCoreAffectingChangeAsync("dns", fingerprint != GetCoreConfigurationFingerprint());
     }
 
     public async Task<IReadOnlyList<DnsProfileView>> GetDnsProfilesAsync() =>
@@ -329,8 +448,14 @@ public sealed partial class V2rayRuntime
             var current = await AppManager.Instance.GetDNSItem(coreType);
             if (current is null)
             {
-                return -2;
+                return (Result: -2, Changed: false);
             }
+            var changed = current.Enabled != input.Enabled
+                || current.UseSystemHosts != input.UseSystemHosts
+                || current.NormalDNS != input.NormalDNS
+                || current.DomainStrategy4Freedom != input.DomainStrategy4Freedom
+                || current.DomainDNSAddress != input.DomainDNSAddress
+                || current.Remarks != (input.Remarks ?? current.Remarks);
             var item = new DNSItem
             {
                 Id = current.Id,
@@ -343,19 +468,17 @@ public sealed partial class V2rayRuntime
                 DomainStrategy4Freedom = input.DomainStrategy4Freedom,
                 DomainDNSAddress = input.DomainDNSAddress,
             };
-            return await ConfigHandler.SaveDNSItems(Config, item);
+            return (Result: await ConfigHandler.SaveDNSItems(Config, item), Changed: changed);
         });
-        if (result == -2)
+        if (result.Result == -2)
         {
             return OperationView.Fail("dns_profile_not_found", ApiMessageKeys.DnsProfileNotFound, new { coreType = coreType.ToString() });
         }
-        if (result != 0)
+        if (result.Result != 0)
         {
             return OperationView.Fail("dns_profile_save_failed", ApiMessageKeys.DnsSaveFailed);
         }
-        _events.Publish("settings-changed", new { section = "dns", coreType = coreType.ToString(), restartRequired = _coreStartedAt is not null });
-        return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved,
-            new { coreType = coreType.ToString(), restartRequired = _coreStartedAt is not null });
+        return await CompleteCoreAffectingChangeAsync("dns", result.Changed, data: new { coreType = coreType.ToString() });
     }
 
     public async Task<IReadOnlyList<RoutingItem>> GetRoutingProfilesAsync() => await AppManager.Instance.RoutingItems() ?? [];
@@ -380,6 +503,7 @@ public sealed partial class V2rayRuntime
         var save = await _mutations.RunAsync(async () =>
         {
             RoutingItem item;
+            var changed = string.IsNullOrEmpty(routingId);
             if (string.IsNullOrEmpty(routingId))
             {
                 item = input;
@@ -393,9 +517,18 @@ public sealed partial class V2rayRuntime
                 var existingItem = await AppManager.Instance.GetRoutingItem(routingId);
                 if (existingItem is null)
                 {
-                    return (Result: -2, Item: (RoutingItem?)null);
+                    return (Result: -2, Item: (RoutingItem?)null, Changed: false);
                 }
                 item = existingItem;
+                changed = item.Remarks != input.Remarks
+                    || item.Url != input.Url
+                    || item.Enabled != input.Enabled
+                    || item.Locked != input.Locked
+                    || item.CustomIcon != input.CustomIcon
+                    || item.CustomRulesetPath4Singbox != input.CustomRulesetPath4Singbox
+                    || item.DomainStrategy != input.DomainStrategy
+                    || item.DomainStrategy4Singbox != input.DomainStrategy4Singbox
+                    || item.RuleSet != ruleJson;
                 item.Remarks = input.Remarks;
                 item.Url = input.Url;
                 item.Enabled = input.Enabled;
@@ -418,7 +551,7 @@ public sealed partial class V2rayRuntime
             var result = parsedRules.Count == 0
                 ? await ConfigHandler.SaveRoutingItem(Config, item)
                 : await ConfigHandler.AddBatchRoutingRules(item, JsonUtils.Serialize(parsedRules, false));
-            return (Result: result, Item: (RoutingItem?)item);
+            return (Result: result, Item: (RoutingItem?)item, Changed: changed);
         });
         if (save.Result == -2)
         {
@@ -429,9 +562,8 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("routing_profile_save_failed", ApiMessageKeys.RoutingSaveFailed);
         }
 
-        _events.Publish("settings-changed", new { section = "routing-profiles", restartRequired = _coreStartedAt is not null });
-        return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved,
-            new { routingId = save.Item.Id, restartRequired = _coreStartedAt is not null });
+        return await CompleteCoreAffectingChangeAsync("routing-profiles", save.Changed && save.Item.IsActive,
+            data: new { routingId = save.Item.Id });
     }
 
     public async Task<OperationView> DeleteRoutingProfileAsync(string id)
@@ -441,7 +573,7 @@ public sealed partial class V2rayRuntime
             var item = await AppManager.Instance.GetRoutingItem(id);
             if (item is null)
             {
-                return false;
+                return (Removed: false, AffectsCore: false);
             }
             await ConfigHandler.RemoveRoutingItem(item);
             if (item.IsActive)
@@ -461,15 +593,14 @@ public sealed partial class V2rayRuntime
                     await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
                 }
             }
-            return true;
+            return (Removed: true, AffectsCore: item.IsActive);
         });
-        if (!removed)
+        if (!removed.Removed)
         {
             return OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound);
         }
-        _events.Publish("settings-changed", new { section = "routing-profiles", restartRequired = _coreStartedAt is not null });
-        return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonDeleted,
-            new { routingId = id, restartRequired = _coreStartedAt is not null });
+        return await CompleteCoreAffectingChangeAsync("routing-profiles", removed.AffectsCore,
+            ApiMessageKeys.CommonDeleted, new { routingId = id });
     }
 
     public async Task<OperationView> ActivateRoutingProfileAsync(string id)
@@ -479,21 +610,21 @@ public sealed partial class V2rayRuntime
             var item = await AppManager.Instance.GetRoutingItem(id);
             if (item is null)
             {
-                return -2;
+                return (Result: -2, Changed: false);
             }
-            return item.IsActive ? 0 : await ConfigHandler.SetDefaultRouting(Config, item);
+            var changed = !item.IsActive;
+            return (Result: changed ? await ConfigHandler.SetDefaultRouting(Config, item) : 0, Changed: changed);
         });
-        if (result == -2)
+        if (result.Result == -2)
         {
             return OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound);
         }
-        if (result != 0)
+        if (result.Result != 0)
         {
             return OperationView.Fail("routing_profile_activate_failed", ApiMessageKeys.RoutingSaveFailed);
         }
-        _events.Publish("settings-changed", new { section = "routing-profiles", restartRequired = _coreStartedAt is not null });
-        return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonCompleted,
-            new { routingId = id, restartRequired = _coreStartedAt is not null });
+        return await CompleteCoreAffectingChangeAsync("routing-profiles", result.Changed,
+            ApiMessageKeys.CommonCompleted, new { routingId = id });
     }
 
     public async Task<IReadOnlyList<RulesItem>> GetRoutingRulesAsync(string routingId)
@@ -504,7 +635,11 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> SaveRoutingRulesAsync(string routingId, IEnumerable<RulesItem> rules)
     {
-        var saved = await _mutations.RunAsync(() => SaveRoutingRulesLockedAsync(routingId, rules.ToArray()));
+        var items = rules.ToArray();
+        var before = await AppManager.Instance.GetRoutingItem(routingId);
+        var changed = before is not null && before.IsActive
+            && before.RuleSet != JsonUtils.Serialize(items, false);
+        var saved = await _mutations.RunAsync(() => SaveRoutingRulesLockedAsync(routingId, items));
         if (saved == -2)
         {
             return OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound);
@@ -513,9 +648,7 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed);
         }
-        _events.Publish("settings-changed", new { section = "routing-rules", routingId, restartRequired = _coreStartedAt is not null });
-        return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved,
-            new { routingId, restartRequired = _coreStartedAt is not null });
+        return await CompleteCoreAffectingChangeAsync("routing-rules", changed, data: new { routingId });
     }
 
     private static async Task<int> SaveRoutingRulesLockedAsync(string routingId, IReadOnlyList<RulesItem> rules)
@@ -528,6 +661,22 @@ public sealed partial class V2rayRuntime
         return await ConfigHandler.AddBatchRoutingRules(item, JsonUtils.Serialize(rules, false));
     }
 
+    private async Task<string> GetActiveRoutingSignatureAsync()
+    {
+        var active = (await AppManager.Instance.RoutingItems() ?? []).FirstOrDefault(item => item.IsActive);
+        return active is null
+            ? string.Empty
+            : System.Text.Json.JsonSerializer.Serialize(new
+            {
+                active.Id,
+                active.RuleSet,
+                active.Enabled,
+                active.DomainStrategy,
+                active.DomainStrategy4Singbox,
+                active.CustomRulesetPath4Singbox,
+            });
+    }
+
     public async Task<OperationView> ImportRoutingRulesAsync(string routingId, RouteRulesImportInput request)
     {
         var incoming = JsonUtils.Deserialize<List<RulesItem>>(request.Content);
@@ -535,6 +684,8 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("routing_rules_json_invalid", ApiMessageKeys.RoutingRulesInvalid);
         }
+        var activeBefore = await AppManager.Instance.GetRoutingItem(routingId);
+        var beforeRuleSet = activeBefore?.RuleSet;
         var saved = await _mutations.RunAsync(async () =>
         {
             if (request.Append)
@@ -550,12 +701,17 @@ public sealed partial class V2rayRuntime
             }
             return await SaveRoutingRulesLockedAsync(routingId, incoming);
         });
-        return saved switch
+        if (saved == -2)
         {
-            -2 => OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound),
-            0 => RoutingRulesSaved(routingId),
-            _ => OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed),
-        };
+            return OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound);
+        }
+        if (saved != 0)
+        {
+            return OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed);
+        }
+        var activeAfter = await AppManager.Instance.GetRoutingItem(routingId);
+        var changed = activeBefore?.IsActive == true && activeAfter?.RuleSet != beforeRuleSet;
+        return await CompleteCoreAffectingChangeAsync("routing-rules", changed, data: new { routingId });
     }
 
     public async Task<OperationView> ImportRoutingRulesFromUrlAsync(string routingId, bool append, CancellationToken cancellationToken)
@@ -581,15 +737,9 @@ public sealed partial class V2rayRuntime
         return await ImportRoutingRulesAsync(routingId, new RouteRulesImportInput(content, append));
     }
 
-    private OperationView RoutingRulesSaved(string routingId)
-    {
-        _events.Publish("settings-changed", new { section = "routing-rules", routingId, restartRequired = _coreStartedAt is not null });
-        return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved,
-            new { routingId, restartRequired = _coreStartedAt is not null });
-    }
-
     public async Task<OperationView> MoveRoutingRuleAsync(string routingId, string ruleId, EMove direction, int position)
     {
+        var routeWasActive = (await AppManager.Instance.GetRoutingItem(routingId))?.IsActive == true;
         var result = await _mutations.RunAsync(async () =>
         {
             var item = await AppManager.Instance.GetRoutingItem(routingId);
@@ -609,18 +759,22 @@ public sealed partial class V2rayRuntime
             }
             return await SaveRoutingRulesLockedAsync(routingId, rules);
         });
-        return result switch
+        if (result != 0)
         {
-            -2 => OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound),
-            -3 => OperationView.Fail("routing_rule_not_found", ApiMessageKeys.RoutingRuleNotFound),
-            -4 => OperationView.Fail("routing_rule_move_failed", ApiMessageKeys.CommonInvalidInput),
-            0 => RoutingRulesSaved(routingId),
-            _ => OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed),
-        };
+            return result switch
+            {
+                -2 => OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound),
+                -3 => OperationView.Fail("routing_rule_not_found", ApiMessageKeys.RoutingRuleNotFound),
+                -4 => OperationView.Fail("routing_rule_move_failed", ApiMessageKeys.CommonInvalidInput),
+                _ => OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed),
+            };
+        }
+        return await CompleteCoreAffectingChangeAsync("routing-rules", routeWasActive, data: new { routingId });
     }
 
     public async Task<OperationView> DeleteRoutingRuleAsync(string routingId, string ruleId)
     {
+        var routeWasActive = (await AppManager.Instance.GetRoutingItem(routingId))?.IsActive == true;
         var result = await _mutations.RunAsync(async () =>
         {
             var item = await AppManager.Instance.GetRoutingItem(routingId);
@@ -635,23 +789,28 @@ public sealed partial class V2rayRuntime
             }
             return await SaveRoutingRulesLockedAsync(routingId, rules);
         });
-        return result switch
+        if (result != 0)
         {
-            -2 => OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound),
-            -3 => OperationView.Fail("routing_rule_not_found", ApiMessageKeys.RoutingRuleNotFound),
-            0 => RoutingRulesSaved(routingId),
-            _ => OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed),
-        };
+            return result switch
+            {
+                -2 => OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound),
+                -3 => OperationView.Fail("routing_rule_not_found", ApiMessageKeys.RoutingRuleNotFound),
+                _ => OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed),
+            };
+        }
+        return await CompleteCoreAffectingChangeAsync("routing-rules", routeWasActive, data: new { routingId });
     }
 
     public async Task<OperationView> ImportRoutingProfilesAsync()
     {
+        var before = await GetActiveRoutingSignatureAsync();
         var result = await _mutations.RunAsync(() => ConfigHandler.InitRouting(Config, true));
-        _events.Publish("settings-changed", new { section = "routing-profiles", restartRequired = _coreStartedAt is not null });
-        return result == 0
-            ? OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonCompleted,
-                new { restartRequired = _coreStartedAt is not null })
-            : OperationView.Fail("routing_import_failed", ApiMessageKeys.RoutingSaveFailed);
+        if (result != 0)
+        {
+            return OperationView.Fail("routing_import_failed", ApiMessageKeys.RoutingSaveFailed);
+        }
+        return await CompleteCoreAffectingChangeAsync("routing-profiles", before != await GetActiveRoutingSignatureAsync(),
+            ApiMessageKeys.CommonCompleted);
     }
 
     public async Task<IReadOnlyList<CoreConfigTemplateView>> GetFullConfigTemplatesAsync() =>
@@ -661,6 +820,13 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> SaveFullConfigTemplateAsync(ECoreType coreType, CoreConfigTemplateInput input)
     {
+        var existingBefore = await AppManager.Instance.GetFullConfigTemplateItem(coreType);
+        var changed = existingBefore is not null
+            && (existingBefore.Remarks != (input.Remarks ?? existingBefore.Remarks)
+                || existingBefore.Enabled != input.Enabled
+                || existingBefore.Config != input.Config
+                || existingBefore.AddProxyOnly != input.AddProxyOnly
+                || existingBefore.ProxyDetour != input.ProxyDetour);
         var result = await _mutations.RunAsync(async () =>
         {
             var current = await AppManager.Instance.GetFullConfigTemplateItem(coreType);
@@ -689,9 +855,9 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("core_template_save_failed", ApiMessageKeys.CommonInvalidInput);
         }
-        _events.Publish("settings-changed", new { section = "core-template", coreType = coreType.ToString(), restartRequired = _coreStartedAt is not null });
-        return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonSaved,
-            new { coreType = coreType.ToString(), restartRequired = _coreStartedAt is not null });
+        return await CompleteCoreAffectingChangeAsync("core-template",
+            changed && CurrentCoreRuntime.CoreType == coreType,
+            data: new { coreType = coreType.ToString() });
     }
 
     public async Task<OperationView> ApplyRegionalPresetAsync(EPresetType preset)
@@ -717,9 +883,8 @@ public sealed partial class V2rayRuntime
         });
         if (success)
         {
-            _events.Publish("settings-changed", new { section = "regional-preset", preset = preset.ToString(), restartRequired = _coreStartedAt is not null });
-            return OperationView.Ok(_coreStartedAt is not null ? ApiMessageKeys.CommonCoreRestartRequired : ApiMessageKeys.CommonCompleted,
-                new { preset = preset.ToString(), restartRequired = _coreStartedAt is not null });
+            return await CompleteCoreAffectingChangeAsync("regional-preset", true,
+                ApiMessageKeys.CommonCompleted, new { preset = preset.ToString() });
         }
         return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
     }
@@ -741,7 +906,7 @@ public sealed partial class V2rayRuntime
             operations.Add("speedtest");
         }
         operations.AddRange(GetRunningCoreUpdateOperations());
-        if (_coreStartedAt is not null)
+        if (CurrentCoreRuntime.State != CoreRuntimeState.Stopped)
         {
             operations.Add("core");
         }
@@ -772,4 +937,176 @@ public sealed partial class V2rayRuntime
     internal static bool AreRoutingProfileStrategiesValid(string? domainStrategy, string? domainStrategy4Singbox) =>
         Global.DomainStrategies.AppendEmpty().Contains(domainStrategy ?? string.Empty)
         && Global.DomainStrategies4Sbox.Contains(domainStrategy4Singbox ?? string.Empty);
+
+    private string GetCoreConfigurationFingerprint() => System.Text.Json.JsonSerializer.Serialize(new
+    {
+        Inbound = Config.Inbound.Select(item => new
+        {
+            item.LocalPort,
+            Protocol = item.Protocol ?? string.Empty,
+            item.UdpEnabled,
+            item.SniffingEnabled,
+            DestOverride = item.DestOverride ?? [],
+            item.RouteOnly,
+            item.AllowLANConn,
+            item.NewPort4LAN,
+            User = item.User ?? string.Empty,
+            Pass = item.Pass ?? string.Empty,
+            item.SecondLocalPortEnabled,
+        }),
+        CoreBasic = new
+        {
+            Config.CoreBasicItem.LogEnabled,
+            Loglevel = Config.CoreBasicItem.Loglevel ?? string.Empty,
+            DefFingerprint = Config.CoreBasicItem.DefFingerprint ?? string.Empty,
+            DefUserAgent = Config.CoreBasicItem.DefUserAgent ?? string.Empty,
+            SendThrough = Config.CoreBasicItem.SendThrough ?? string.Empty,
+            BindInterface = Config.CoreBasicItem.BindInterface ?? string.Empty,
+            Config.CoreBasicItem.EnableFragment,
+            Config.CoreBasicItem.EnableFinalFragment,
+            Config.CoreBasicItem.EnableCacheFile4Sbox,
+        },
+        Mux4Ray = new
+        {
+            Config.Mux4RayItem.Concurrency,
+            Config.Mux4RayItem.XudpConcurrency,
+            XudpProxyUDP443 = Config.Mux4RayItem.XudpProxyUDP443 ?? string.Empty,
+        },
+        Mux4Sbox = new
+        {
+            Protocol = Config.Mux4SboxItem.Protocol ?? string.Empty,
+            Config.Mux4SboxItem.MaxConnections,
+            Config.Mux4SboxItem.Padding,
+        },
+        Config.HysteriaItem.UpMbps,
+        Config.HysteriaItem.DownMbps,
+        Fragment = new
+        {
+            Packets = Config.Fragment4RayItem?.Packets ?? string.Empty,
+            Lengths = Config.Fragment4RayItem?.Lengths ?? [],
+            Delays = Config.Fragment4RayItem?.Delays ?? [],
+            MaxSplit = Config.Fragment4RayItem?.MaxSplit ?? string.Empty,
+        },
+        Config.SimpleDNSItem,
+        Routing = new
+        {
+            DomainStrategy = Config.RoutingBasicItem.DomainStrategy ?? string.Empty,
+            DomainStrategy4Singbox = Config.RoutingBasicItem.DomainStrategy4Singbox ?? string.Empty,
+        },
+        CoreTypeMapping = Config.CoreTypeItem ?? [],
+    });
+
+    private async Task<OperationView> CompleteCoreAffectingChangeAsync(
+        string section,
+        bool changed,
+        string successMessageKey = ApiMessageKeys.CommonSaved,
+        object? data = null)
+    {
+        var restarted = false;
+        var wasRunning = changed && CurrentCoreRuntime.State == CoreRuntimeState.Running;
+        if (wasRunning)
+        {
+            var restart = await RestartCoreAsync(CancellationToken.None);
+            if (!restart.Success)
+            {
+                var runtime = CurrentCoreRuntime;
+                var failureData = ToResultDictionary(data);
+                failureData["section"] = section;
+                failureData["configSaved"] = true;
+                failureData["restartRequired"] = true;
+                failureData["runtimeState"] = runtime.State.ToString().ToLowerInvariant();
+                failureData["configuredProxyPort"] = Config.Inbound.FirstOrDefault()?.LocalPort;
+                failureData["runningProxyPort"] = runtime.ProxyPort;
+                failureData["coreResultCode"] = restart.Code;
+                failureData["detail"] = runtime.LastFailure;
+                _events.Publish("settings-changed", new { section, restartRequired = true, restartFailed = true });
+                AddLog("settings", $"Settings for {section} were saved but Core apply failed: {restart.Code}; {runtime.LastFailure}");
+                return OperationView.Fail("settings_core_apply_failed", ApiMessageKeys.SettingsCoreApplyFailed, failureData);
+            }
+            restarted = true;
+        }
+
+        _events.Publish("settings-changed", new { section, restartRequired = false, coreRestarted = restarted });
+        var resultData = ToResultDictionary(data);
+        resultData["changed"] = changed;
+        resultData["coreRestarted"] = restarted;
+        resultData["restartRequired"] = false;
+        return OperationView.Ok(restarted ? ApiMessageKeys.CoreRestarted : successMessageKey, resultData);
+    }
+
+    private static Dictionary<string, object?> ToResultDictionary(object? data)
+    {
+        if (data is IReadOnlyDictionary<string, object?> readOnly)
+        {
+            return new Dictionary<string, object?>(readOnly, StringComparer.Ordinal);
+        }
+        if (data is IDictionary<string, object?> mutable)
+        {
+            return new Dictionary<string, object?>(mutable, StringComparer.Ordinal);
+        }
+
+        var result = new Dictionary<string, object?>(StringComparer.Ordinal);
+        if (data is not null)
+        {
+            foreach (var property in data.GetType().GetProperties())
+            {
+                result[property.Name] = property.GetValue(data);
+            }
+        }
+        return result;
+    }
+
+    private static bool ValidateCoreSettingsInput(CoreSettingsInput input)
+    {
+        var fragmentLengths = input.FragmentLengths ?? [];
+        var fragmentDelays = input.FragmentDelays ?? [];
+        return AreCoreSettingsOptionsValid(input)
+            && Global.LogLevels.Contains(input.Loglevel ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            && input.Mux4RayConcurrency is >= 0 and <= 1024
+            && input.Mux4RayXudpConcurrency is >= 0 and <= 1024
+            && input.Mux4SboxMaxConnections is >= 0 and <= 1024
+            && input.Hy2UpMbps >= 0
+            && input.Hy2DownMbps >= 0
+            && fragmentLengths.All(value => Utils.TryParseRange(value, 0, int.MaxValue, out _, out _))
+            && fragmentDelays.All(value => Utils.TryParseRange(value, 0, int.MaxValue, out _, out _))
+            && (string.IsNullOrWhiteSpace(input.FragmentMaxSplit)
+                || Utils.TryParseMaxSplit(input.FragmentMaxSplit, 0, 10000, out _, out _));
+    }
+
+    private void ApplyCoreSettingsToConfig(CoreSettingsInput input)
+    {
+        Config.CoreBasicItem.LogEnabled = input.LogEnabled;
+        Config.CoreBasicItem.Loglevel = input.Loglevel ?? string.Empty;
+        Config.CoreBasicItem.DefFingerprint = input.DefFingerprint?.Trim() ?? string.Empty;
+        Config.CoreBasicItem.DefUserAgent = input.DefUserAgent?.Trim() ?? string.Empty;
+        Config.CoreBasicItem.SendThrough = input.SendThrough?.Trim();
+        Config.CoreBasicItem.BindInterface = input.BindInterface?.Trim();
+        Config.Mux4RayItem.Concurrency = input.Mux4RayConcurrency is > 0 ? input.Mux4RayConcurrency : null;
+        Config.Mux4RayItem.XudpConcurrency = input.Mux4RayXudpConcurrency is > 0 ? input.Mux4RayXudpConcurrency : null;
+        Config.Mux4RayItem.XudpProxyUDP443 = input.Mux4RayXudpProxyUDP443;
+        Config.Mux4SboxItem.Protocol = input.Mux4SboxProtocol ?? string.Empty;
+        Config.Mux4SboxItem.MaxConnections = input.Mux4SboxMaxConnections;
+        Config.Mux4SboxItem.Padding = input.Mux4SboxPadding;
+        Config.CoreBasicItem.EnableCacheFile4Sbox = input.EnableCacheFile4Sbox;
+        Config.HysteriaItem.UpMbps = input.Hy2UpMbps;
+        Config.HysteriaItem.DownMbps = input.Hy2DownMbps;
+        Config.CoreBasicItem.EnableFragment = input.EnableFragment;
+        Config.CoreBasicItem.EnableFinalFragment = input.EnableFinalFragment;
+        Config.Fragment4RayItem ??= new();
+        Config.Fragment4RayItem.Packets = input.FragmentPackets;
+        Config.Fragment4RayItem.Lengths = input.FragmentLengths?.ToList() ?? [];
+        Config.Fragment4RayItem.Delays = input.FragmentDelays?.ToList() ?? [];
+        Config.Fragment4RayItem.MaxSplit = input.FragmentMaxSplit;
+    }
+
+    private static void RestoreConfigValues(Config target, Config snapshot)
+    {
+        foreach (var property in typeof(Config).GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public))
+        {
+            if (property.CanRead && property.CanWrite)
+            {
+                property.SetValue(target, property.GetValue(snapshot));
+            }
+        }
+    }
 }

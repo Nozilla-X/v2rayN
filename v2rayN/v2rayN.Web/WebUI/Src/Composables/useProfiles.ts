@@ -1,6 +1,7 @@
 import { computed, reactive, ref, type Ref } from 'vue'
 import type { ApiError, ApiServices, Dict, ErrorHandler, Notice, Translate } from './types'
 import { canonicalNetwork, profileEditorOptions } from '../profileEditorOptions'
+import { normalizeNullableNumbers } from './settingsPayloads.js'
 
 const groupIncompatibleProfileFields = [
   'address', 'port', 'password', 'username', 'network', 'headerType', 'requestHost', 'path',
@@ -213,7 +214,7 @@ export function useProfiles(options: ApiServices & {
     if (!selectedIds.value.length) return options.showNotice(t('nodes.selectionRequired'), 'error')
     const value = window.prompt(t('nodes.positionPrompt'))
     if (value === null) return
-    const position = Number.parseInt(value, 10)
+    const position = Number(String(value).trim())
     if (!Number.isInteger(position) || position < 1) return options.showNotice(t('errors.invalidInput'), 'error')
     try {
       for (const profile of selectedProfiles.value) {
@@ -321,7 +322,14 @@ export function useProfiles(options: ApiServices & {
   async function saveProfile() {
     try {
       const advanced = JSON.parse(profileAdvancedJson.value || '{}')
-      const protoExtra = { ...parseObject(advanced.protoExtra), ...profileForm.value.protoExtra }
+      const protoExtra = normalizeNullableNumbers(
+        { ...parseObject(advanced.protoExtra), ...profileForm.value.protoExtra },
+        ['upMbps', 'downMbps', 'wgMtu', 'insecureConcurrency'],
+      )
+      const transportExtra = normalizeNullableNumbers(
+        { ...parseObject(advanced.transportExtra), ...profileForm.value.transportExtra },
+        ['kcpMtu'],
+      )
       const isGroupProfile = ['PolicyGroup', 'ProxyChain'].includes(profileForm.value.configType)
       if (isGroupProfile) {
         if (!groupChildIds.value.length && !protoExtra.subChildItems) {
@@ -363,7 +371,7 @@ export function useProfiles(options: ApiServices & {
           verifyPeerCertByName: profileForm.value.verifyPeerCertByName || '',
           finalmask: profileForm.value.finalmask || '',
           muxEnabled: profileForm.value.muxEnabled,
-          transportExtra: JSON.stringify({ ...parseObject(advanced.transportExtra), ...profileForm.value.transportExtra }),
+          transportExtra: JSON.stringify(transportExtra),
         } : {}),
         remarks: profileForm.value.remarks,
         protoExtra: JSON.stringify(protoExtra),

@@ -40,6 +40,17 @@ public class RuntimeRequestOperationPolicyTests
     }
 
     [Test]
+    [Arguments("PUT", "/api/settings/apply")]
+    [Arguments("PUT", "/api/settings/inbound")]
+    [Arguments("PUT", "/api/settings/dns/profiles/xray")]
+    [Arguments("POST", "/api/settings/routing-profiles/import")]
+    public async Task CoreAffectingSettingsUseExclusiveMutationLeasesWithReadOnlyStatusAccess(string method, string path)
+    {
+        await RuntimeRequestOperationPolicy.Classify(method, path)
+            .Should().BeEqualTo(RuntimeRequestOperationKind.ExclusiveReadOnly);
+    }
+
+    [Test]
     public async Task OtherApiRequestsUseSharedLeases()
     {
         await RuntimeRequestOperationPolicy.Classify("POST", "/api/core/start")

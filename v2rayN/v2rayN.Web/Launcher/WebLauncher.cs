@@ -9,7 +9,12 @@ public interface IWebHealthProbe
     Task<WebHealthProbeResult> ProbeAsync(Uri healthUri, CancellationToken cancellationToken);
 }
 
-public sealed record WebHealthProbeResult(bool IsHealthy, int? InstanceProcessId, string? ShutdownStage = null);
+public sealed record WebHealthProbeResult(
+    bool IsHealthy,
+    int? InstanceProcessId,
+    string? ShutdownStage = null,
+    IReadOnlyList<int>? CoreProcessIds = null,
+    string? CoreState = null);
 
 public interface IBrowserOpener
 {
@@ -39,7 +44,17 @@ public sealed class HttpWebHealthProbe : IWebHealthProbe
             var shutdownStage = response.Headers.TryGetValues("X-v2rayn-web-shutdown-stage", out var stageValues)
                 ? stageValues.FirstOrDefault()
                 : null;
-            return new WebHealthProbeResult(response.IsSuccessStatusCode, instanceProcessId, shutdownStage);
+            var coreProcessIds = response.Headers.TryGetValues("X-v2rayn-web-core-process-ids", out var processValues)
+                ? processValues.FirstOrDefault()?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(value => int.TryParse(value, out var processId) ? processId : 0)
+                    .Where(processId => processId > 0)
+                    .Distinct()
+                    .ToArray()
+                : [];
+            var coreState = response.Headers.TryGetValues("X-v2rayn-web-core-state", out var stateValues)
+                ? stateValues.FirstOrDefault()
+                : null;
+            return new WebHealthProbeResult(response.IsSuccessStatusCode, instanceProcessId, shutdownStage, coreProcessIds, coreState);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
         {

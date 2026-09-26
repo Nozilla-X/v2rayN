@@ -9,6 +9,7 @@ public class ProcessService : IDisposable
     public int Id => _process.Id;
     public IntPtr Handle => _process.Handle;
     public bool HasExited => _process.HasExited;
+    public bool IsRunning => !_isDisposed && !_process.HasExited;
 
     public ProcessService(
         string fileName,
@@ -70,10 +71,16 @@ public class ProcessService : IDisposable
         }
     }
 
-    public async Task StopAsync()
+    public async Task StopAsync(bool graceful = false, CancellationToken cancellationToken = default)
     {
         if (_process.HasExited)
         {
+            return;
+        }
+
+        if (graceful)
+        {
+            await StopGracefullyAsync(cancellationToken);
             return;
         }
 
@@ -115,6 +122,53 @@ public class ProcessService : IDisposable
             await _updateFunc?.Invoke(true, ex.Message);
         }
     }
+
+    private async Task StopGracefullyAsync(CancellationToken cancellationToken)
+    {
+        if (Utils.IsNonWindows())
+        {
+            if (Kill(_process.Id, SigTerm) != 0)
+            {
+                var error = Marshal.GetLastPInvokeError();
+                if (error != 3) // ESRCH: the child exited between the state check and signal.
+                {
+                    throw new Win32Exception(error, $"Could not send SIGTERM to Core process {_process.Id}.");
+                }
+            }
+        }
+        else if (!_process.CloseMainWindow())
+        {
+            throw new InvalidOperationException($"Core process {_process.Id} does not support graceful window close.");
+        }
+
+        try
+        {
+            await _process.WaitForExitAsync(cancellationToken)
+                .WaitAsync(TimeSpan.FromSeconds(4), cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            throw new TimeoutException($"Core process {_process.Id} did not exit after SIGTERM; it was not force-killed.");
+        }
+
+        CancelOutputReaders();
+    }
+
+    private void CancelOutputReaders()
+    {
+        if (!_process.StartInfo.RedirectStandardOutput)
+        {
+            return;
+        }
+
+        try { _process.CancelOutputRead(); } catch { }
+        try { _process.CancelErrorRead(); } catch { }
+    }
+
+    private const int SigTerm = 15;
+
+    [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+    private static extern int Kill(int processId, int signal);
 
     private void RegisterEventHandlers()
     {

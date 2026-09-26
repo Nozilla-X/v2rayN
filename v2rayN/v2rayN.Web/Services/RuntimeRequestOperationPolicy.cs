@@ -5,6 +5,7 @@ internal enum RuntimeRequestOperationKind
     Shared,
     Observation,
     Exclusive,
+    ExclusiveReadOnly,
     Background,
 }
 
@@ -31,6 +32,11 @@ internal static class RuntimeRequestOperationPolicy
             && normalizedPath is "/api/status" or "/api/operations" or "/api/logs" or "/api/logs/page")
         {
             return RuntimeRequestOperationKind.Observation;
+        }
+
+        if (!isGet && normalizedPath.StartsWith("/api/settings/", StringComparison.Ordinal))
+        {
+            return RuntimeRequestOperationKind.ExclusiveReadOnly;
         }
 
         if ((isGet && normalizedPath == "/api/backup/download")

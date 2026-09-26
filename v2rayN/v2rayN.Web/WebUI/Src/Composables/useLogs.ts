@@ -1,7 +1,13 @@
 import { computed, reactive, ref } from 'vue'
 import type { ApiServices, Dict, ErrorHandler, Notice, Translate } from './types'
 
-export function useLogs(options: ApiServices & { t: Translate; showError: ErrorHandler; showNotice: Notice; confirm: (message: string) => Promise<boolean> }) {
+export function useLogs(options: ApiServices & {
+  t: Translate
+  showError: ErrorHandler
+  showNotice: Notice
+  confirm: (message: string) => Promise<boolean>
+  clearRealtimeQueue?: (generation?: number) => void
+}) {
   const t = options.t
   const logs = ref<Dict[]>([])
   const logFilter = ref('')
@@ -9,11 +15,14 @@ export function useLogs(options: ApiServices & { t: Translate; showError: ErrorH
   const logTotal = ref(0)
   const selectedLogKeys = ref<string[]>([])
   const logPageSize = 100
+  let clearRevision = 0
   const logTotalPages = computed(() => Math.max(1, Math.ceil(logTotal.value / logPageSize)))
 
   async function loadLogs(page = 1) {
+    const requestRevision = clearRevision
     try {
       const result = await options.data(options.queryPath('/api/logs/page', { page, pageSize: logPageSize, filter: logFilter.value.trim() }))
+      if (requestRevision !== clearRevision) return
       logs.value = result?.items || []
       logPage.value = result?.page || 1
       logTotal.value = result?.total || 0
@@ -83,14 +92,23 @@ export function useLogs(options: ApiServices & { t: Translate; showError: ErrorH
     if (!await options.confirm(t('logs.clearConfirm'))) return
     try {
       const result = await options.request('/api/logs', { method: 'DELETE' })
-      logs.value = []
-      logPage.value = 1
-      logTotal.value = 0
+      clearLogsState(result.data?.generation)
       options.showNotice(options.operationMessage(result))
     } catch (error) { options.showError(error) }
   }
 
+  function clearLogsState(generation?: number) {
+    clearRevision += 1
+    options.clearRealtimeQueue?.(generation)
+    logs.value = typeof generation === 'number'
+      ? logs.value.filter((entry) => typeof entry.generation === 'number' && entry.generation >= generation)
+      : []
+    logPage.value = 1
+    logTotal.value = logs.value.length
+    selectedLogKeys.value = []
+  }
+
   const logsPageState = reactive({ logTotal, logFilter, logs, logPage, logTotalPages, selectedLogKeys })
 
-  return { logs, logFilter, logPage, logTotal, logPageSize, logTotalPages, matchesLogFilter, loadLogs, logsPageState, logsPageActions: { loadLogs, clearLogs, changeLogPage, logKey, toggleLog, toggleAllLogs, copyCurrentPage, copySelectedLogs, copyAllLogs } }
+  return { logs, logFilter, logPage, logTotal, logPageSize, logTotalPages, matchesLogFilter, loadLogs, clearLogsState, logsPageState, logsPageActions: { loadLogs, clearLogs, changeLogPage, logKey, toggleLog, toggleAllLogs, copyCurrentPage, copySelectedLogs, copyAllLogs } }
 }

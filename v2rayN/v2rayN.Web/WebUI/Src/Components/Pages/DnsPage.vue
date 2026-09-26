@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { UiProps } from '../types'
+import UiCheckbox from '../UiCheckbox.vue'
 
 const { t } = useI18n()
 const props = defineProps<UiProps>()
@@ -31,19 +32,19 @@ const tabs = [
         <label>{{ t('dns.strategyProxy') }}<input v-model="state.simpleDnsForm.strategy4Proxy" /></label>
         <label>{{ t('dns.strategyProxyDial') }}<input v-model="state.simpleDnsForm.strategy4ProxyDial" /></label>
       </div>
-      <div class="settings-checks"><label class="check-inline"><input v-model="state.simpleDnsForm.parallelQuery" type="checkbox" />{{ t('dns.parallelQuery') }}</label><label class="check-inline"><input v-model="state.simpleDnsForm.serveStale" type="checkbox" />{{ t('dns.serveStale') }}</label><label class="check-inline"><input v-model="state.simpleDnsForm.enableHappyEyeballs" type="checkbox" />{{ t('dns.happyEyeballs') }}</label></div>
+      <div class="settings-checks"><label class="check-inline"><UiCheckbox v-model="state.simpleDnsForm.parallelQuery" />{{ t('dns.parallelQuery') }}</label><label class="check-inline"><UiCheckbox v-model="state.simpleDnsForm.serveStale" />{{ t('dns.serveStale') }}</label><label class="check-inline"><UiCheckbox v-model="state.simpleDnsForm.enableHappyEyeballs" />{{ t('dns.happyEyeballs') }}</label></div>
       <div class="footer-actions settings-footer"><button class="button primary" @click="actions.saveSimpleDns">{{ t('common.save') }}</button></div>
     </section>
 
     <section v-else-if="activeTab === 'advanced'" class="settings-section form-section">
       <div class="form-grid three-col">
-        <label class="check-inline"><input v-model="state.simpleDnsForm.useSystemHosts" type="checkbox" />{{ t('dns.useSystemHosts') }}</label>
-        <label class="check-inline"><input v-model="state.simpleDnsForm.addCommonHosts" type="checkbox" />{{ t('dns.addCommonHosts') }}</label>
-        <label class="check-inline"><input v-model="state.simpleDnsForm.fakeIP" type="checkbox" />{{ t('dns.fakeIp') }}</label>
-        <label class="check-inline"><input v-model="state.simpleDnsForm.globalFakeIp" type="checkbox" />{{ t('dns.globalFakeIp') }}</label>
+        <label class="check-inline"><UiCheckbox v-model="state.simpleDnsForm.useSystemHosts" />{{ t('dns.useSystemHosts') }}</label>
+        <label class="check-inline"><UiCheckbox v-model="state.simpleDnsForm.addCommonHosts" />{{ t('dns.addCommonHosts') }}</label>
+        <label class="check-inline"><UiCheckbox v-model="state.simpleDnsForm.fakeIP" />{{ t('dns.fakeIp') }}</label>
+        <label class="check-inline"><UiCheckbox v-model="state.simpleDnsForm.globalFakeIp" />{{ t('dns.globalFakeIp') }}</label>
         <label>{{ t('dns.fakeIpRange') }}<input v-model="state.simpleDnsForm.fakeIPRange" /></label>
-        <label class="check-inline"><input v-model="state.simpleDnsForm.blockBindingQuery" type="checkbox" />{{ t('dns.blockBindingQuery') }}</label>
-        <label class="check-inline"><input v-model="state.simpleDnsForm.blockAAAAQuery" type="checkbox" />{{ t('dns.blockAAAAQuery') }}</label>
+        <label class="check-inline"><UiCheckbox v-model="state.simpleDnsForm.blockBindingQuery" />{{ t('dns.blockBindingQuery') }}</label>
+        <label class="check-inline"><UiCheckbox v-model="state.simpleDnsForm.blockAAAAQuery" />{{ t('dns.blockAAAAQuery') }}</label>
         <label>{{ t('dns.directExpectedIPs') }}<textarea v-model="state.simpleDnsForm.directExpectedIPs" /></label>
         <label class="wide-field">{{ t('dns.hosts') }}<textarea v-model="state.simpleDnsForm.hosts" class="code-area" spellcheck="false" /></label>
       </div>
@@ -53,13 +54,13 @@ const tabs = [
 
     <section v-else class="settings-section form-section dns-core-section">
       <template v-if="activeDnsProfile">
-        <header class="section-heading"><div><h2>{{ activeTab === 'xray' ? t('dns.xrayTab') : t('dns.singboxTab') }}</h2><small>{{ t('dns.coreApiLimit') }}</small></div><label class="check-inline"><input v-model="activeDnsProfile.enabled" type="checkbox" />{{ t('common.enabled') }}</label></header>
+        <header class="section-heading"><div><h2>{{ activeTab === 'xray' ? t('dns.xrayTab') : t('dns.singboxTab') }}</h2><small>{{ t('dns.coreApiLimit') }}</small></div><label class="check-inline"><UiCheckbox v-model="activeDnsProfile.enabled" />{{ t('common.enabled') }}</label></header>
         <div class="form-grid two-col">
           <label>{{ t('dns.remarks') }}<input v-model="activeDnsProfile.remarks" /></label>
           <label>{{ t('dns.normalDns') }}<textarea v-model="activeDnsProfile.normalDNS" /></label>
           <label>{{ t('dns.domainStrategy') }}<input v-model="activeDnsProfile.domainStrategy4Freedom" /></label>
           <label>{{ t('dns.domainDnsAddress') }}<input v-model="activeDnsProfile.domainDNSAddress" /></label>
-          <label class="check-inline"><input v-model="activeDnsProfile.useSystemHosts" type="checkbox" />{{ t('dns.useSystemHosts') }}</label>
+          <label class="check-inline"><UiCheckbox v-model="activeDnsProfile.useSystemHosts" />{{ t('dns.useSystemHosts') }}</label>
         </div>
         <div class="footer-actions settings-footer"><button class="button primary" @click="actions.saveDnsProfile(activeDnsProfile)">{{ t('common.save') }}</button></div>
       </template>

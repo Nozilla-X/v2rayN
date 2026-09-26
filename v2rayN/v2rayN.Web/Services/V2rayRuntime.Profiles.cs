@@ -112,6 +112,13 @@ public sealed partial class V2rayRuntime
             profile.IndexId = string.Empty;
             profile.Subid = Config.SubIndexId ?? string.Empty;
             profile.IsSub = false;
+            if (!string.IsNullOrEmpty(profile.Subid)
+                && await AppManager.Instance.GetSubItem(profile.Subid) is null)
+            {
+                AddLog("profile", $"Rejected profile creation for missing subscription group {profile.Subid}.");
+                return OperationView.Fail("subscription_not_found", ApiMessageKeys.SubscriptionNotFound,
+                    new { subscriptionId = profile.Subid });
+            }
         }
 
         if (profile.ConfigType.IsGroupType())
@@ -146,24 +153,32 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail(code, messageKey);
         }
 
-        var wasCurrent = !isNew && profile.IndexId == Config.IndexId;
-        var wasRunning = wasCurrent && _coreStartedAt is not null;
-        if (wasRunning)
+        var wasRunning = !isNew
+            && profile.IndexId == CurrentCoreRuntime.ProfileId
+            && CurrentCoreRuntime.State == CoreRuntimeState.Running;
+        int result;
+        try
         {
-            await StopCoreAsync(CancellationToken.None);
+            result = await _mutations.RunAsync(() => profile.ConfigType.IsGroupType()
+                ? ConfigHandler.AddServerCommon(Config, profile)
+                : ConfigHandler.AddServer(Config, profile));
         }
-
-        var result = await _mutations.RunAsync(() => profile.ConfigType.IsGroupType()
-            ? ConfigHandler.AddServerCommon(Config, profile)
-            : ConfigHandler.AddServer(Config, profile));
+        catch (Exception exception)
+        {
+            AddLog("profile", $"Profile save failed for {profile.ConfigType} ({profile.IndexId}): {exception}");
+            return OperationView.Fail("profile_persistence_failed", ApiMessageKeys.ProfileSaveFailed,
+                new { stage = "servicelib_or_sqlite_write", exceptionType = exception.GetType().Name, detail = exception.Message });
+        }
         if (result != 0)
         {
-            return OperationView.Fail("profile_save_failed", ApiMessageKeys.CommonInvalidInput);
+            AddLog("profile", $"ServiceLib rejected profile save for {profile.ConfigType} ({profile.IndexId}); result={result}.");
+            return OperationView.Fail("profile_save_rejected", ApiMessageKeys.ProfileSaveFailed,
+                new { stage = "servicelib_validation_or_persistence", result });
         }
 
         if (wasRunning)
         {
-            var restart = await StartCoreAsync(profile.IndexId, CancellationToken.None);
+            var restart = await RestartCoreAsync(CancellationToken.None);
             _events.Publish("profiles-changed", new { subscriptionId = Config.SubIndexId });
             return restart.Success
                 ? OperationView.Ok(ApiMessageKeys.ProfileSaved, new { profileId = profile.IndexId, coreRestarted = true })
@@ -228,11 +243,16 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("profile_not_found", ApiMessageKeys.ProfileNotFound);
         }
 
-        var removesCurrent = ids.Contains(Config.IndexId, StringComparer.Ordinal);
-        var wasRunning = _coreStartedAt is not null;
+        var runningProfileId = CurrentCoreRuntime.ProfileId;
+        var removesCurrent = ids.Contains(runningProfileId ?? Config.IndexId, StringComparer.Ordinal);
+        var wasRunning = CurrentCoreRuntime.State == CoreRuntimeState.Running;
         if (removesCurrent && wasRunning)
         {
-            await StopCoreAsync(CancellationToken.None);
+            var stop = await StopCoreAsync(CancellationToken.None);
+            if (!stop.Success)
+            {
+                return stop;
+            }
         }
 
         await _mutations.RunAsync(async () =>

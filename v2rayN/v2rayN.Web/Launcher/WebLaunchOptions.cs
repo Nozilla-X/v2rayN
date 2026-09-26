@@ -108,6 +108,8 @@ public static class LauncherMessages
             WebStopResult.NotRunning => "stopNotRunning",
             WebStopResult.Stopped => "stopSucceeded",
             WebStopResult.IdentityUnverified => "stopIdentityUnverified",
+            WebStopResult.SupervisorManaged => "stopSupervisorManaged",
+            WebStopResult.CoreProcessStillRunning => "stopCoreStillRunning",
             WebStopResult.SignalFailed => "stopSignalFailed",
             WebStopResult.TimedOut => "stopTimedOut",
             _ => throw new ArgumentOutOfRangeException(nameof(result)),

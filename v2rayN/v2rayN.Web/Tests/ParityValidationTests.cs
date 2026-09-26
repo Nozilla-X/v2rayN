@@ -11,6 +11,15 @@ namespace v2rayN.Web.Tests;
 public class ParityValidationTests
 {
     [Test]
+    public async Task RestoredSubscriptionSelectionIsPreservedOnlyWhenItsSubItemExists()
+    {
+        var available = new[] { "subscription-a", "subscription-b" };
+        await V2rayRuntime.NormalizeSelectedSubscriptionId("subscription-a", available).Should().BeEqualTo("subscription-a");
+        await V2rayRuntime.NormalizeSelectedSubscriptionId("deleted-subscription", available).Should().BeEqualTo(string.Empty);
+        await V2rayRuntime.NormalizeSelectedSubscriptionId(string.Empty, available).Should().BeEqualTo(string.Empty);
+    }
+
+    [Test]
     public async Task XrayShadowsocksPlainIsAcceptedAndSavedByServiceLib()
     {
         var profile = CreateShadowsocks(ECoreType.Xray, "plain");

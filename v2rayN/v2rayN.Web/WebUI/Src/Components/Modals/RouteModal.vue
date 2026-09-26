@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useModalFocus } from '../../Composables/useModalFocus'
 import UiIcon from '../UiIcon.vue'
+import UiCheckbox from '../UiCheckbox.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
@@ -23,8 +24,8 @@ const { onModalKeydown } = useModalFocus(dialog)
             <label>{{ t('routing.name') }}<input v-model="state.routeForm.remarks" required /></label>
             <label>{{ t('routing.url') }}<input v-model="state.routeForm.url" inputmode="url" /></label>
             <label>{{ t('routing.customIcon') }}<input v-model="state.routeForm.customIcon" /></label>
-            <label class="check-inline"><input v-model="state.routeForm.enabled" type="checkbox" />{{ t('common.enabled') }}</label>
-            <label class="check-inline"><input v-model="state.routeForm.locked" type="checkbox" />{{ t('routing.locked') }}</label>
+            <label class="check-inline"><UiCheckbox v-model="state.routeForm.enabled" />{{ t('common.enabled') }}</label>
+            <label class="check-inline"><UiCheckbox v-model="state.routeForm.locked" />{{ t('routing.locked') }}</label>
             <label class="wide-field">{{ t('routing.singboxRuleSetPath') }}<input v-model="state.routeForm.customRulesetPath4Singbox" /></label>
           </div>
         </fieldset>

@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import { useModalFocus } from '../../Composables/useModalFocus'
 import { profileEditorOptions, shadowsocksSecurityOptions } from '../../profileEditorOptions'
 import UiIcon from '../UiIcon.vue'
+import UiCheckbox from '../UiCheckbox.vue'
 import type { UiProps } from '../types'
 
 const { t } = useI18n()
@@ -167,7 +168,7 @@ watch([() => state.showProfileForm, protocol, shadowsocksMethods], ([isOpen, con
             <label v-if="protocol === 'PolicyGroup'">{{ t('nodes.groupStrategy') }}<select v-model="state.profileForm.protoExtra.multipleLoad"><option value="LeastPing">{{ t('nodes.strategyLeastPing') }}</option><option value="Fallback">{{ t('nodes.strategyFallback') }}</option><option value="Random">{{ t('nodes.strategyRandom') }}</option><option value="RoundRobin">{{ t('nodes.strategyRoundRobin') }}</option><option value="LeastLoad">{{ t('nodes.strategyLeastLoad') }}</option></select></label>
             <label>{{ t('nodes.groupSubscription') }}<select v-model="state.profileForm.protoExtra.subChildItems"><option value="">{{ t('common.none') }}</option><option v-for="group in state.groups" :key="group.id" :value="group.id">{{ group.name || t('common.allGroups') }}</option></select></label>
             <label>{{ t('nodes.groupFilter') }}<input v-model="state.profileForm.protoExtra.filter" /></label>
-            <div class="wide-field group-member-editor"><strong>{{ t('nodes.groupMembers') }}</strong><small class="field-hint">{{ t('nodes.groupMembersHint') }}</small><div class="group-member-columns"><div class="group-profile-choices"><label v-for="item in state.profileCatalog" :key="item.indexId" class="group-profile-choice"><input type="checkbox" :disabled="item.indexId === state.editingProfileId" :checked="state.groupChildIds.includes(item.indexId)" @change="actions.toggleGroupChild(item.indexId)" /><span>{{ item.remarks }}<small>{{ item.configType }} · {{ item.address }}:{{ item.port }}</small></span></label></div><div class="group-member-order"><div v-for="(id, index) in state.groupChildIds" :key="id" class="group-member-row"><span>{{ state.profileCatalog.find((item: Record<string, any>) => item.indexId === id)?.remarks || id }}</span><button class="tool-button" type="button" :disabled="index === 0" :aria-label="t('nodes.moveMemberUp')" @click="actions.moveGroupChild(id, 'up')"><UiIcon name="arrow-up" /></button><button class="tool-button" type="button" :disabled="index === state.groupChildIds.length - 1" :aria-label="t('nodes.moveMemberDown')" @click="actions.moveGroupChild(id, 'down')"><UiIcon name="arrow-down" /></button><button class="tool-button danger-text" type="button" :aria-label="t('common.delete')" @click="actions.toggleGroupChild(id)"><UiIcon name="close" /></button></div><p v-if="!state.groupChildIds.length" class="muted">{{ t('common.empty') }}</p></div></div></div>
+            <div class="wide-field group-member-editor"><strong>{{ t('nodes.groupMembers') }}</strong><small class="field-hint">{{ t('nodes.groupMembersHint') }}</small><div class="group-member-columns"><div class="group-profile-choices"><label v-for="item in state.profileCatalog" :key="item.indexId" class="group-profile-choice"><UiCheckbox :disabled="item.indexId === state.editingProfileId" :model-value="state.groupChildIds.includes(item.indexId)" @change="actions.toggleGroupChild(item.indexId)" /><span>{{ item.remarks }}<small>{{ item.configType }} · {{ item.address }}:{{ item.port }}</small></span></label></div><div class="group-member-order"><div v-for="(id, index) in state.groupChildIds" :key="id" class="group-member-row"><span>{{ state.profileCatalog.find((item: Record<string, any>) => item.indexId === id)?.remarks || id }}</span><button class="tool-button" type="button" :disabled="index === 0" :aria-label="t('nodes.moveMemberUp')" @click="actions.moveGroupChild(id, 'up')"><UiIcon name="arrow-up" /></button><button class="tool-button" type="button" :disabled="index === state.groupChildIds.length - 1" :aria-label="t('nodes.moveMemberDown')" @click="actions.moveGroupChild(id, 'down')"><UiIcon name="arrow-down" /></button><button class="tool-button danger-text" type="button" :aria-label="t('common.delete')" @click="actions.toggleGroupChild(id)"><UiIcon name="close" /></button></div><p v-if="!state.groupChildIds.length" class="muted">{{ t('common.empty') }}</p></div></div></div>
           </div>
         </fieldset>
 
@@ -184,7 +185,7 @@ watch([() => state.showProfileForm, protocol, shadowsocksMethods], ([isOpen, con
               <label v-if="['VLESS', 'Trojan'].includes(protocol)">{{ t('nodes.flow') }}<select v-model="state.profileForm.protoExtra.flow"><option v-for="flow in transportOptions.flows" :key="flow || 'none'" :value="flow">{{ flow || t('common.none') }}</option></select></label>
               <label v-if="protocol === 'VLESS'">{{ t('nodes.encryption') }}<input v-model="state.profileForm.protoExtra.vlessEncryption" /></label>
               <label v-if="protocol === 'Shadowsocks'">{{ t('nodes.method') }}<select v-model="state.profileForm.protoExtra.ssMethod" required><option v-for="method in shadowsocksMethods" :key="method" :value="method">{{ method }}</option></select></label>
-              <label v-if="['Shadowsocks', 'Naive'].includes(protocol)" class="check-inline"><input v-model="state.profileForm.protoExtra.uot" type="checkbox" />{{ t('nodes.udpOverTcp') }}</label>
+              <label v-if="['Shadowsocks', 'Naive'].includes(protocol)" class="check-inline"><UiCheckbox v-model="state.profileForm.protoExtra.uot" />{{ t('nodes.udpOverTcp') }}</label>
               <label v-if="protocol === 'TUIC'">{{ t('nodes.congestionControl') }}<select v-model="state.profileForm.protoExtra.congestionControl"><option v-for="control in transportOptions.tuicCongestionControls" :key="control" :value="control">{{ control }}</option></select></label>
               <label v-if="protocol === 'Naive' && state.profileForm.protoExtra.naiveQuic">{{ t('nodes.congestionControl') }}<select v-model="state.profileForm.protoExtra.congestionControl"><option v-for="control in transportOptions.naiveCongestionControls" :key="control" :value="control">{{ control }}</option></select></label>
               <template v-if="protocol === 'Hysteria2'">
@@ -207,9 +208,9 @@ watch([() => state.showProfileForm, protocol, shadowsocksMethods], ([isOpen, con
                 <label>{{ t('nodes.wgDns') }}<input v-model="state.profileForm.protoExtra.wgDns" /></label>
               </template>
               <label v-if="['Anytls', 'Naive'].includes(protocol)">{{ t('nodes.insecureConcurrency') }}<input v-model.number="state.profileForm.protoExtra.insecureConcurrency" type="number" min="0" /></label>
-              <label v-if="protocol === 'Naive'" class="check-inline"><input v-model="state.profileForm.protoExtra.naiveQuic" type="checkbox" />{{ t('nodes.naiveQuic') }}</label>
+              <label v-if="protocol === 'Naive'" class="check-inline"><UiCheckbox v-model="state.profileForm.protoExtra.naiveQuic" />{{ t('nodes.naiveQuic') }}</label>
               <label v-if="protocol === 'HTTP'">{{ t('nodes.httpHeaders') }}<textarea v-model="state.profileForm.protoExtra.httpHeaders" /></label>
-              <label v-if="['VMess', 'VLESS', 'Shadowsocks', 'Trojan'].includes(protocol)" class="check-inline"><input v-model="state.profileForm.muxEnabled" type="checkbox" />{{ t('nodes.mux') }}</label>
+              <label v-if="['VMess', 'VLESS', 'Shadowsocks', 'Trojan'].includes(protocol)" class="check-inline"><UiCheckbox v-model="state.profileForm.muxEnabled" />{{ t('nodes.mux') }}</label>
             </div>
           </fieldset>
 
@@ -254,7 +255,7 @@ watch([() => state.showProfileForm, protocol, shadowsocksMethods], ([isOpen, con
                 <label>{{ t('nodes.sni') }}<input v-model="state.profileForm.sni" /></label>
                 <label>{{ t('nodes.alpn') }}<select v-model="state.profileForm.alpn" :disabled="alpnDisabled"><option v-for="alpn in transportOptions.alpns" :key="alpn || 'none'" :value="alpn">{{ alpn || t('common.none') }}</option></select></label>
                 <label>{{ t('nodes.fingerprint') }}<select v-model="state.profileForm.fingerprint" :disabled="fingerprintDisabled"><option v-for="fingerprint in transportOptions.fingerprints" :key="fingerprint || 'none'" :value="fingerprint">{{ fingerprint || t('common.none') }}</option></select></label>
-                <label class="check-inline"><input v-model="state.profileForm.allowInsecure" type="checkbox" :disabled="protocol === 'Naive'" />{{ t('nodes.allowInsecure') }}</label>
+                <label class="check-inline"><UiCheckbox v-model="state.profileForm.allowInsecure" :disabled="protocol === 'Naive'" />{{ t('nodes.allowInsecure') }}</label>
               </template>
               <template v-if="isReality">
                 <label>{{ t('nodes.publicKey') }}<input v-model="state.profileForm.publicKey" /></label>
