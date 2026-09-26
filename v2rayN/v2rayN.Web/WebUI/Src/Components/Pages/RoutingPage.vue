@@ -15,7 +15,7 @@ const allRulesSelected = computed(() => state.routingRules.length > 0 && state.s
 
 <template>
   <section class="page routing-page">
-    <div class="page-toolbar"><div class="page-title"><h1>{{ t('routing.title') }}</h1><span class="count-tag">{{ state.routes.length }}</span></div><div class="toolbar-main"><button class="button primary" @click="actions.openAddRoute"><UiIcon name="plus" /> {{ t('routing.create') }}</button><button class="button danger" :disabled="!state.selectedRouteIds.length" @click="actions.deleteSelectedRoutes">{{ t('common.deleteSelected', { count: state.selectedRouteIds.length }) }}</button><button class="button" :disabled="!state.selectedRoutingId" @click="actions.activateRoute(state.selectedRoutingId)">{{ t('routing.setDefault') }}</button><ActionDropdown :label="t('routing.importProfiles')"><button class="action-menu-item" role="menuitem" @click="actions.importRoutingProfiles">{{ t('routing.importProfiles') }}</button></ActionDropdown></div></div>
+    <div class="page-header page-toolbar"><div class="page-title"><h1>{{ t('routing.title') }}</h1><span class="count-tag">{{ state.routes.length }}</span></div><div class="toolbar toolbar-main"><button class="button primary" @click="actions.openAddRoute"><UiIcon name="plus" /> {{ t('routing.create') }}</button><button class="button danger" :disabled="!state.selectedRouteIds.length" @click="actions.deleteSelectedRoutes">{{ t('common.deleteSelected', { count: state.selectedRouteIds.length }) }}</button><button class="button" :disabled="!state.selectedRoutingId" @click="actions.activateRoute(state.selectedRoutingId)">{{ t('routing.setDefault') }}</button><ActionDropdown :label="t('routing.importProfiles')"><button class="action-menu-item" role="menuitem" @click="actions.importRoutingProfiles">{{ t('routing.importProfiles') }}</button></ActionDropdown></div></div>
 
     <div class="routing-strategy-bar">
       <label>{{ t('routing.domainStrategy') }}<select v-model="state.routingForm.domainStrategy"><option v-for="strategy in state.routingOptions.routingBasicDomainStrategies || []" :key="strategy" :value="strategy">{{ strategy }}</option></select></label>
@@ -23,8 +23,8 @@ const allRulesSelected = computed(() => state.routingRules.length > 0 && state.s
       <button class="button compact" @click="actions.saveRoutingStrategies">{{ t('common.save') }}</button>
     </div>
 
-    <div class="split-workspace routing-workspace">
-      <section class="subpanel route-list-panel">
+    <div class="split-pane split-workspace routing-workspace">
+      <section class="panel subpanel route-list-panel">
         <div class="subpanel-heading"><div class="heading-check"><input type="checkbox" :checked="allRoutesSelected" :aria-label="t('common.selectAll')" @change="actions.toggleAllRoutes" /><h2>{{ t('routing.profiles') }}</h2><span class="count-tag">{{ state.routes.length }}</span></div><div class="row-actions"><button class="tool-button" :aria-label="t('common.selectAll')" :title="t('common.selectAll')" @click="actions.toggleAllRoutes"><UiIcon name="check-all" /></button><button class="tool-button" :aria-label="t('common.refresh')" :title="t('common.refresh')" @click="actions.loadRouting"><UiIcon name="refresh" /></button></div></div>
         <div v-for="route in state.routes" :key="route.id" :class="['route-row', { selected: route.id === state.selectedRoutingId, current: route.id === state.activeRoutingId }]">
           <input type="checkbox" :checked="state.selectedRouteIds.includes(route.id)" :aria-label="route.remarks" @change="state.selectedRouteIds = state.selectedRouteIds.includes(route.id) ? state.selectedRouteIds.filter((id: string) => id !== route.id) : [...state.selectedRouteIds, route.id]" @click.stop />
@@ -35,9 +35,9 @@ const allRulesSelected = computed(() => state.routingRules.length > 0 && state.s
         <div class="preset-bar"><span>{{ t('routing.regionalPreset') }}</span><button class="link-button" @click="actions.applyPreset('Default')">{{ t('routing.presetDefault') }}</button><button class="link-button" @click="actions.applyPreset('Russia')">{{ t('routing.presetRussia') }}</button><button class="link-button" @click="actions.applyPreset('Iran')">{{ t('routing.presetIran') }}</button></div>
       </section>
 
-      <section class="subpanel rules-panel">
+      <section class="panel subpanel rules-panel">
         <div class="subpanel-heading rules-heading"><div><h2>{{ t('routing.rules') }}</h2><small>{{ state.selectedRoute?.remarks || t('common.none') }} · {{ state.routingRules.length }}</small></div><button class="button compact primary" :disabled="!state.selectedRoutingId" @click="actions.addRoutingRule"><UiIcon name="plus" /> {{ t('routing.addRule') }}</button></div>
-        <div class="rule-toolbar">
+        <div class="rule-toolbar toolbar">
           <button class="button compact danger" :disabled="!state.selectedRuleIds.length" @click="actions.deleteSelectedRules">{{ t('common.deleteSelected', { count: state.selectedRuleIds.length }) }}</button>
           <button class="button compact" :disabled="!state.routingRules.length" @click="actions.toggleAllRules">{{ allRulesSelected ? t('common.clearSelection') : t('common.selectAll') }}</button>
           <button class="button compact" :disabled="!state.selectedRuleIds.length" @click="actions.exportSelectedRules">{{ t('routing.exportSelected') }}</button>

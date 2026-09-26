@@ -21,6 +21,10 @@ public static class WebApiEndpoints
         app.MapGet("/api/health", (HttpContext context) =>
         {
             context.Response.Headers["X-v2rayn-web-instance-pid"] = Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            if (ShutdownDiagnostics.CurrentStage is { Length: > 0 } stage)
+            {
+                context.Response.Headers["X-v2rayn-web-shutdown-stage"] = stage;
+            }
             return ApiReplies.Ok(new { status = "ok" }, "common.health");
         });
         app.MapGet("/api/status", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetStatusAsync(), "status.loaded"));
@@ -222,16 +226,31 @@ public static class WebApiEndpoints
 
     private static void MapCore(WebApplication app)
     {
+        app.MapGet("/api/core-updates", (V2rayRuntime runtime) =>
+            ApiReplies.Ok(runtime.GetCoreUpdateSettings(), "maintenance.updatesLoaded"));
+        app.MapGet("/api/core-updates/progress", (V2rayRuntime runtime) =>
+            ApiReplies.Ok(runtime.GetCoreUpdateProgress(), "maintenance.updatesLoaded"));
+        app.MapPut("/api/core-updates/settings", async (CoreUpdateSettingsInput input, V2rayRuntime runtime) =>
+            ApiReplies.Operation(await runtime.SaveCoreUpdateSettingsAsync(input)));
+        app.MapGet("/api/core-updates/{coreType}/check", async (ECoreType coreType, bool? preRelease, bool? useProxy, V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            Results.Ok(await runtime.CheckCoreUpdateAsync(coreType, preRelease, useProxy, cancellationToken)));
+        app.MapPost("/api/core-updates/{coreType}/update", (ECoreType coreType, bool? preRelease, bool? useProxy, V2rayRuntime runtime) =>
+            ApiReplies.Operation(
+                runtime.StartCoreUpdate(coreType, preRelease, useProxy),
+                successStatus: StatusCodes.Status202Accepted,
+                failureStatus: StatusCodes.Status409Conflict));
         app.MapGet("/api/core/xray/check-update", async (bool? preRelease, bool? useProxy, V2rayRuntime runtime, CancellationToken cancellationToken) =>
             Results.Ok(await runtime.CheckXrayUpdateAsync(preRelease ?? false, useProxy ?? true, cancellationToken)));
         app.MapPost("/api/core/xray/update", (bool? preRelease, bool? useProxy, V2rayRuntime runtime) =>
-            runtime.StartXrayUpdate(preRelease ?? false, useProxy ?? true)
-                ? Results.Accepted("/api/operations", OperationView.Ok(ApiMessageKeys.XrayUpdateStarted))
-                : ApiReplies.Operation(OperationView.Fail("xray_update_busy", ApiMessageKeys.XrayUpdateBusy), failureStatus: StatusCodes.Status409Conflict));
+            ApiReplies.Operation(
+                runtime.StartCoreUpdate(ECoreType.Xray, preRelease ?? false, useProxy ?? true),
+                successStatus: StatusCodes.Status202Accepted,
+                failureStatus: StatusCodes.Status409Conflict));
         app.MapPost("/api/core/geo/update", (bool? useProxy, V2rayRuntime runtime) =>
-            runtime.StartGeoUpdate(useProxy ?? true)
-                ? Results.Accepted("/api/operations", OperationView.Ok(ApiMessageKeys.GeoUpdateStarted))
-                : ApiReplies.Operation(OperationView.Fail("geo_update_busy", ApiMessageKeys.GeoUpdateBusy), failureStatus: StatusCodes.Status409Conflict));
+            ApiReplies.Operation(
+                runtime.StartGeoUpdate(useProxy),
+                successStatus: StatusCodes.Status202Accepted,
+                failureStatus: StatusCodes.Status409Conflict));
 
         app.MapPost("/api/core/start", async (V2rayRuntime runtime, CancellationToken cancellationToken) =>
             ApiReplies.Operation(await runtime.StartCoreAsync(null, cancellationToken), failureStatus: StatusCodes.Status409Conflict));

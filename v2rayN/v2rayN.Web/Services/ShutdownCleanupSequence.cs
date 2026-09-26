@@ -2,6 +2,24 @@ using System.Diagnostics;
 
 namespace v2rayN.Web.Services;
 
+internal static class RuntimeShutdownBudgets
+{
+    // Runtime cleanup owns 42 seconds; the host retains an 8-second teardown margin,
+    // and the --stop launcher waits 10 seconds beyond the host deadline.
+    public static readonly TimeSpan RuntimeCleanup = TimeSpan.FromSeconds(42);
+    public static readonly TimeSpan HostShutdown = TimeSpan.FromSeconds(50);
+    public static readonly TimeSpan LauncherWait = TimeSpan.FromSeconds(60);
+}
+
+internal static class ShutdownDiagnostics
+{
+    private static string? _currentStage;
+
+    public static string? CurrentStage => Volatile.Read(ref _currentStage);
+
+    public static void SetStage(string? stage) => Volatile.Write(ref _currentStage, stage);
+}
+
 internal sealed class ShutdownDeadline : IDisposable
 {
     private readonly TimeSpan _budget;
@@ -51,7 +69,8 @@ internal static class ShutdownCleanupSequence
         IEnumerable<ShutdownCleanupStep> steps,
         TimeSpan budget,
         CancellationToken cancellationToken,
-        Action<string> log)
+        Action<string> log,
+        Action<string?>? stageChanged = null)
     {
         using var deadline = new ShutdownDeadline(budget, cancellationToken);
         foreach (var step in steps)
@@ -63,6 +82,7 @@ internal static class ShutdownCleanupSequence
                 return false;
             }
 
+            stageChanged?.Invoke(step.Name);
             try
             {
                 // Run the synchronous prefix on the thread pool too, so a blocking cleanup
@@ -74,6 +94,7 @@ internal static class ShutdownCleanupSequence
                     log($"Shutdown stopped at '{step.Name}'; all later cleanup was skipped.");
                     return false;
                 }
+                stageChanged?.Invoke(null);
             }
             catch (TimeoutException)
             {
@@ -92,6 +113,7 @@ internal static class ShutdownCleanupSequence
             }
         }
 
+        stageChanged?.Invoke(null);
         return true;
     }
 }

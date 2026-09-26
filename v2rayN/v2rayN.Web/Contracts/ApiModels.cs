@@ -267,7 +267,33 @@ public sealed record ProfileExportItem(string IndexId, string Remarks, string Fo
 
 public sealed record TrafficView(long ProxyUp, long ProxyDown, long DirectUp, long DirectDown);
 
-public sealed record CoreUpdateCheckView(bool UpdateAvailable, string? Version);
+public sealed record CoreUpdateCheckView(bool UpdateAvailable, string? Version, bool IsUpToDate = false, string? Detail = null);
+
+public sealed record CoreUpdateTargetView(
+    string CoreType,
+    string NameKey,
+    bool IsSupported,
+    bool CanInstall,
+    bool SupportsPreRelease,
+    bool Selected,
+    string? UnsupportedReasonKey);
+
+public sealed record CoreUpdateSettingsView(
+    IReadOnlyList<CoreUpdateTargetView> Targets,
+    bool GeoFilesSelected,
+    bool PreRelease,
+    bool UseProxy);
+
+public sealed record CoreUpdateSettingsInput(string[] SelectedCoreTypes, bool PreRelease, bool UseProxy);
+
+public sealed record CoreUpdateProgressView(
+    string CoreType,
+    string Phase,
+    bool IsComplete,
+    bool Success,
+    bool CoreWasRunning,
+    string? Version,
+    string? Detail);
 
 public sealed record WebDavSettingsView(string? Url, string? UserName, string? DirName, bool HasPassword);
 
@@ -365,15 +391,26 @@ public static class ApiMessageKeys
     public const string XrayUpdateCompleted = "core.updateCompleted";
     public const string XrayUpdateAvailable = "core.updateAvailable";
     public const string XrayUpdateCurrent = "core.updateCurrent";
+    public const string CoreUpdateCheckFailed = "maintenance.updateCheckFailed";
+    public const string CoreUpdateStarted = "maintenance.updateStarted";
+    public const string CoreUpdateBusy = "maintenance.updateBusy";
+    public const string CoreUpdateFailed = "maintenance.updateFailed";
+    public const string CoreUpdateCompleted = "maintenance.updateCompleted";
+    public const string CoreUpdateSettingsSaved = "maintenance.updateSettingsSaved";
+    public const string CoreUpdateUnsupported = "maintenance.updateUnsupported";
+    public const string CoreUpdateAvailable = "maintenance.updateAvailableGeneric";
+    public const string CoreUpdateCurrent = "maintenance.upToDateGeneric";
     public const string GeoUpdateStarted = "updates.geoStarted";
     public const string GeoUpdateBusy = "updates.geoBusy";
     public const string GeoUpdateProgress = "updates.geoProgress";
+    public const string GeoUpdateNotSelected = "maintenance.geoNotSelected";
     public const string SubscriptionUpdateProgress = "subscriptions.updateProgress";
     public const string ProfilesAllGroup = "profiles.allGroup";
     public const string BackupCreated = "backup.created";
     public const string BackupRestoreStarted = "backup.restoreStarted";
     public const string BackupRestoreFailed = "backup.restoreFailed";
     public const string BackupArchiveInvalid = "backup.archiveInvalid";
+    public const string BackupDatabaseIncompatible = "backup.databaseIncompatible";
     public const string WebDavSettingsSaved = "backup.webdavSettingsSaved";
     public const string WebDavCheckSucceeded = "backup.webdavCheckSucceeded";
     public const string WebDavCheckFailed = "backup.webdavCheckFailed";

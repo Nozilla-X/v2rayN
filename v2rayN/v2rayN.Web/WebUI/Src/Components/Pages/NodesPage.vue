@@ -15,7 +15,7 @@ const autoFitColumns = ref(false)
 
 <template>
 <section class="page nodes-page">
-  <div class="group-toolbar">
+  <div class="group-toolbar toolbar">
     <span class="toolbar-label">{{ t('nodes.group') }}</span>
     <div class="group-chips">
       <button v-for="group in state.groups" :key="group.id || 'all'" :class="['group-chip', { selected: state.selectedGroup === group.id }]" @click="actions.changeGroup(group.id)">
@@ -30,12 +30,12 @@ const autoFitColumns = ref(false)
     <button class="tool-button node-toolbar-action" :aria-label="t('nodes.mixedtest')" :title="t('nodes.mixedtest')" @click="actions.startSpeedTest('mixedtest')"><UiIcon name="speed" /></button>
   </div>
 
-  <div class="page-toolbar nodes-page-toolbar">
+  <div class="page-header page-toolbar nodes-page-toolbar">
     <div class="page-title"><h1>{{ t('nodes.title') }}</h1><span class="count-tag">{{ state.filteredProfiles.length }}</span><span v-if="state.selectedIds.length" class="selection-summary"><strong>{{ t('common.selected', { count: state.selectedIds.length }) }}</strong><button class="selection-clear" :aria-label="t('common.clearSelection')" :title="t('common.clearSelection')" @click="state.selectedIds = []"><UiIcon name="close" :size="12" /></button></span></div>
     <div class="toolbar-main"><ActionDropdown :label="t('nodes.addMenu')" prefix="plus" variant="primary"><button class="action-menu-item" role="menuitem" @click="actions.openAddProfile">{{ t('nodes.addNode') }}</button><button class="action-menu-item" role="menuitem" @click="actions.openImportProfiles">{{ t('nodes.importNodes') }}…</button></ActionDropdown></div>
   </div>
 
-  <div class="table-wrap" :class="{ 'auto-fit-columns': autoFitColumns }">
+  <div class="table-container table-wrap" :class="{ 'auto-fit-columns': autoFitColumns }">
     <table class="profile-table">
       <thead><tr>
         <th class="check-cell"><input type="checkbox" :checked="state.allVisibleSelected" :aria-label="t('common.selected', { count: state.filteredProfiles.length })" @change="actions.toggleAllVisible" /></th>

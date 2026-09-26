@@ -31,6 +31,9 @@ public class WebAuthEndpointTests
 
         using var invalidLogin = await api.Client.PostAsJsonAsync("/api/auth/login", new { key = "wrong-management-key" });
         await (invalidLogin.StatusCode == HttpStatusCode.Unauthorized).Should().BeTrue();
+        using var invalidLoginDocument = JsonDocument.Parse(await invalidLogin.Content.ReadAsStringAsync());
+        await invalidLoginDocument.RootElement.GetProperty("code").GetString()
+            .Should().BeEqualTo("management_key_invalid");
         using var validLogin = await api.Client.PostAsJsonAsync("/api/auth/login", new { key = ManagementKey });
         await (validLogin.StatusCode == HttpStatusCode.OK).Should().BeTrue();
         using var loginDocument = JsonDocument.Parse(await validLogin.Content.ReadAsStringAsync());
@@ -79,6 +82,27 @@ public class WebAuthEndpointTests
         await (response.StatusCode == HttpStatusCode.OK).Should().BeTrue();
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         var token = document.RootElement.GetProperty("data").GetProperty("token").GetString()!;
+        await sessions.TryValidateWithoutRenewal(token, out _).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task RuntimeDataFailureAfterLoginDoesNotInvalidateTheEstablishedSession()
+    {
+        using var directory = new TemporaryDirectory();
+        using var sessions = new WebSessionService();
+        await using var api = await ApiHarness.StartAsync(
+            new WebAuthService(Path.Combine(directory.Path, "web-auth.json"), ManagementKey),
+            sessions);
+
+        using var login = await api.Client.PostAsJsonAsync("/api/auth/login", new { key = ManagementKey });
+        using var loginDocument = JsonDocument.Parse(await login.Content.ReadAsStringAsync());
+        var token = loginDocument.RootElement.GetProperty("data").GetProperty("token").GetString()!;
+        using var failedDataRequest = new HttpRequestMessage(HttpMethod.Get, "/api/test/runtime-failure");
+        failedDataRequest.Headers.Authorization = new("Bearer", token);
+
+        using var failure = await api.Client.SendAsync(failedDataRequest);
+
+        await (failure.StatusCode == HttpStatusCode.InternalServerError).Should().BeTrue();
         await sessions.TryValidateWithoutRenewal(token, out _).Should().BeTrue();
     }
 
@@ -323,8 +347,18 @@ public class WebAuthEndpointTests
             sessions);
         var oversizedJson = new string(' ', checked((int)WebAuthRequestBodyLimitMiddleware.MaximumRequestBodyBytes + 1));
 
-        using var login = await api.Client.PostAsync("/api/auth/login", new StringContent(oversizedJson, Encoding.UTF8, "application/json"));
-        using var setup = await api.Client.PostAsync("/api/setup", new StringContent(oversizedJson, Encoding.UTF8, "application/json"));
+        using var loginRequest = new HttpRequestMessage(HttpMethod.Post, "/api/auth/login")
+        {
+            Content = new StringContent(oversizedJson, Encoding.UTF8, "application/json"),
+        };
+        loginRequest.Headers.ConnectionClose = true;
+        using var login = await api.Client.SendAsync(loginRequest);
+        using var setupRequest = new HttpRequestMessage(HttpMethod.Post, "/api/setup")
+        {
+            Content = new StringContent(oversizedJson, Encoding.UTF8, "application/json"),
+        };
+        setupRequest.Headers.ConnectionClose = true;
+        using var setup = await api.Client.SendAsync(setupRequest);
 
         await (login.StatusCode == HttpStatusCode.RequestEntityTooLarge).Should().BeTrue();
         await (setup.StatusCode == HttpStatusCode.RequestEntityTooLarge).Should().BeTrue();
@@ -422,6 +456,7 @@ public class WebAuthEndpointTests
             app.MapWebAuthEndpoints();
             app.MapWebSetupEndpoints();
             app.MapGet("/api/test/session", () => Results.Ok(new { authorized = true }));
+            app.MapGet("/api/test/runtime-failure", () => Results.StatusCode(StatusCodes.Status500InternalServerError));
             await app.StartAsync();
 
             var addresses = app.Services.GetRequiredService<IServer>()

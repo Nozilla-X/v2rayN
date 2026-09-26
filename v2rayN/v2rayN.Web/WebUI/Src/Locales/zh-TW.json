@@ -4,6 +4,13 @@
     "proxy": "代理正在執行",
     "off": "已關閉"
   },
+  "header": { "language": "語言" },
+  "theme": {
+    "label": "主題",
+    "system": "跟隨系統",
+    "light": "淺色",
+    "dark": "深色"
+  },
   "setup": {
     "title": "首次使用，請設定管理金鑰",
     "description": "設定管理金鑰後即可進入 v2rayN Web。",
@@ -27,6 +34,7 @@
     "stopIdentityUnverified": "無法安全停止 v2rayN Web：無法確認執行個體身分，未傳送訊號。",
     "stopSignalFailed": "無法向 v2rayN Web 傳送 SIGTERM。",
     "stopTimedOut": "v2rayN Web 已收到 SIGTERM，但未能在預期時間內停止。",
+    "stopTimedOutStage": "最後觀察到的清理階段：{stage}。",
     "stopUnsupported": "--stop 僅支援 Linux。",
     "startFailed": "v2rayN Web 啟動失敗；請使用 --foreground 查看詳細記錄。",
     "existingUnhealthy": "偵測到相同資料目錄的執行個體正在啟動，但尚未就緒；請稍後重試。",
@@ -49,6 +57,9 @@
     "connectFailed": "連線失敗，請檢查 Web Backend 位址",
     "tokenRequired": "請輸入管理金鑰",
     "loginFailed": "管理金鑰無效。",
+    "loginUnavailable": "Web 後端暫不可用或仍在初始化，請稍後重試。",
+    "sessionDataLoadFailed": "工作階段已建立，但初始資料載入失敗。目前仍保持登入，可稍後重試。",
+    "sessionExpired": "工作階段已失效，請重新登入。",
     "rateLimited": "登入嘗試過多，請稍後重試。"
   },
   "nav": {
@@ -560,6 +571,33 @@
   },
   "maintenance": {
     "title": "更新與備份",
+    "coreNames": { "xray": "Xray", "mihomo": "Mihomo", "singBox": "sing-box", "v2rayN": "v2rayN", "other": "Core" },
+    "updateSettings": "更新選項",
+    "updateSettingsHint": "更新檢查語義與桌面版一致；不支援安全安裝的 Web 自我更新僅作說明，不會執行替換。",
+    "saveUpdateSettings": "儲存更新選項",
+    "includeCoreUpdate": "包含此 Core 更新",
+    "includeGeoFiles": "包含 GeoFiles 更新",
+    "geoNotSelected": "請先在更新選項中勾選 GeoFiles。",
+    "webUpdateUnsupported": "目前 Web 部署方式不支援安全的 v2rayN Web 自我更新。",
+    "updateUnsupported": "目前平台或部署方式不支援此更新目標。",
+    "updateSettingsSaved": "更新選項已儲存",
+    "updateCheckFailed": "更新檢查失敗",
+    "updateStarted": "更新已開始",
+    "updateBusy": "已有更新工作正在執行",
+    "updateFailed": "更新失敗；如適用，已嘗試還原舊 Core。",
+    "updateCompleted": "更新已完成",
+    "updateAvailableGeneric": "發現可用更新",
+    "upToDateGeneric": "已是最新版本",
+    "phase": {
+      "checking": "正在檢查更新",
+      "downloading": "正在下載；目前代理 Core 保持執行",
+      "verifying": "正在解壓並驗證更新套件",
+      "stopping-core": "正在停止目標 Core",
+      "installing": "正在安裝已驗證的 Core",
+      "restarting-core": "正在恢復更新前執行的 Core",
+      "completed": "更新完成",
+      "failed": "更新失敗"
+    },
     "updates": "Core 與 Geo 更新",
     "checkXray": "檢查更新",
     "updateXray": "更新 Xray",
@@ -593,6 +631,7 @@
     "restoreFailed": "備份還原失敗",
     "clearConfirm": "清除所有節點流量統計？",
     "archiveInvalid": "備份檔案無效",
+    "databaseIncompatible": "備份中的 guiNDB.db 已損毀或缺少關鍵資料表結構；已取消還原，目前設定未變更。",
     "webdavCheckSucceeded": "WebDAV 連線成功",
     "updateAvailable": "發現新版本：{version}",
     "capability": "執行環境能力",
@@ -655,6 +694,7 @@
     "created": "備份已建立",
     "webdavRestoreFailed": "WebDAV 還原失敗",
     "archiveInvalid": "備份檔案無效",
+    "databaseIncompatible": "備份中的 guiNDB.db 已損毀或缺少關鍵資料表結構；已取消還原，目前設定未變更。",
     "webdavSettingsSaved": "WebDAV 設定已儲存",
     "webdavCheckSucceeded": "WebDAV 連線成功"
   },

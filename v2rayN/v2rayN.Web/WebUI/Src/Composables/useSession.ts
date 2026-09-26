@@ -1,5 +1,6 @@
 import { onUnmounted, ref, watch, type Ref } from 'vue'
 import type { RequestApi, ErrorHandler, Notice, Translate } from './types'
+import { classifyLoginResponse, connectEstablishedSession } from './sessionFlow.js'
 
 export function useSession(options: {
   token: Ref<string>
@@ -44,15 +45,17 @@ export function useSession(options: {
     }
   }
 
-  async function refreshBase() {
-    if (!options.token.value || options.loading.value) return
+  async function refreshBase(): Promise<boolean> {
+    if (!options.token.value || options.loading.value) return false
     options.loading.value = true
     try {
       await options.refreshData()
       options.authenticated.value = true
+      return true
     } catch (error) {
       if (options.authenticated.value) options.showError(error)
       else throw error
+      return false
     } finally {
       options.loading.value = false
     }
@@ -72,37 +75,39 @@ export function useSession(options: {
         body: JSON.stringify({ key: managementKey }),
       })
       const payload = await response.json().catch(() => ({}))
-      if (response.status === 429) {
-        options.showNotice(t('auth.rateLimited'), 'error')
-        return
-      }
-      if (!response.ok || payload?.success !== true || !payload?.data?.token) {
-        options.showNotice(t('auth.loginFailed'), 'error')
-        return
+      switch (classifyLoginResponse(response.status, payload)) {
+        case 'rate-limited':
+          options.showNotice(t('auth.rateLimited'), 'error')
+          return
+        case 'invalid-key':
+          options.showNotice(t('auth.loginFailed'), 'error')
+          return
+        case 'unavailable':
+          options.showNotice(t('auth.loginUnavailable'), 'error')
+          return
       }
 
       managementKeyDraft.value = ''
       await connectWithSession(payload.data.token)
     } catch {
-      options.showNotice(t('auth.connectFailed'), 'error')
+      options.showNotice(t('auth.loginUnavailable'), 'error')
     }
   }
 
   async function connectWithSession(sessionToken: string) {
-    options.token.value = sessionToken
-    try {
-      await refreshBase()
-      if (options.authenticated.value) {
-        localStorage.setItem('v2rayn-web-token', sessionToken)
-        options.openEvents()
-        await options.loadConnectedData()
-        options.showNotice(t('auth.connected'))
-      }
-    } catch (error) {
-      clearSession()
-      options.showError(error)
-      if (!options.notice.value) options.showNotice(t('auth.connectFailed'), 'error')
-    }
+    await connectEstablishedSession({
+      sessionToken,
+      setToken: (token) => { options.token.value = token },
+      setAuthenticated: (value) => { options.authenticated.value = value },
+      isAuthenticated: () => options.authenticated.value,
+      persistToken: (token) => localStorage.setItem('v2rayn-web-token', token),
+      refreshBase,
+      openEvents: options.openEvents,
+      loadConnectedData: options.loadConnectedData,
+      onDataLoadFailure: () => options.showNotice(t('auth.sessionDataLoadFailed'), 'error'),
+      onConnected: () => options.showNotice(t('auth.connected')),
+      onSessionExpired: () => options.showNotice(t('auth.sessionExpired'), 'error'),
+    })
   }
 
   async function configureManagementKey() {

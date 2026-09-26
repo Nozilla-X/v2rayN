@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using v2rayN.Web.Services;
 
 namespace v2rayN.Web.Launcher;
 
@@ -29,13 +30,15 @@ public sealed class LinuxProcessSignalSender : IProcessSignalSender
 
 public sealed class WebStopper
 {
-    private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(28);
+    private static readonly TimeSpan DefaultStopTimeout = RuntimeShutdownBudgets.LauncherWait;
     private static readonly TimeSpan DefaultPollInterval = TimeSpan.FromMilliseconds(200);
 
     private readonly IWebHealthProbe _healthProbe;
     private readonly IProcessSignalSender _signalSender;
     private readonly TimeSpan _stopTimeout;
     private readonly TimeSpan _pollInterval;
+
+    public string? LastObservedShutdownStage { get; private set; }
 
     public WebStopper(
         IWebHealthProbe healthProbe,
@@ -103,6 +106,7 @@ public sealed class WebStopper
             // Keep probing health while waiting, but only report completion once the
             // instance has released its lock (after host cleanup and service shutdown).
             var currentHealth = await _healthProbe.ProbeAsync(healthUri, cancellationToken);
+            LastObservedShutdownStage = currentHealth.ShutdownStage ?? LastObservedShutdownStage;
             var lockHeld = IsLockHeld(lockPath);
             var currentOwnerProcessId = lockHeld ? WebInstanceLock.ReadOwnerProcessId(lockPath) : null;
             var endpointStillIdentifiesOwner = currentHealth.IsHealthy

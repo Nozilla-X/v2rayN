@@ -14,7 +14,7 @@ public static class WebAuthEndpoints
                 || !auth.ValidateManagementKey(request.Key))
             {
                 return Results.Json(
-                    ApiEnvelope<object>.Fail("unauthorized", ApiMessageKeys.CommonUnauthorized),
+                    ApiEnvelope<object>.Fail("management_key_invalid", ApiMessageKeys.CommonUnauthorized),
                     statusCode: StatusCodes.Status401Unauthorized);
             }
 

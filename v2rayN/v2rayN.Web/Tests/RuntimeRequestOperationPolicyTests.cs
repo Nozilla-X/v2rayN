@@ -17,6 +17,8 @@ public class RuntimeRequestOperationPolicyTests
 
     [Test]
     [Arguments("POST", "/api/core/xray/update")]
+    [Arguments("POST", "/api/core-updates/Xray/update")]
+    [Arguments("POST", "/api/core-updates/sing_box/update")]
     [Arguments("POST", "/api/core/geo/update")]
     [Arguments("POST", "/api/speedtests")]
     [Arguments("POST", "/api/subscriptions/example/update")]

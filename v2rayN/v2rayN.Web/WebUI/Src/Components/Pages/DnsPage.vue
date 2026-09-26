@@ -19,10 +19,10 @@ const tabs = [
 
 <template>
   <section class="page dns-page">
-    <div class="page-toolbar"><div class="page-title"><h1>{{ t('dns.title') }}</h1></div><button class="button" @click="actions.loadDns">{{ t('common.refresh') }}</button></div>
+    <div class="page-header page-toolbar"><div class="page-title"><h1>{{ t('dns.title') }}</h1></div><button class="button" @click="actions.loadDns">{{ t('common.refresh') }}</button></div>
     <nav class="section-tabs" :aria-label="t('dns.title')"><button v-for="tab in tabs" :key="tab.id" :class="{ selected: activeTab === tab.id }" @click="activeTab = tab.id">{{ t(tab.key) }}</button></nav>
 
-    <section v-if="activeTab === 'basic'" class="settings-section">
+    <section v-if="activeTab === 'basic'" class="settings-section form-section">
       <div class="form-grid three-col">
         <label>{{ t('dns.directDns') }}<textarea v-model="state.simpleDnsForm.directDNS" /></label>
         <label>{{ t('dns.remoteDns') }}<textarea v-model="state.simpleDnsForm.remoteDNS" /></label>
@@ -32,10 +32,10 @@ const tabs = [
         <label>{{ t('dns.strategyProxyDial') }}<input v-model="state.simpleDnsForm.strategy4ProxyDial" /></label>
       </div>
       <div class="settings-checks"><label class="check-inline"><input v-model="state.simpleDnsForm.parallelQuery" type="checkbox" />{{ t('dns.parallelQuery') }}</label><label class="check-inline"><input v-model="state.simpleDnsForm.serveStale" type="checkbox" />{{ t('dns.serveStale') }}</label><label class="check-inline"><input v-model="state.simpleDnsForm.enableHappyEyeballs" type="checkbox" />{{ t('dns.happyEyeballs') }}</label></div>
-      <div class="settings-footer"><button class="button primary" @click="actions.saveSimpleDns">{{ t('common.save') }}</button></div>
+      <div class="footer-actions settings-footer"><button class="button primary" @click="actions.saveSimpleDns">{{ t('common.save') }}</button></div>
     </section>
 
-    <section v-else-if="activeTab === 'advanced'" class="settings-section">
+    <section v-else-if="activeTab === 'advanced'" class="settings-section form-section">
       <div class="form-grid three-col">
         <label class="check-inline"><input v-model="state.simpleDnsForm.useSystemHosts" type="checkbox" />{{ t('dns.useSystemHosts') }}</label>
         <label class="check-inline"><input v-model="state.simpleDnsForm.addCommonHosts" type="checkbox" />{{ t('dns.addCommonHosts') }}</label>
@@ -48,10 +48,10 @@ const tabs = [
         <label class="wide-field">{{ t('dns.hosts') }}<textarea v-model="state.simpleDnsForm.hosts" class="code-area" spellcheck="false" /></label>
       </div>
       <details class="advanced-editor"><summary>{{ t('dns.jsonEditor') }}</summary><p class="field-hint">{{ t('dns.jsonCompatibilityHint') }}</p><textarea v-model="state.simpleDnsAdvancedRaw" class="code-area dns-code" spellcheck="false" /></details>
-      <div class="settings-footer"><button class="button primary" @click="actions.saveSimpleDns">{{ t('common.save') }}</button></div>
+      <div class="footer-actions settings-footer"><button class="button primary" @click="actions.saveSimpleDns">{{ t('common.save') }}</button></div>
     </section>
 
-    <section v-else class="settings-section dns-core-section">
+    <section v-else class="settings-section form-section dns-core-section">
       <template v-if="activeDnsProfile">
         <header class="section-heading"><div><h2>{{ activeTab === 'xray' ? t('dns.xrayTab') : t('dns.singboxTab') }}</h2><small>{{ t('dns.coreApiLimit') }}</small></div><label class="check-inline"><input v-model="activeDnsProfile.enabled" type="checkbox" />{{ t('common.enabled') }}</label></header>
         <div class="form-grid two-col">
@@ -61,7 +61,7 @@ const tabs = [
           <label>{{ t('dns.domainDnsAddress') }}<input v-model="activeDnsProfile.domainDNSAddress" /></label>
           <label class="check-inline"><input v-model="activeDnsProfile.useSystemHosts" type="checkbox" />{{ t('dns.useSystemHosts') }}</label>
         </div>
-        <div class="settings-footer"><button class="button primary" @click="actions.saveDnsProfile(activeDnsProfile)">{{ t('common.save') }}</button></div>
+        <div class="footer-actions settings-footer"><button class="button primary" @click="actions.saveDnsProfile(activeDnsProfile)">{{ t('common.save') }}</button></div>
       </template>
       <p v-else class="muted empty-inline">{{ t('dns.coreProfileUnavailable') }}</p>
     </section>

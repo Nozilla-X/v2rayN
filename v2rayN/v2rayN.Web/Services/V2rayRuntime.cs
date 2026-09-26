@@ -25,7 +25,6 @@ public sealed partial class V2rayRuntime(
     IHostApplicationLifetime lifetime,
     RuntimeOperationCoordinator operations)
 {
-    private static readonly TimeSpan ShutdownBudget = TimeSpan.FromSeconds(20);
     private readonly EventHub _events = events;
     private readonly LogBuffer _logs = logs;
     private readonly IConfiguration _configuration = configuration;
@@ -39,7 +38,6 @@ public sealed partial class V2rayRuntime(
     private SpeedtestService? _speedtestService;
     private Task? _speedtestTask;
     private CancellationTokenSource? _speedtestCancellation;
-    private Task? _xrayUpdateTask;
     private DateTimeOffset? _coreStartedAt;
     private string? _xrayPath;
     private ServerSpeedItem? _latestTraffic;
@@ -175,9 +173,10 @@ public sealed partial class V2rayRuntime(
 
         var completed = await ShutdownCleanupSequence.RunAsync(
             steps,
-            ShutdownBudget,
+            RuntimeShutdownBudgets.RuntimeCleanup,
             cancellationToken,
-            message => AddLog("web", message));
+            message => AddLog("web", message),
+            ShutdownDiagnostics.SetStage);
         if (completed && saveServiceLibState)
         {
             AddLog("web", "serviceLib.stopped");

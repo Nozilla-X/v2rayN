@@ -38,7 +38,7 @@ internal static class Program
             var (stopHealthUri, _) = GetLauncherUris(launchOptions.HostArguments);
             var stopper = new WebStopper(new HttpWebHealthProbe(), new LinuxProcessSignalSender());
             var result = await stopper.StopAsync(GetInstanceLockPath(), stopHealthUri);
-            Console.Out.WriteLine(LauncherMessages.StopMessage(result, GetLauncherLocale()));
+            Console.Out.WriteLine(LauncherMessages.StopMessage(result, GetLauncherLocale(), stopper.LastObservedShutdownStage));
             return result is WebStopResult.NotRunning or WebStopResult.Stopped ? 0 : 1;
         }
 
@@ -98,7 +98,9 @@ internal static class Program
 
     private static async Task<int> RunWebHostAsync(string[] args, bool showForegroundPrompt)
     {
-        var configPath = Utils.GetConfigPath("web-auth.json");
+        var configPath = WebAuthStorage.MigrateAndGetPath(
+            Utils.StartupPath(),
+            Utils.GetConfigPath("web-auth.json"));
         var webAuth = new WebAuthService(configPath, Environment.GetEnvironmentVariable(ManagementKeyEnvironmentVariable));
         var applicationBase = AppContext.BaseDirectory;
         var webRoot = Path.Combine(applicationBase, "wwwroot");
@@ -121,6 +123,7 @@ internal static class Program
         builder.Services.AddSingleton<LogBuffer>();
         builder.Services.AddSingleton<RuntimeOperationCoordinator>();
         builder.Services.AddSingleton<V2rayRuntime>();
+        builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = RuntimeShutdownBudgets.HostShutdown);
         builder.Services.AddHostedService<V2rayHostedService>(services =>
             new V2rayHostedService(services.GetRequiredService<V2rayRuntime>()));
         builder.Services.AddSingleton(webAuth);

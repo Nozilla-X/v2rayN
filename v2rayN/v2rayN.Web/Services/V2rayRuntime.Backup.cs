@@ -1,4 +1,6 @@
 using System.IO.Compression;
+using System.Text.Json;
+using SQLite;
 using ServiceLib;
 using ServiceLib.Common;
 using ServiceLib.Handler;
@@ -16,6 +18,7 @@ public sealed partial class V2rayRuntime
     private const long MaxBackupArchiveBytes = 64L * 1024 * 1024;
     private const long MaxBackupExpandedBytes = 256L * 1024 * 1024;
     private const int MaxBackupEntries = 2048;
+    internal const string WebAuthFileName = "web-auth.json";
 
     public WebDavSettingsView GetWebDavSettings() => new(
         Config.WebDavItem.Url,
@@ -65,7 +68,7 @@ public sealed partial class V2rayRuntime
         var tempConfigPath = Path.Combine(tempRoot, "guiConfigs");
         try
         {
-            FileUtils.CopyDirectory(Utils.GetConfigPath(), tempConfigPath, false, true);
+            CopyConfigForBackup(Utils.GetConfigPath(), tempConfigPath);
             if (!FileUtils.CreateFromDirectory(tempRoot, archivePath))
             {
                 return (OperationView.Fail("backup_create_failed", ApiMessageKeys.BackupArchiveInvalid), null);
@@ -171,10 +174,16 @@ public sealed partial class V2rayRuntime
             }
 
             Directory.CreateDirectory(stagingRoot);
-            if (!FileUtils.ZipExtractToFile(archivePath, stagingRoot, string.Empty)
-                || !File.Exists(Path.Combine(stagingRoot, Global.ConfigFileName)))
+            if (!TryExtractBackupConfig(archivePath, stagingRoot)
+                || !IsValidBackupConfig(Path.Combine(stagingRoot, Global.ConfigFileName)))
             {
                 return OperationView.Fail("backup_archive_invalid", ApiMessageKeys.BackupArchiveInvalid);
+            }
+            var databasePath = Path.Combine(stagingRoot, "guiNDB.db");
+            if (File.Exists(databasePath) && !BackupDatabaseCompatibility.IsCompatible(databasePath, out var databaseError))
+            {
+                AddLog("backup", $"Restore preflight rejected guiNDB.db: {databaseError}");
+                return OperationView.Fail("backup_database_incompatible", ApiMessageKeys.BackupDatabaseIncompatible);
             }
 
             var (backupResult, safetyBackupPath) = await CreateBackupArchiveAsync();
@@ -192,7 +201,21 @@ public sealed partial class V2rayRuntime
             await SQLiteHelper.Instance.DisposeDbConnectionAsync();
             databaseClosed = true;
 
-            FileUtils.CopyDirectory(stagingRoot, Utils.GetConfigPath(), false, true);
+            var configPath = Utils.GetConfigPath();
+            var configParent = Path.GetDirectoryName(configPath)
+                ?? throw new InvalidOperationException("The configuration directory has no parent directory.");
+            var candidatePath = Path.Combine(configParent, $".guiConfigs-restore-{Guid.NewGuid():N}");
+            var displacedPath = Path.Combine(configParent, $".guiConfigs-before-restore-{Guid.NewGuid():N}");
+            try
+            {
+                PrepareRestoredConfigDirectory(stagingRoot, configPath, candidatePath);
+                ReplaceConfigDirectory(candidatePath, configPath, displacedPath);
+            }
+            finally
+            {
+                TryDeleteRestoreDirectory(candidatePath, "restore candidate");
+                TryDeleteRestoreDirectory(displacedPath, "displaced configuration");
+            }
 
             _restoring = true;
             _operations.RejectNewOperations();
@@ -200,8 +223,9 @@ public sealed partial class V2rayRuntime
             return OperationView.Ok(ApiMessageKeys.BackupRestoreStarted,
                 new { restartRequired = true, safetyBackup = Path.GetFileName(safetyBackupPath) });
         }
-        catch
+        catch (Exception exception)
         {
+            AddLog("backup", $"Restore failed: {exception.Message}");
             if (databaseClosed)
             {
                 _restoring = true;
@@ -223,6 +247,10 @@ public sealed partial class V2rayRuntime
                     Directory.Delete(stagingRoot, true);
                 }
             }
+            catch (Exception exception)
+            {
+                AddLog("backup", $"Restore staging cleanup failed: {exception.Message}");
+            }
             finally
             {
                 if (File.Exists(archivePath))
@@ -230,6 +258,21 @@ public sealed partial class V2rayRuntime
                     File.Delete(archivePath);
                 }
             }
+        }
+    }
+
+    private void TryDeleteRestoreDirectory(string path, string description)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (Exception exception)
+        {
+            AddLog("backup", $"Restore {description} cleanup failed: {exception.Message}");
         }
     }
 
@@ -284,7 +327,7 @@ public sealed partial class V2rayRuntime
             }
 
             using var archive = ZipFile.OpenRead(archivePath);
-            var configFiles = new HashSet<string>(StringComparer.Ordinal);
+            var configFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (archive.Entries.Count is 0 or > MaxBackupEntries)
             {
                 return false;
@@ -326,12 +369,141 @@ public sealed partial class V2rayRuntime
                 {
                     return false;
                 }
-                configFiles.Add(segments[^1]);
+                if (!configFiles.Add(segments[^1]))
+                {
+                    return false;
+                }
             }
 
             return configFiles.Contains(Global.ConfigFileName);
         }
         catch
+        {
+            return false;
+        }
+    }
+
+    internal static bool TryExtractBackupConfig(string archivePath, string destinationDirectory)
+    {
+        try
+        {
+            using var archive = ZipFile.OpenRead(archivePath);
+            Directory.CreateDirectory(destinationDirectory);
+            foreach (var entry in archive.Entries)
+            {
+                if (entry.Length == 0)
+                {
+                    continue;
+                }
+
+                var segments = entry.FullName.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+                var guiConfigIndex = Array.IndexOf(segments, "guiConfigs");
+                if (guiConfigIndex < 0 || segments.Length != guiConfigIndex + 2)
+                {
+                    return false;
+                }
+
+                var fileName = segments[^1];
+                if (string.Equals(fileName, WebAuthFileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                using var source = entry.Open();
+                using var target = new FileStream(
+                    Path.Combine(destinationDirectory, fileName),
+                    FileMode.CreateNew,
+                    FileAccess.Write,
+                    FileShare.None);
+                source.CopyTo(target);
+            }
+
+            return File.Exists(Path.Combine(destinationDirectory, Global.ConfigFileName));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    internal static void CopyConfigForBackup(string sourceDirectory, string destinationDirectory) =>
+        FileUtils.CopyDirectory(sourceDirectory, destinationDirectory, recursive: false, overwrite: true, ignoredName: WebAuthFileName);
+
+    internal static void PrepareRestoredConfigDirectory(
+        string extractedConfigDirectory,
+        string currentConfigDirectory,
+        string candidateDirectory)
+    {
+        if (Directory.Exists(currentConfigDirectory))
+        {
+            CopyConfigDirectory(currentConfigDirectory, candidateDirectory);
+        }
+        else
+        {
+            Directory.CreateDirectory(candidateDirectory);
+        }
+
+        foreach (var file in Directory.EnumerateFiles(extractedConfigDirectory, "*", SearchOption.TopDirectoryOnly))
+        {
+            if (string.Equals(Path.GetFileName(file), WebAuthFileName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            File.Copy(file, Path.Combine(candidateDirectory, Path.GetFileName(file)), overwrite: true);
+        }
+    }
+
+    private static void CopyConfigDirectory(string sourceDirectory, string destinationDirectory)
+    {
+        Directory.CreateDirectory(destinationDirectory);
+        foreach (var sourceFile in Directory.EnumerateFiles(sourceDirectory, "*", SearchOption.TopDirectoryOnly))
+        {
+            File.Copy(sourceFile, Path.Combine(destinationDirectory, Path.GetFileName(sourceFile)), overwrite: true);
+        }
+        foreach (var sourceSubdirectory in Directory.EnumerateDirectories(sourceDirectory, "*", SearchOption.TopDirectoryOnly))
+        {
+            CopyConfigDirectory(sourceSubdirectory, Path.Combine(destinationDirectory, Path.GetFileName(sourceSubdirectory)));
+        }
+    }
+
+    internal static void ReplaceConfigDirectory(string candidateDirectory, string configDirectory, string displacedDirectory)
+    {
+        var hadCurrentDirectory = Directory.Exists(configDirectory);
+        if (hadCurrentDirectory)
+        {
+            Directory.Move(configDirectory, displacedDirectory);
+        }
+
+        try
+        {
+            Directory.Move(candidateDirectory, configDirectory);
+        }
+        catch
+        {
+            if (hadCurrentDirectory && Directory.Exists(displacedDirectory) && !Directory.Exists(configDirectory))
+            {
+                Directory.Move(displacedDirectory, configDirectory);
+            }
+            throw;
+        }
+    }
+
+    private static bool IsValidBackupConfig(string configPath)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(
+                File.ReadAllText(configPath),
+                new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip });
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                && JsonSerializer.Deserialize<Config>(document.RootElement.GetRawText(), new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    ReadCommentHandling = JsonCommentHandling.Skip,
+                }) is not null;
+        }
+        catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException)
         {
             return false;
         }

@@ -9,7 +9,7 @@ public interface IWebHealthProbe
     Task<WebHealthProbeResult> ProbeAsync(Uri healthUri, CancellationToken cancellationToken);
 }
 
-public sealed record WebHealthProbeResult(bool IsHealthy, int? InstanceProcessId);
+public sealed record WebHealthProbeResult(bool IsHealthy, int? InstanceProcessId, string? ShutdownStage = null);
 
 public interface IBrowserOpener
 {
@@ -36,7 +36,10 @@ public sealed class HttpWebHealthProbe : IWebHealthProbe
                 && int.TryParse(values.FirstOrDefault(), out var parsedProcessId)
                     ? parsedProcessId
                     : (int?)null;
-            return new WebHealthProbeResult(response.IsSuccessStatusCode, instanceProcessId);
+            var shutdownStage = response.Headers.TryGetValues("X-v2rayn-web-shutdown-stage", out var stageValues)
+                ? stageValues.FirstOrDefault()
+                : null;
+            return new WebHealthProbeResult(response.IsSuccessStatusCode, instanceProcessId, shutdownStage);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
         {

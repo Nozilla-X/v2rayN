@@ -1,6 +1,7 @@
 import { reactive, ref, type Ref } from 'vue'
 import type { ApiServices, Dict, ErrorHandler, Notice } from './types'
 import type { Translate } from './types'
+import { buildApplicationSettingsBody, buildCoreSettingsBody, buildSaveAllSettingsSections, buildSpeedSettingsBody } from './settingsPayloads.js'
 
 export function useSettings(options: ApiServices & {
   t: Translate
@@ -40,10 +41,6 @@ export function useSettings(options: ApiServices & {
     }
   }
 
-  function parseLines(value: string): string[] {
-    return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
-  }
-
   function toggleDestOverride(protocol: string, event: Event) {
     const selected = new Set<string>(inboundForm.value.destOverride || [])
     if ((event.target as HTMLInputElement).checked) selected.add(protocol)
@@ -69,15 +66,8 @@ export function useSettings(options: ApiServices & {
 
   async function saveCoreSettings() {
     try {
-      const { fragmentLengthsText, fragmentDelaysText, ...core } = coreForm.value
       const result = await options.request('/api/settings/core', {
-        method: 'PUT', body: {
-          ...core,
-          fragmentLengths: parseLines(fragmentLengthsText || ''), fragmentDelays: parseLines(fragmentDelaysText || ''),
-          mux4RayConcurrency: core.mux4RayConcurrency === '' ? null : Number(core.mux4RayConcurrency),
-          mux4RayXudpConcurrency: core.mux4RayXudpConcurrency === '' ? null : Number(core.mux4RayXudpConcurrency),
-          mux4SboxMaxConnections: Number(core.mux4SboxMaxConnections || 0), hy2UpMbps: Number(core.hy2UpMbps || 0), hy2DownMbps: Number(core.hy2DownMbps || 0),
-        },
+        method: 'PUT', body: buildCoreSettingsBody(coreForm.value),
       })
       options.showNotice(options.operationMessage(result))
     } catch (error) { options.showError(error) }
@@ -85,19 +75,14 @@ export function useSettings(options: ApiServices & {
 
   async function saveAppSettings() {
     try {
-      const result = await options.request('/api/settings/application', { method: 'PUT', body: { ...appForm.value, geoAutoUpdateInterval: Number(appForm.value.geoAutoUpdateInterval || 0) } })
+      const result = await options.request('/api/settings/application', { method: 'PUT', body: buildApplicationSettingsBody(appForm.value) })
       options.showNotice(options.operationMessage(result))
     } catch (error) { options.showError(error) }
   }
 
   async function saveSpeedSettings() {
     try {
-      const result = await options.request('/api/settings/speedtest', { method: 'PUT', body: {
-        ...speedForm.value,
-        speedTestTimeout: Number(speedForm.value.speedTestTimeout), mixedConcurrencyCount: Number(speedForm.value.mixedConcurrencyCount),
-        speedTestPageSize: speedForm.value.speedTestPageSize === '' ? null : Number(speedForm.value.speedTestPageSize),
-        speedTestDelayInterval: speedForm.value.speedTestDelayInterval === '' ? null : Number(speedForm.value.speedTestDelayInterval),
-      } })
+      const result = await options.request('/api/settings/speedtest', { method: 'PUT', body: buildSpeedSettingsBody(speedForm.value) })
       options.showNotice(options.operationMessage(result))
     } catch (error) { options.showError(error) }
   }
@@ -110,46 +95,19 @@ export function useSettings(options: ApiServices & {
   }
 
   async function saveAllSettings() {
-    const inbound = inboundForm.value
-    const { fragmentLengthsText, fragmentDelaysText, ...core } = coreForm.value
-    const sections: Array<{ key: string; path: string; body: Dict }> = [
-      {
-        key: 'settings.inbound',
-        path: '/api/settings/inbound',
-        body: { ...inbound, localPort: Number(inbound.localPort), destOverride: inbound.destOverride || [] },
-      },
-      {
-        key: 'settings.core',
-        path: '/api/settings/core',
-        body: {
-          ...core,
-          fragmentLengths: parseLines(fragmentLengthsText || ''), fragmentDelays: parseLines(fragmentDelaysText || ''),
-          mux4RayConcurrency: core.mux4RayConcurrency === '' ? null : Number(core.mux4RayConcurrency),
-          mux4RayXudpConcurrency: core.mux4RayXudpConcurrency === '' ? null : Number(core.mux4RayXudpConcurrency),
-          mux4SboxMaxConnections: Number(core.mux4SboxMaxConnections || 0), hy2UpMbps: Number(core.hy2UpMbps || 0), hy2DownMbps: Number(core.hy2DownMbps || 0),
-        },
-      },
-      {
-        key: 'settings.application',
-        path: '/api/settings/application',
-        body: { ...appForm.value, geoAutoUpdateInterval: Number(appForm.value.geoAutoUpdateInterval || 0) },
-      },
-      {
-        key: 'settings.speedtest',
-        path: '/api/settings/speedtest',
-        body: {
-          ...speedForm.value,
-          speedTestTimeout: Number(speedForm.value.speedTestTimeout), mixedConcurrencyCount: Number(speedForm.value.mixedConcurrencyCount),
-          speedTestPageSize: speedForm.value.speedTestPageSize === '' ? null : Number(speedForm.value.speedTestPageSize),
-          speedTestDelayInterval: speedForm.value.speedTestDelayInterval === '' ? null : Number(speedForm.value.speedTestDelayInterval),
-        },
-      },
-      {
-        key: 'settings.coreTypes',
-        path: '/api/settings/core-types',
-        body: { mappings: settings.value.coreTypes || [] },
-      },
-    ]
+    let sections: Array<{ key: string; path: string; body: Dict }>
+    try {
+      sections = buildSaveAllSettingsSections({
+        inbound: inboundForm.value,
+        core: coreForm.value,
+        app: appForm.value,
+        speed: speedForm.value,
+        coreTypes: settings.value.coreTypes || [],
+      })
+    } catch (error) {
+      options.showError(error)
+      return { completed: [], failed: 'settings.speedtest' }
+    }
     const savedSections: string[] = []
     for (const section of sections) {
       try {

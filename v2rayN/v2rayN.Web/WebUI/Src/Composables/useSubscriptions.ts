@@ -1,5 +1,6 @@
 import { reactive, ref, type Ref } from 'vue'
 import type { ApiServices, Dict, ErrorHandler, Notice, Translate } from './types'
+import { nullableNumber } from './settingsPayloads.js'
 import { subscriptionEditorOptions } from '../subscriptionEditorOptions'
 
 export function useSubscriptions(options: ApiServices & {
@@ -67,12 +68,12 @@ export function useSubscriptions(options: ApiServices & {
 
   async function saveSubscription() {
     try {
-      const preSocksPort = subscriptionForm.value.preSocksPort
+    const preSocksPort = nullableNumber(subscriptionForm.value.preSocksPort)
       const body = {
         ...subscriptionForm.value,
         autoUpdateInterval: Number(subscriptionForm.value.autoUpdateInterval || 0),
         sort: Number(subscriptionForm.value.sort || 0),
-        preSocksPort: preSocksPort === '' || preSocksPort === undefined || preSocksPort === null ? null : Number(preSocksPort),
+        preSocksPort,
       }
       const result = await options.request(editingSubscriptionId.value ? `/api/subscriptions/${encodeURIComponent(editingSubscriptionId.value)}` : '/api/subscriptions', {
         method: editingSubscriptionId.value ? 'PUT' : 'POST', body,

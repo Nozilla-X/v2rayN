@@ -33,10 +33,12 @@ import { useSession } from './Composables/useSession'
 import { useSettings } from './Composables/useSettings'
 import { useSubscriptions } from './Composables/useSubscriptions'
 import { useTemplates } from './Composables/useTemplates'
+import { useTheme } from './Composables/useTheme'
 import type { ApiError, Dict } from './Composables/types'
 import { navigateMenu } from './Components/menuContext'
 
 const { t, locale } = useI18n()
+const theme = useTheme()
 const sessionToken = ref(localStorage.getItem('v2rayn-web-token') || '')
 const authenticated = ref(false)
 const loading = ref(false)
@@ -138,6 +140,7 @@ const events = useEvents({
   request: api.request, t, showNotice, matchesLogFilter: logs.matchesLogFilter,
   loadGroups: profiles.loadGroups, loadProfiles: profiles.loadProfiles, loadSubscriptions: subscriptions.loadSubscriptions,
   loadStatus: runtime.loadStatus, loadRouting: routing.loadRouting, loadOperations: runtime.loadOperations,
+  onCoreUpdateProgress: maintenance.recordCoreUpdateProgress,
 })
 
 async function loadPageData() {
@@ -246,8 +249,8 @@ function positionContextMenu(menu: Dict) {
   contextMenuPlacement.value = { left: `${left}px`, top: `${top}px` }
 }
 
-const headerState = reactive({ navItems, brandIconSrc, brandIconTitle, activePage, subscriptions: subscriptions.subscriptions, authenticated, locale, loading })
-const headerActions = { navigate, refreshBase, disconnect }
+const headerState = reactive({ navItems, brandIconSrc, brandIconTitle, activePage, subscriptions: subscriptions.subscriptions, authenticated, locale, loading, themePreference: theme.preference })
+const headerActions = { navigate, refreshBase, disconnect, setTheme: theme.setPreference }
 const runtimeStripState = reactive({ status: runtime.status, currentProfile, activeRoutingId: routing.activeRoutingId, routes: routing.routes, busy: runtime.busy })
 const runtimeStripActions = { activateRoute, coreAction: runtime.coreAction }
 const connectionStripState = runtime.connectionStripState
@@ -483,6 +486,7 @@ onMounted(async () => {
   window.addEventListener('resize', positionOpenContextMenu)
   await session.loadSetupStatus()
   if (setupRequired.value || !sessionToken.value) return
+  authenticated.value = true
   try {
     await refreshBase()
     if (authenticated.value) {
@@ -531,12 +535,15 @@ function positionOpenContextMenu() {
     <template v-else>
       <AppHeader :state="headerState" :actions="headerActions" />
     <section v-if="!authenticated" class="auth-wrap">
-      <form class="auth-box" @submit.prevent="login()">
-        <div class="auth-title"><img class="brand-glyph" src="/v2rayN.png" alt="" /><div><strong>{{ t('auth.title') }}</strong><small>{{ t('brand') }}</small></div></div>
-        <p>{{ t('auth.hint') }}</p>
-        <label class="field-label" for="management-key">{{ t('auth.token') }}</label>
-        <div class="inline-field"><input id="management-key" v-model="managementKeyDraft" type="password" autocomplete="current-password" :placeholder="t('auth.placeholder')" /><button class="button primary" type="submit">{{ t('auth.connect') }}</button></div>
-      </form>
+      <div class="auth-content">
+        <form class="auth-box" @submit.prevent="login()">
+          <div class="auth-title"><img class="brand-glyph" src="/v2rayN.png" alt="" /><div><strong>{{ t('auth.title') }}</strong><small>{{ t('brand') }}</small></div></div>
+          <p>{{ t('auth.hint') }}</p>
+          <label class="field-label" for="management-key">{{ t('auth.token') }}</label>
+          <div class="inline-field"><input id="management-key" v-model="managementKeyDraft" type="password" autocomplete="current-password" :placeholder="t('auth.placeholder')" /><button class="button primary" type="submit">{{ t('auth.connect') }}</button></div>
+        </form>
+        <NoticeBar v-if="notice" :state="noticeState" />
+      </div>
     </section>
       <template v-else>
         <RuntimeStrip :state="runtimeStripState" :actions="runtimeStripActions" />

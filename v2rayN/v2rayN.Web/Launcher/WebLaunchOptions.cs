@@ -101,15 +101,22 @@ public static class LauncherMessages
 
     public static string ForegroundStarted(string url, LauncherLocale locale) => Format("foregroundStarted", locale, url);
 
-    public static string StopMessage(WebStopResult result, LauncherLocale locale) => Get(result switch
+    public static string StopMessage(WebStopResult result, LauncherLocale locale, string? lastStage = null)
     {
-        WebStopResult.NotRunning => "stopNotRunning",
-        WebStopResult.Stopped => "stopSucceeded",
-        WebStopResult.IdentityUnverified => "stopIdentityUnverified",
-        WebStopResult.SignalFailed => "stopSignalFailed",
-        WebStopResult.TimedOut => "stopTimedOut",
-        _ => throw new ArgumentOutOfRangeException(nameof(result)),
-    }, locale);
+        var message = Get(result switch
+        {
+            WebStopResult.NotRunning => "stopNotRunning",
+            WebStopResult.Stopped => "stopSucceeded",
+            WebStopResult.IdentityUnverified => "stopIdentityUnverified",
+            WebStopResult.SignalFailed => "stopSignalFailed",
+            WebStopResult.TimedOut => "stopTimedOut",
+            _ => throw new ArgumentOutOfRangeException(nameof(result)),
+        }, locale);
+
+        return result == WebStopResult.TimedOut && !string.IsNullOrWhiteSpace(lastStage)
+            ? $"{message} {Get("stopTimedOutStage", locale).Replace("{stage}", lastStage, StringComparison.Ordinal)}"
+            : message;
+    }
 
     public static string StopUnsupported(LauncherLocale locale) => Get("stopUnsupported", locale);
 

@@ -4,6 +4,13 @@
     "proxy": "代理正在运行",
     "off": "已关闭"
   },
+  "header": { "language": "语言" },
+  "theme": {
+    "label": "主题",
+    "system": "跟随系统",
+    "light": "浅色",
+    "dark": "深色"
+  },
   "setup": {
     "title": "首次使用，请设置管理密钥",
     "description": "设置管理密钥后即可进入 v2rayN Web。",
@@ -27,6 +34,7 @@
     "stopIdentityUnverified": "无法安全停止 v2rayN Web：无法确认实例身份，未发送信号。",
     "stopSignalFailed": "无法向 v2rayN Web 发送 SIGTERM。",
     "stopTimedOut": "v2rayN Web 已收到 SIGTERM，但未能在预期时间内停止。",
+    "stopTimedOutStage": "最后观察到的清理阶段：{stage}。",
     "stopUnsupported": "--stop 仅支持 Linux。",
     "startFailed": "v2rayN Web 启动失败；请使用 --foreground 查看详细日志。",
     "existingUnhealthy": "检测到同一数据目录的实例正在启动，但尚未就绪；请稍后重试。",
@@ -49,6 +57,9 @@
     "connectFailed": "连接失败，请检查 Web Backend 地址",
     "tokenRequired": "请输入管理密钥",
     "loginFailed": "管理密钥无效。",
+    "loginUnavailable": "Web 后端暂不可用或仍在初始化，请稍后重试。",
+    "sessionDataLoadFailed": "会话已建立，但初始数据加载失败。当前仍保持登录状态，可稍后重试。",
+    "sessionExpired": "会话已失效，请重新登录。",
     "rateLimited": "登录尝试过多，请稍后重试。"
   },
   "nav": {
@@ -566,6 +577,33 @@
   },
   "maintenance": {
     "title": "更新与备份",
+    "coreNames": { "xray": "Xray", "mihomo": "Mihomo", "singBox": "sing-box", "v2rayN": "v2rayN", "other": "Core" },
+    "updateSettings": "更新选项",
+    "updateSettingsHint": "更新检查语义与桌面版一致；不支持安全安装的 Web 自更新仅作说明，不会执行替换。",
+    "saveUpdateSettings": "保存更新选项",
+    "includeCoreUpdate": "包含此 Core 更新",
+    "includeGeoFiles": "包含 GeoFiles 更新",
+    "geoNotSelected": "请先在更新选项中勾选 GeoFiles。",
+    "webUpdateUnsupported": "当前 Web 部署方式不支持安全的 v2rayN Web 自更新。",
+    "updateUnsupported": "当前平台或部署方式不支持此更新目标。",
+    "updateSettingsSaved": "更新选项已保存",
+    "updateCheckFailed": "更新检查失败",
+    "updateStarted": "更新已开始",
+    "updateBusy": "已有更新任务正在运行",
+    "updateFailed": "更新失败；如适用，旧 Core 已尝试恢复。",
+    "updateCompleted": "更新已完成",
+    "updateAvailableGeneric": "发现可用更新",
+    "upToDateGeneric": "已是最新版本",
+    "phase": {
+      "checking": "正在检查更新",
+      "downloading": "正在下载；当前代理 Core 保持运行",
+      "verifying": "正在解压并验证更新包",
+      "stopping-core": "正在停止目标 Core",
+      "installing": "正在安装已验证的 Core",
+      "restarting-core": "正在恢复更新前运行的 Core",
+      "completed": "更新完成",
+      "failed": "更新失败"
+    },
     "updates": "更新",
     "backupRestore": "备份 / 恢复",
     "xray": "Xray",
@@ -611,6 +649,7 @@
     "restoreStarted": "恢复已启动，Backend 即将重启",
     "created": "备份已创建",
     "archiveInvalid": "备份文件无效",
+    "databaseIncompatible": "备份中的 guiNDB.db 损坏或缺少关键表结构；恢复已取消，当前配置未更改。",
     "webdavRestoreFailed": "WebDAV 恢复失败",
     "restoreFailed": "备份恢复失败",
     "webdavSettingsSaved": "WebDAV 设置已保存"
@@ -725,6 +764,7 @@
     "restoreStarted": "恢复已启动，Backend 即将重启",
     "restoreFailed": "备份恢复失败",
     "archiveInvalid": "备份文件无效",
+    "databaseIncompatible": "备份中的 guiNDB.db 损坏或缺少关键表结构；恢复已取消，当前配置未更改。",
     "webdavSettingsSaved": "WebDAV 设置已保存",
     "webdavCheckSucceeded": "WebDAV 连接成功",
     "webdavCheckFailed": "WebDAV 连接失败",

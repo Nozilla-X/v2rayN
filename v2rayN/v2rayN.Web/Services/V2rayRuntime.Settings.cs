@@ -740,14 +740,7 @@ public sealed partial class V2rayRuntime
         {
             operations.Add("speedtest");
         }
-        if (_xrayUpdateTask is { IsCompleted: false })
-        {
-            operations.Add("xray-update");
-        }
-        if (_geoUpdateTask is { IsCompleted: false })
-        {
-            operations.Add("geo-update");
-        }
+        operations.AddRange(GetRunningCoreUpdateOperations());
         if (_coreStartedAt is not null)
         {
             operations.Add("core");

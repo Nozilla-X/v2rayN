@@ -15,33 +15,83 @@ export function useMaintenance(options: ApiServices & {
 }) {
   const t = options.t
   const webdavForm = ref<Dict>({ url: '', userName: '', password: '', dirName: '' })
-  const xrayUpdate = ref<Dict>({ selected: true, preRelease: false, useProxy: true, result: null })
+  const updateSettings = ref<Dict>({ targets: [], geoFilesSelected: true, preRelease: false, useProxy: true })
+  const updateResults = ref<Record<string, Dict>>({})
+  const updateProgress = ref<Record<string, Dict>>({})
 
   async function loadMaintenance() {
-    const webdav = await options.data('/api/settings/webdav')
+    const [webdav, updates, progress] = await Promise.all([
+      options.data('/api/settings/webdav'),
+      options.data('/api/core-updates'),
+      options.data('/api/core-updates/progress'),
+      options.loadOperations(),
+    ])
     webdavForm.value = { ...webdav, password: '' }
-    await options.loadOperations()
+    updateSettings.value = { ...updates }
+    updateProgress.value = Object.fromEntries((progress || []).map((item: Dict) => [item.coreType, item]))
   }
 
-  async function checkXrayUpdate() {
+  function recordCoreUpdateProgress(progress: Dict) {
+    if (typeof progress.coreType !== 'string') return
+    updateProgress.value = { ...updateProgress.value, [progress.coreType]: progress }
+  }
+
+  async function loadCoreUpdateProgress() {
+    const progress = await options.data('/api/core-updates/progress')
+    updateProgress.value = Object.fromEntries((progress || []).map((item: Dict) => [item.coreType, item]))
+  }
+
+  async function persistUpdateSettings(showSavedNotice: boolean): Promise<boolean> {
     try {
-      const result = await options.request(options.queryPath('/api/core/xray/check-update', { preRelease: xrayUpdate.value.preRelease, useProxy: xrayUpdate.value.useProxy }))
-      xrayUpdate.value.result = { ...(result.data || {}), messageKey: result.messageKey }
-      options.showNotice(options.translateKey(result.messageKey || (xrayUpdate.value.result.updateAvailable ? 'core.updateAvailable' : 'core.updateCurrent')))
+      const selectedCoreTypes = (updateSettings.value.targets || [])
+        .filter((target: Dict) => target.selected)
+        .map((target: Dict) => target.coreType)
+      if (updateSettings.value.geoFilesSelected) selectedCoreTypes.push('GeoFiles')
+      const result = await options.request('/api/core-updates/settings', {
+        method: 'PUT',
+        body: {
+          selectedCoreTypes,
+          preRelease: Boolean(updateSettings.value.preRelease),
+          useProxy: Boolean(updateSettings.value.useProxy),
+        },
+      })
+      if (showSavedNotice) options.showNotice(options.operationMessage(result))
+      return true
+    } catch (error) {
+      options.showError(error)
+      return false
+    }
+  }
+
+  async function saveUpdateSettings() {
+    await persistUpdateSettings(true)
+  }
+
+  async function checkCoreUpdate(coreType: string) {
+    try {
+      if (!await persistUpdateSettings(false)) return
+      const result = await options.request(`/api/core-updates/${encodeURIComponent(coreType)}/check`)
+      const check = result.data || {}
+      updateResults.value = { ...updateResults.value, [coreType]: check }
+      options.showNotice(check.updateAvailable
+        ? t('maintenance.updateAvailable', { version: check.version })
+        : check.isUpToDate ? t('maintenance.upToDateGeneric') : options.translateKey(result.messageKey))
     } catch (error) { options.showError(error) }
   }
 
-  async function updateXray() {
+  async function updateCore(coreType: string) {
     try {
-      const result = await options.request(options.queryPath('/api/core/xray/update', { preRelease: xrayUpdate.value.preRelease, useProxy: xrayUpdate.value.useProxy }), { method: 'POST' })
-      options.showNotice(options.operationMessage(result, 'core.updateStarted'))
+      if (!await persistUpdateSettings(false)) return
+      const result = await options.request(`/api/core-updates/${encodeURIComponent(coreType)}/update`, { method: 'POST' })
+      options.showNotice(options.operationMessage(result, 'maintenance.updateStarted'))
       await options.loadOperations()
     } catch (error) { options.showError(error) }
   }
 
   async function updateGeo() {
     try {
-      const result = await options.request(`/api/core/geo/update?useProxy=${xrayUpdate.value.useProxy}`, { method: 'POST' })
+      if (!await persistUpdateSettings(false)) return
+      const result = await options.request('/api/core/geo/update', { method: 'POST' })
       options.showNotice(options.operationMessage(result, 'updates.geoStarted'))
       await options.loadOperations()
     } catch (error) { options.showError(error) }
@@ -107,10 +157,16 @@ export function useMaintenance(options: ApiServices & {
     } catch (error) { options.showError(error) }
   }
 
-  const maintenancePageState = reactive({ xrayUpdate, operations: options.operations, status: options.status, webdavForm })
+  const maintenancePageState = reactive({
+    updateSettings, updateResults, updateProgress,
+    operations: options.operations, status: options.status, webdavForm,
+  })
 
   return {
-    webdavForm, xrayUpdate, loadMaintenance, maintenancePageState,
-    maintenancePageActions: { checkXrayUpdate, updateXray, updateGeo, clearStatistics, saveWebdav, webdavAction, downloadBackup, uploadRestore, loadMaintenance, loadOperations: options.loadOperations },
+    webdavForm, updateSettings, updateResults, updateProgress, loadMaintenance, loadCoreUpdateProgress, recordCoreUpdateProgress, maintenancePageState,
+    maintenancePageActions: {
+      checkCoreUpdate, updateCore, saveUpdateSettings, updateGeo, clearStatistics, saveWebdav,
+      webdavAction, downloadBackup, uploadRestore, loadMaintenance, loadOperations: options.loadOperations,
+    },
   }
 }

@@ -19,6 +19,8 @@ internal static class RuntimeRequestOperationPolicy
         if (isPost
             && (normalizedPath is "/api/core/xray/update" or "/api/core/geo/update" or "/api/speedtests"
                 or "/api/subscriptions/update" or "/api/backup/restore" or "/api/backup/webdav/restore"
+                || normalizedPath.StartsWith("/api/core-updates/", StringComparison.Ordinal)
+                    && normalizedPath.EndsWith("/update", StringComparison.Ordinal)
                 || (normalizedPath.StartsWith("/api/subscriptions/", StringComparison.Ordinal)
                     && normalizedPath.EndsWith("/update", StringComparison.Ordinal))))
         {

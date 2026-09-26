@@ -19,6 +19,7 @@ export function useEvents(options: {
   loadStatus: () => Promise<void>
   loadRouting: () => Promise<void>
   loadOperations: () => Promise<void>
+  onCoreUpdateProgress: (progress: Dict) => void
 }) {
   const t = options.t
   let eventSource: EventSource | undefined
@@ -61,16 +62,22 @@ export function useEvents(options: {
         if (options.logPage.value === 1) options.logs.value = [...options.logs.value, entry].slice(-options.logPageSize)
       }
       })
+      source.addEventListener('core-update-progress', (event) => {
+        const progress = JSON.parse((event as MessageEvent).data) as Dict
+        options.onCoreUpdateProgress(progress)
+        if (progress.phase === 'checking' || progress.isComplete) {
+          void options.loadOperations().catch(() => {})
+        }
+      })
       for (const eventName of ['profiles-changed', 'subscription-progress', 'speedtest-result', 'settings-changed', 'geo-update-progress', 'geo-update-completed', 'xray-update-completed']) {
         source.addEventListener(eventName, () => {
         if (eventName === 'profiles-changed' || eventName === 'subscription-progress') {
-          void options.loadGroups().then(options.loadProfiles).then(options.loadSubscriptions)
+          void options.loadGroups().then(options.loadProfiles).then(options.loadSubscriptions).catch(() => {})
         }
         if (eventName === 'settings-changed') {
-          void options.loadStatus()
-          void options.loadRouting()
+          void Promise.all([options.loadStatus(), options.loadRouting()]).catch(() => {})
         }
-        if (eventName.includes('update')) void options.loadOperations()
+        if (eventName.includes('update')) void options.loadOperations().catch(() => {})
       })
       }
       source.onerror = () => {

@@ -105,6 +105,44 @@ public class WebAuthServiceTests
         await restartedInstance.ValidateManagementKey(ManagementKey).Should().BeTrue();
     }
 
+    [Test]
+    public async Task WebAuthStorageMovesLegacyConfigCredentialOutsideTheBackupDirectory()
+    {
+        using var directory = new TemporaryDirectory();
+        var legacyPath = Path.Combine(directory.Path, "guiConfigs", "web-auth.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(legacyPath)!);
+        await File.WriteAllTextAsync(legacyPath, "local-verifier");
+
+        var authPath = WebAuthStorage.MigrateAndGetPath(directory.Path, legacyPath);
+
+        await authPath.Should().BeEqualTo(Path.Combine(directory.Path, "webData", "web-auth.json"));
+        await (await File.ReadAllTextAsync(authPath)).Should().BeEqualTo("local-verifier");
+        await File.Exists(legacyPath).Should().BeFalse();
+        if (OperatingSystem.IsLinux())
+        {
+            await (File.GetUnixFileMode(Path.GetDirectoryName(authPath)!)
+                == (UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute)).Should().BeTrue();
+        }
+    }
+
+    [Test]
+    public async Task ExistingPrivateWebAuthCredentialWinsOverAStaleLegacyCopy()
+    {
+        using var directory = new TemporaryDirectory();
+        var privatePath = Path.Combine(directory.Path, "webData", "web-auth.json");
+        var legacyPath = Path.Combine(directory.Path, "guiConfigs", "web-auth.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(privatePath)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(legacyPath)!);
+        await File.WriteAllTextAsync(privatePath, "private-verifier");
+        await File.WriteAllTextAsync(legacyPath, "stale-verifier");
+
+        var authPath = WebAuthStorage.MigrateAndGetPath(directory.Path, legacyPath);
+
+        await authPath.Should().BeEqualTo(privatePath);
+        await (await File.ReadAllTextAsync(authPath)).Should().BeEqualTo("private-verifier");
+        await File.Exists(legacyPath).Should().BeFalse();
+    }
+
     private sealed class TemporaryDirectory : IDisposable
     {
         public TemporaryDirectory()

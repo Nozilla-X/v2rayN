@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "check-locales": "node Scripts/check-locales.mjs",
     "check:locales": "node Scripts/check-locales.mjs",
+    "test": "node --test Tests/*.test.mjs",
     "build": "npm run check:locales && vue-tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0"
   },

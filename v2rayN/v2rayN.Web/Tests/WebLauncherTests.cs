@@ -256,6 +256,30 @@ public class WebLauncherTests
     }
 
     [Test]
+    public async Task StopTimeoutReportsLastObservedCleanupStage()
+    {
+        if (!OperatingSystem.IsLinux()) return;
+
+        using var directory = new TemporaryDirectory();
+        var lockPath = Path.Combine(directory.Path, "instance.lock");
+        using var heldLock = await AcquireLockWithOwnerAsync(lockPath, 123);
+        var health = new FakeHealthProbe(true, 123);
+        health.SetShutdownStage("Core stop");
+        var stopper = new WebStopper(
+            health,
+            new FakeSignalSender(),
+            stopTimeout: TimeSpan.FromMilliseconds(60),
+            pollInterval: TimeSpan.FromMilliseconds(5));
+
+        var result = await stopper.StopAsync(lockPath, new Uri("http://127.0.0.1:5080/api/health"));
+
+        await (result == WebStopResult.TimedOut).Should().BeTrue();
+        await (stopper.LastObservedShutdownStage == "Core stop").Should().BeTrue();
+        await LauncherMessages.StopMessage(result, LauncherLocale.English, stopper.LastObservedShutdownStage)
+            .Contains("Core stop", StringComparison.Ordinal).Should().BeTrue();
+    }
+
+    [Test]
     public async Task LockIsReleasedWhenOwnerExitsAndDataHomesUseDistinctLocks()
     {
         if (!OperatingSystem.IsLinux()) return;
@@ -324,6 +348,7 @@ public class WebLauncherTests
     {
         private bool _healthy = healthy;
         private int? _processId = processId;
+        private string? _shutdownStage;
 
         public int ProbeCount { get; private set; }
 
@@ -336,10 +361,12 @@ public class WebLauncherTests
             _processId = instanceProcessId;
         }
 
+        public void SetShutdownStage(string? stage) => _shutdownStage = stage;
+
         private Task<WebHealthProbeResult> RecordProbe()
         {
             ProbeCount++;
-            return Task.FromResult(new WebHealthProbeResult(_healthy, _processId));
+            return Task.FromResult(new WebHealthProbeResult(_healthy, _processId, _shutdownStage));
         }
     }
 

@@ -4,6 +4,13 @@
     "proxy": "Proxy is running",
     "off": "Stopped"
   },
+  "header": { "language": "Language" },
+  "theme": {
+    "label": "Theme",
+    "system": "Follow system",
+    "light": "Light",
+    "dark": "Dark"
+  },
   "setup": {
     "title": "Welcome to v2rayN Web",
     "description": "Set a management key to continue.",
@@ -27,6 +34,7 @@
     "stopIdentityUnverified": "Cannot safely stop v2rayN Web: instance identity could not be verified; no signal was sent.",
     "stopSignalFailed": "Could not send SIGTERM to v2rayN Web.",
     "stopTimedOut": "v2rayN Web received SIGTERM but did not stop within the expected time.",
+    "stopTimedOutStage": "Last observed cleanup stage: {stage}.",
     "stopUnsupported": "--stop is supported only on Linux.",
     "startFailed": "v2rayN Web failed to start; run with --foreground to see details.",
     "existingUnhealthy": "An instance for this data directory is starting but is not ready yet; try again shortly.",
@@ -49,6 +57,9 @@
     "connectFailed": "Connection failed. Check the Web Backend address.",
     "tokenRequired": "Enter the management key",
     "loginFailed": "Invalid management key.",
+    "loginUnavailable": "The Web backend is unavailable or still initializing. Try again later.",
+    "sessionDataLoadFailed": "The session was established, but initial data could not be loaded. You are still signed in; retry later.",
+    "sessionExpired": "The session is no longer valid. Sign in again.",
     "rateLimited": "Too many sign-in attempts. Try again later."
   },
   "nav": {
@@ -566,6 +577,33 @@
   },
   "maintenance": {
     "title": "Updates and backup",
+    "coreNames": { "xray": "Xray", "mihomo": "Mihomo", "singBox": "sing-box", "v2rayN": "v2rayN", "other": "Core" },
+    "updateSettings": "Update options",
+    "updateSettingsHint": "Update checks follow desktop semantics. Web self-update is informational only when safe replacement is unavailable.",
+    "saveUpdateSettings": "Save update options",
+    "includeCoreUpdate": "Include this Core update",
+    "includeGeoFiles": "Include GeoFiles update",
+    "geoNotSelected": "Select GeoFiles in update options first.",
+    "webUpdateUnsupported": "Safe v2rayN Web self-update is not supported in this deployment mode.",
+    "updateUnsupported": "This update target is not supported on the current platform or deployment.",
+    "updateSettingsSaved": "Update options saved",
+    "updateCheckFailed": "Update check failed",
+    "updateStarted": "Update started",
+    "updateBusy": "Another update task is already running",
+    "updateFailed": "Update failed; restoring the previous Core was attempted when applicable.",
+    "updateCompleted": "Update completed",
+    "updateAvailableGeneric": "An update is available",
+    "upToDateGeneric": "Already up to date",
+    "phase": {
+      "checking": "Checking for updates",
+      "downloading": "Downloading; the active proxy Core remains running",
+      "verifying": "Extracting and verifying the package",
+      "stopping-core": "Stopping the target Core",
+      "installing": "Installing the verified Core",
+      "restarting-core": "Restoring the previously running Core",
+      "completed": "Update completed",
+      "failed": "Update failed"
+    },
     "updates": "Core and Geo updates",
     "xray": "Xray",
     "checkXray": "Check updates",
@@ -598,6 +636,7 @@
     "restoreStarted": "Restore started; Backend will restart",
     "restoreFailed": "Backup restore failed",
     "archiveInvalid": "Invalid backup archive",
+    "databaseIncompatible": "The backup guiNDB.db is corrupt or missing a required primary key; restore was canceled and current configuration is unchanged.",
     "webdavSettingsSaved": "WebDAV settings saved",
     "webdavCheckSucceeded": "WebDAV connection succeeded",
     "webdavCheckFailed": "WebDAV connection failed",
@@ -721,6 +760,7 @@
     "created": "Backup created",
     "webdavRestoreFailed": "WebDAV restore failed",
     "archiveInvalid": "Invalid backup archive",
+    "databaseIncompatible": "The backup guiNDB.db is corrupt or missing a required primary key; restore was canceled and current configuration is unchanged.",
     "webdavSettingsSaved": "WebDAV settings saved",
     "webdavCheckSucceeded": "WebDAV connection succeeded"
   },
