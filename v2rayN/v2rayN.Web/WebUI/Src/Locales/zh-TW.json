@@ -773,7 +773,7 @@
     "stopped": "Core 已停止",
     "updateCompleted": "Xray 更新完成",
     "startFailed": "Core 啟動失敗",
-    "stopFailed": "Core 無法正常結束，未執行強制結束。",
+    "stopFailed": "無法確認 Core 已停止，請檢查 Backend 記錄與監聽連接埠狀態。",
     "notRunning": "Core 目前未執行",
     "runtimeBusy": "Core 正在切換狀態，請等待切換完成後再套用設定。",
     "tunNotSupported": "目前設定已啟用 TUN，但 v2rayN Web 暫不支援 TUN。請先使用桌面版關閉 TUN，再啟動 Core。",

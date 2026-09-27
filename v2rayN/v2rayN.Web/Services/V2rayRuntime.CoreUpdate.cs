@@ -280,8 +280,6 @@ public sealed partial class V2rayRuntime
         var staged = new List<CoreUpdateStage>();
         var overallSuccess = true;
         var currentTarget = string.Empty;
-        GeoFileUpdateStage? geoStage = null;
-        UpdateService? geoUpdater = null;
         WebUpdateStage? webStage = null;
         try
         {
@@ -414,29 +412,16 @@ public sealed partial class V2rayRuntime
                 return;
             }
 
-            // ServiceLib downloads GeoFiles to temporary paths and then moves them into
-            // place before returning. Finish that network work while the serving Core is
-            // still available, after all Core packages have been staged.
+            // Complete the GeoFiles transaction while the serving Core remains available.
+            // The Web layer snapshots/validates/rolls back files around the upstream updater.
             async Task PrepareAdditionalUpdatesBeforeCoreApplyAsync()
             {
                 if (includeGeoFiles)
                 {
                     currentTarget = GeoFilesUpdateTarget;
                     PublishGeoUpdateProgress("downloading", false, false, null, batch: true);
-                    geoUpdater = new UpdateService(Config, (success, message) =>
-                    {
-                        AddLog("update", message);
-                        _events.Publish("geo-update-progress", new
-                        {
-                            success,
-                            code = success ? "ok" : "geo_update_progress",
-                            messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
-                            rawLog = message,
-                        });
-                        return Task.CompletedTask;
-                    });
-                    geoStage = await geoUpdater.StageGeoFileAllAsync(useProxy, token);
-                    PublishGeoUpdateProgress("staged", false, true, "GeoFiles were downloaded before Core shutdown.", batch: true);
+                    await ApplyGeoFilesUpdateAsync(useProxy, token);
+                    PublishGeoUpdateProgress("completed", true, true, null, batch: true);
                 }
                 if (shouldInstallWeb && webCheck is { } availableWebCheck)
                 {
@@ -477,14 +462,6 @@ public sealed partial class V2rayRuntime
                             result.Version ?? stage.VersionOutput,
                             result.Detail,
                             batch: true);
-                    }
-                    if (geoStage is not null && geoUpdater is not null)
-                    {
-                        currentTarget = GeoFilesUpdateTarget;
-                        PublishGeoUpdateProgress("installing", false, false, null, batch: true);
-                        await geoUpdater.ApplyGeoFileStageAsync(geoStage, token);
-                        geoStage = null;
-                        PublishGeoUpdateProgress("completed", true, true, null, batch: true);
                     }
                     return true;
                 },
@@ -549,7 +526,6 @@ public sealed partial class V2rayRuntime
         }
         finally
         {
-            if (geoStage is not null) geoUpdater?.DiscardGeoFileStage(geoStage);
             CleanupWebUpdateStage(webStage);
             foreach (var stage in staged) CleanupCoreUpdateStage(stage);
             lock (_updateTaskGate)
@@ -790,7 +766,7 @@ public sealed partial class V2rayRuntime
             {
                 SetCoreRuntime(CurrentCoreRuntime with { State = CoreRuntimeState.Stopping, LastFailure = null });
                 await StopCoreMonitorAsync();
-                await CoreManager.Instance.CoreStopGracefully(cancellationToken);
+                await StopCoreAndConfirmAsync(cancellationToken);
                 SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
                 oldCoreWasStopped = true;
             }
@@ -879,7 +855,7 @@ public sealed partial class V2rayRuntime
                 SetCoreRuntime(CurrentCoreRuntime with
                 {
                     State = CoreRuntimeState.Faulted,
-                    ProcessIds = CoreManager.Instance.ActiveProcessIds.ToArray(),
+                    ProcessIds = GetActiveCoreProcessIds(),
                     LastFailure = exception.Message,
                 });
             }
@@ -942,7 +918,7 @@ public sealed partial class V2rayRuntime
                     if (oldCoreWasStopped && wasRunning)
                     {
                         await StopCoreMonitorAsync();
-                        await CoreManager.Instance.CoreStopGracefully();
+                        await StopCoreAndConfirmAsync(CancellationToken.None);
                         SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
                     }
                     CoreUpdateWorkflow.RestorePreviousDirectory(
@@ -971,7 +947,7 @@ public sealed partial class V2rayRuntime
             SetCoreRuntime(CurrentCoreRuntime with
             {
                 State = CoreRuntimeState.Faulted,
-                ProcessIds = CoreManager.Instance.ActiveProcessIds.ToArray(),
+                ProcessIds = GetActiveCoreProcessIds(),
                 LastFailure = exception.Message,
             });
             return new CoreUpdateRollbackResult(filesRestored, CoreRestarted: false);
@@ -1066,9 +1042,9 @@ public sealed partial class V2rayRuntime
     }
 
     private bool IsCoreTypeRunning(ECoreType coreType) =>
-        CurrentCoreRuntime.State == CoreRuntimeState.Running
+        CurrentCoreRuntime.State is CoreRuntimeState.Running or CoreRuntimeState.Faulted
         && CurrentCoreRuntime.CoreType == coreType
-        && CoreManager.Instance.HasActiveCoreProcesses;
+        && HasTrackedCoreProcesses;
 
     private static string GetArchiveSuffix(string downloadUrl)
     {
@@ -1133,18 +1109,7 @@ public sealed partial class V2rayRuntime
             await using var operation = await _operations.EnterExclusiveAsync(
                 _operations.ShutdownToken,
                 allowReadOnlyObservations: true);
-            await new UpdateService(Config, (success, message) =>
-            {
-                AddLog("update", message);
-                _events.Publish("geo-update-progress", new
-                {
-                    success,
-                    code = success ? "ok" : "geo_update_progress",
-                    messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
-                    rawLog = message,
-                });
-                return Task.CompletedTask;
-            }).UpdateGeoFileAll(useProxy, operation.Token);
+            await ApplyGeoFilesUpdateAsync(useProxy, operation.Token);
             PublishGeoUpdateProgress("completed", isComplete: true, success: true, null);
         }
         catch (OperationCanceledException) when (_operations.IsStopping)
@@ -1164,6 +1129,111 @@ public sealed partial class V2rayRuntime
             }
         }
     }
+
+    private async Task ApplyGeoFilesUpdateAsync(bool useProxy, CancellationToken cancellationToken)
+    {
+        var failures = new ConcurrentQueue<string>();
+        var completionReported = 0;
+        var updater = new UpdateService(Config, (success, message) =>
+        {
+            AddLog("update", message);
+            if (success)
+            {
+                Interlocked.Exchange(ref completionReported, 1);
+            }
+            else if (!IsGeoDownloadProgressMessage(message))
+            {
+                failures.Enqueue(message);
+            }
+            _events.Publish("geo-update-progress", new
+            {
+                success,
+                code = success ? "ok" : "geo_update_progress",
+                messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
+                rawLog = message,
+            });
+            return Task.CompletedTask;
+        });
+
+        await GeoFilesUpdateTransaction.ApplyAsync(
+            EnumerateManagedGeoFiles,
+            GetRequiredGeoFiles(),
+            async token =>
+            {
+                // Keep download selection, URLs, and installation behavior in the upstream
+                // public API. Its legacy callback reports progress/errors separately from its
+                // final success notification, so reject non-progress failures before commit.
+                await updater.UpdateGeoFileAll(useProxy, token);
+                if (!failures.IsEmpty)
+                {
+                    throw new IOException("GeoFiles update reported an error: " + string.Join("; ", failures));
+                }
+                if (Volatile.Read(ref completionReported) == 0)
+                {
+                    throw new IOException("GeoFiles update did not report successful completion.");
+                }
+            },
+            cancellationToken);
+    }
+
+    private string[] EnumerateManagedGeoFiles()
+    {
+        var binDirectory = Utils.GetBinPath(string.Empty);
+        var files = new HashSet<string>(StringComparerForPaths);
+        if (Directory.Exists(binDirectory))
+        {
+            foreach (var path in Directory.EnumerateFiles(binDirectory, "*", SearchOption.TopDirectoryOnly))
+            {
+                var name = Path.GetFileName(path);
+                if (name.StartsWith("geo", StringComparison.OrdinalIgnoreCase)
+                    || name.EndsWith(".mmdb", StringComparison.OrdinalIgnoreCase))
+                {
+                    files.Add(path);
+                }
+            }
+        }
+
+        var srsDirectory = Utils.GetBinPath("srss");
+        if (Directory.Exists(srsDirectory))
+        {
+            foreach (var path in Directory.EnumerateFiles(srsDirectory, "*.srs", SearchOption.TopDirectoryOnly))
+            {
+                files.Add(path);
+            }
+        }
+
+        foreach (var path in GetRequiredGeoFiles())
+        {
+            files.Add(path);
+        }
+        return files.ToArray();
+    }
+
+    private string[] GetRequiredGeoFiles()
+    {
+        var binDirectory = Utils.GetBinPath(string.Empty);
+        var required = new List<string>
+        {
+            Path.Combine(binDirectory, "geosite.dat"),
+            Path.Combine(binDirectory, "geoip.dat"),
+        };
+        if (string.IsNullOrEmpty(Config.ConstItem.GeoSourceUrl))
+        {
+            required.AddRange(Global.OtherGeoUrls.Select(url => Path.Combine(binDirectory, Path.GetFileName(url))));
+        }
+        return required.Distinct(StringComparerForPaths).ToArray();
+    }
+
+    private static bool IsGeoDownloadProgressMessage(string message)
+    {
+        var normalized = message.TrimStart();
+        return normalized.StartsWith(ResUI.Downloading, StringComparison.OrdinalIgnoreCase)
+            || Regex.IsMatch(normalized, @"^\d+/\d+\s*\|", RegexOptions.CultureInvariant);
+    }
+
+    private static StringComparer StringComparerForPaths => OperatingSystem.IsWindows()
+        ? StringComparer.OrdinalIgnoreCase
+        : StringComparer.Ordinal;
 
     private void PublishCoreUpdateProgress(
         ECoreType coreType,

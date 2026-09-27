@@ -119,51 +119,99 @@ public class RuntimeRestartRecoveryTests
     [Test]
     public async Task RestoreRuntimeMarkerSurvivesFailedInitializationAndIsConsumedAfterRecovery()
     {
-        using var directory = new TemporaryDirectory();
-        var path = Path.Combine(directory.Path, "restore-state.json");
-        await File.WriteAllTextAsync(path + ".consuming-abandoned", JsonSerializer.Serialize(new RuntimeRestartIntent(false, null)));
         var markerJson = JsonSerializer.Serialize(new RuntimeRestartIntent(true, "old"));
-        await File.WriteAllTextAsync(path + ".consuming-prior", markerJson);
-
-        // Simulate ServiceLib initialization throwing before recovery reaches a terminal state.
-        var firstStartupFailed = false;
-        try
+        foreach (var reverseCreationOrder in new[] { false, true })
         {
-            _ = await V2rayRuntime.LoadRuntimeRestartIntentAsync(path, CancellationToken.None);
-            throw new InvalidOperationException("simulated initialization failure");
+            using var directory = new TemporaryDirectory();
+            var path = Path.Combine(directory.Path, "restore-state.json");
+            var newest = DateTime.UtcNow.AddMinutes(-1);
+            var claims = new[]
+            {
+                (Name: "consuming-abandoned", Json: JsonSerializer.Serialize(new RuntimeRestartIntent(false, null)), Time: newest.AddMinutes(-1)),
+                (Name: "consuming-prior", Json: markerJson, Time: newest),
+            };
+            foreach (var claim in reverseCreationOrder ? claims.Reverse() : claims)
+            {
+                var claimPath = path + "." + claim.Name;
+                await File.WriteAllTextAsync(claimPath, claim.Json);
+                File.SetLastWriteTimeUtc(claimPath, claim.Time);
+            }
+            var invalidClaimPath = path + ".consuming-invalid-stale";
+            await File.WriteAllTextAsync(invalidClaimPath, "not-json");
+            File.SetLastWriteTimeUtc(invalidClaimPath, newest.AddMinutes(1));
+
+            // Simulate initialization failing after the newest valid claim has been requeued.
+            var firstStartupFailed = false;
+            try
+            {
+                _ = await V2rayRuntime.LoadRuntimeRestartIntentAsync(path, CancellationToken.None);
+                throw new InvalidOperationException("simulated initialization failure");
+            }
+            catch (InvalidOperationException)
+            {
+                firstStartupFailed = true;
+            }
+
+            var secondStartup = await V2rayRuntime.LoadRuntimeRestartIntentAsync(path, CancellationToken.None);
+            await firstStartupFailed.Should().BeTrue();
+            await (secondStartup is { WasRunning: true, PreferredProfileId: "old" }).Should().BeTrue();
+            await File.Exists(path).Should().BeTrue();
+            await Directory.GetFiles(directory.Path, "*.consuming-*").Length.Should().BeEqualTo(0);
+
+            await V2rayRuntime.CommitRestoreRuntimeStateAsync(path);
+            await File.Exists(path).Should().BeFalse();
+            await Directory.GetFiles(directory.Path, "*.consuming-*").Length.Should().BeEqualTo(0);
         }
-        catch (InvalidOperationException)
+
+        using (var directory = new TemporaryDirectory())
         {
-            firstStartupFailed = true;
+            var stoppedIntentPath = Path.Combine(directory.Path, "restore-stopped.json");
+            var stoppedIntent = new RuntimeRestartIntent(false, null);
+            await File.WriteAllTextAsync(stoppedIntentPath, JsonSerializer.Serialize(stoppedIntent));
+            try
+            {
+                _ = await V2rayRuntime.LoadRuntimeRestartIntentAsync(stoppedIntentPath, CancellationToken.None);
+                throw new InvalidOperationException("simulated stopped-intent initialization failure");
+            }
+            catch (InvalidOperationException) { }
+            var stoppedOnSecondStartup = await V2rayRuntime.LoadRuntimeRestartIntentAsync(stoppedIntentPath, CancellationToken.None);
+            await (stoppedOnSecondStartup is { WasRunning: false }).Should().BeTrue();
+            await File.Exists(stoppedIntentPath).Should().BeTrue();
+            await V2rayRuntime.CommitRestoreRuntimeStateAsync(stoppedIntentPath);
+            await File.Exists(stoppedIntentPath).Should().BeFalse();
         }
-
-        var secondStartup = await V2rayRuntime.LoadRuntimeRestartIntentAsync(path, CancellationToken.None);
-        await firstStartupFailed.Should().BeTrue();
-        await (secondStartup is { WasRunning: true, PreferredProfileId: "old" }).Should().BeTrue();
-        await File.Exists(path).Should().BeTrue();
-
-        var stoppedIntentPath = Path.Combine(directory.Path, "restore-stopped.json");
-        var stoppedIntent = new RuntimeRestartIntent(false, null);
-        await File.WriteAllTextAsync(stoppedIntentPath, JsonSerializer.Serialize(stoppedIntent));
-        try
-        {
-            _ = await V2rayRuntime.LoadRuntimeRestartIntentAsync(stoppedIntentPath, CancellationToken.None);
-            throw new InvalidOperationException("simulated stopped-intent initialization failure");
-        }
-        catch (InvalidOperationException) { }
-        var stoppedOnSecondStartup = await V2rayRuntime.LoadRuntimeRestartIntentAsync(stoppedIntentPath, CancellationToken.None);
-        await (stoppedOnSecondStartup is { WasRunning: false }).Should().BeTrue();
-        await File.Exists(stoppedIntentPath).Should().BeTrue();
-
-        await V2rayRuntime.CommitRestoreRuntimeStateAsync(path);
-        await V2rayRuntime.CommitRestoreRuntimeStateAsync(stoppedIntentPath);
-        await File.Exists(path).Should().BeFalse();
-        await File.Exists(stoppedIntentPath).Should().BeFalse();
-        await (Directory.GetFiles(directory.Path, "*.consuming-*").Length == 0).Should().BeTrue();
         await markerJson.Should().Contain("PreferredProfileId");
         await (!markerJson.Contains("ProcessIds", StringComparison.Ordinal)
             && !markerJson.Contains("ApiPort", StringComparison.Ordinal)
             && !markerJson.Contains("Listeners", StringComparison.Ordinal)).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task RestoreClaimTieUsesTheMoreInformativeStateRegardlessOfCreationOrder()
+    {
+        foreach (var reverseCreationOrder in new[] { false, true })
+        {
+            using var directory = new TemporaryDirectory();
+            var path = Path.Combine(directory.Path, "restore-state.json");
+            var sameTimestamp = DateTime.UtcNow.AddMinutes(-1);
+            var claims = new[]
+            {
+                (Name: "consuming-a-stopped", Intent: new RuntimeRestartIntent(false, null)),
+                (Name: "consuming-z-running", Intent: new RuntimeRestartIntent(true, "old")),
+            };
+            foreach (var claim in reverseCreationOrder ? claims.Reverse() : claims)
+            {
+                var claimPath = path + "." + claim.Name;
+                await File.WriteAllTextAsync(claimPath, JsonSerializer.Serialize(claim.Intent));
+                File.SetLastWriteTimeUtc(claimPath, sameTimestamp);
+            }
+
+            var recovered = await V2rayRuntime.LoadRuntimeRestartIntentAsync(path, CancellationToken.None);
+            await (recovered is { WasRunning: true, PreferredProfileId: "old" }).Should().BeTrue();
+            await Directory.GetFiles(directory.Path, "*.consuming-*").Length.Should().BeEqualTo(0);
+            await V2rayRuntime.CommitRestoreRuntimeStateAsync(path);
+            await File.Exists(path).Should().BeFalse();
+        }
     }
 
     [Test]

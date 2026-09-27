@@ -245,21 +245,19 @@ def add_auth_file_to_web_archive(source: Path, destination: Path) -> None:
 
 def install_fake_cores(startup_path: Path) -> None:
     lifecycle_log = repr(str(startup_path / "core-lifecycle.log"))
-    ignore_term_file = repr(str(startup_path / "fake-core-ignore-term"))
+    drop_listener_file = repr(str(startup_path / "fake-core-drop-listener"))
     fail_once_file = repr(str(startup_path / "fake-core-fail-once-port"))
     fail_ports_file = repr(str(startup_path / "fake-core-fail-ports"))
     executable_source = f"""#!/usr/bin/python3
-import json, os, re, signal, socket, sys
+import json, os, re, signal, socket, sys, time
 log_path = {lifecycle_log}
-ignore_term_file = {ignore_term_file}
+drop_listener_file = {drop_listener_file}
 fail_once_file = {fail_once_file}
 fail_ports_file = {fail_ports_file}
 def record(event):
     with open(log_path, 'a', encoding='utf-8') as log:
         log.write(f"{{event}} {{os.getpid()}}\\n")
 def stop(signum, frame):
-    if os.path.exists(ignore_term_file):
-        return
     record('stop')
     raise SystemExit(0)
 signal.signal(signal.SIGTERM, stop)
@@ -286,6 +284,11 @@ listener.bind(('0.0.0.0', port))
 listener.listen(32)
 record(f'start:{{port}}')
 while True:
+    if os.path.exists(drop_listener_file):
+        listener.close()
+        record('listener-dropped')
+        while True:
+            time.sleep(1)
     connection, _ = listener.accept()
     connection.close()
 """
@@ -657,15 +660,20 @@ def main() -> int:
                     and sum(line.startswith("start:") for line in new_lifecycle) == 1,
                     "All-settings apply did not perform exactly one restart on the new actual listener port.")
 
-            # A Faulted snapshot with a still-live Core child is a recovery case, not
-            # a stopped-runtime success path. Once graceful stopping becomes available,
-            # the next Core-affecting settings mutation must recover and apply it.
-            ignore_term_file = auth_path.parent.parent / "fake-core-ignore-term"
-            ignore_term_file.write_text("ignore SIGTERM until the first timeout")
-            failed_stop_status, failed_stop = host.request("POST", "/api/core/stop", token=token)
-            ignore_term_file.unlink(missing_ok=True)
-            faulted_status = authorized_json(host, token, "GET", "/api/status")
-            require(failed_stop_status == 400 and failed_stop.get("success") is False
+            # Simulate a serving Core that loses its listener but remains alive. Web must
+            # detect the fault, then use its tracked child PID and upstream CoreStop API
+            # to stop and restart it when applying Core-affecting settings.
+            drop_listener_file = auth_path.parent.parent / "fake-core-drop-listener"
+            drop_listener_file.write_text("drop the listener but keep the process alive")
+            faulted_status = None
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline:
+                faulted_status = authorized_json(host, token, "GET", "/api/status")
+                if faulted_status["runtimeState"] == "faulted":
+                    break
+                time.sleep(0.1)
+            drop_listener_file.unlink(missing_ok=True)
+            require(faulted_status is not None
                     and faulted_status["runtimeState"] == "faulted"
                     and len(faulted_status["coreProcessIds"]) > 0,
                     "The fake Core did not enter the Faulted-with-active-child regression state.")

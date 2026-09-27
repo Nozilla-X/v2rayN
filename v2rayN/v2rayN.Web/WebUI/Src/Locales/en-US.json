@@ -725,7 +725,7 @@
     "stopped": "Core stopped",
     "restarted": "Core restarted",
     "startFailed": "Failed to start Core",
-    "stopFailed": "Core did not stop gracefully; it was not force-killed.",
+    "stopFailed": "Core could not be confirmed stopped. Check the backend log and listener state.",
     "notRunning": "Core is not running",
     "runtimeBusy": "Core is changing state. Try applying settings again after the transition finishes.",
     "tunNotSupported": "TUN is enabled in the current configuration, but v2rayN Web does not support it yet. Disable TUN in the desktop app before starting the Core.",

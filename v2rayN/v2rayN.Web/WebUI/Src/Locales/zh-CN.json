@@ -738,7 +738,7 @@
     "stopped": "Core 已停止",
     "restarted": "Core 已重启",
     "startFailed": "Core 启动失败",
-    "stopFailed": "Core 未能优雅退出，未执行强制结束。",
+    "stopFailed": "无法确认 Core 已停止，请检查 Backend 日志和监听端口状态。",
     "notRunning": "Core 当前未运行",
     "runtimeBusy": "Core 正在切换状态，请等待切换完成后再应用设置。",
     "tunNotSupported": "当前配置启用了 TUN，但 v2rayN Web 暂不支持 TUN。请使用桌面版关闭 TUN 后再启动。",

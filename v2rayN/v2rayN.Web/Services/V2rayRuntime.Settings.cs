@@ -1040,7 +1040,7 @@ public sealed partial class V2rayRuntime
         object? data = null)
     {
         var runtime = CurrentCoreRuntime;
-        var hasActiveChild = CoreManager.Instance.HasActiveCoreProcesses;
+        var hasActiveChild = HasTrackedCoreProcesses;
         var action = CoreSettingsApplyPolicy.Decide(runtime.State, hasActiveChild, changed);
         if (action is CoreSettingsApplyAction.Busy or CoreSettingsApplyAction.Inconsistent)
         {
@@ -1048,7 +1048,7 @@ public sealed partial class V2rayRuntime
                 ? OperationView.Fail("core_runtime_busy", ApiMessageKeys.CoreRuntimeBusy,
                     new { runtimeState = runtime.State.ToString().ToLowerInvariant() })
                 : OperationView.Fail("core_runtime_faulted", ApiMessageKeys.SettingsCoreApplyFailed,
-                    new { runtimeState = runtime.State.ToString().ToLowerInvariant(), processIds = CoreManager.Instance.ActiveProcessIds });
+                    new { runtimeState = runtime.State.ToString().ToLowerInvariant(), processIds = GetActiveCoreProcessIds() });
             var rollback = await RollBackCoreSettingsAsync(context, failure.Code);
             return CreateSettingsApplyFailure(section, data, failure.Code, ApiMessageKeys.SettingsCoreApplyFailed,
                 rollback.ConfigRestored, rollback.RolledBack, rollback.OldRuntimeRestored, rollback.Detail);
@@ -1091,14 +1091,14 @@ public sealed partial class V2rayRuntime
             var oldConfig = JsonUtils.DeepCopy(Config)
                 ?? throw new InvalidOperationException("The current configuration could not be copied for a Core settings apply.");
             var oldRuntime = CurrentCoreRuntime;
-            var hasActiveChild = CoreManager.Instance.HasActiveCoreProcesses;
+            var hasActiveChild = HasTrackedCoreProcesses;
             var action = CoreSettingsApplyPolicy.Decide(oldRuntime.State, hasActiveChild, changed: false);
             var failure = action switch
             {
                 CoreSettingsApplyAction.Busy => OperationView.Fail("core_runtime_busy", ApiMessageKeys.CoreRuntimeBusy,
                     new { runtimeState = oldRuntime.State.ToString().ToLowerInvariant() }),
                 CoreSettingsApplyAction.Inconsistent => OperationView.Fail("core_runtime_faulted", ApiMessageKeys.SettingsCoreApplyFailed,
-                    new { runtimeState = oldRuntime.State.ToString().ToLowerInvariant(), processIds = CoreManager.Instance.ActiveProcessIds }),
+                    new { runtimeState = oldRuntime.State.ToString().ToLowerInvariant(), processIds = GetActiveCoreProcessIds() }),
                 _ => null,
             };
             var oldRoutingItems = failure is null ? await AppManager.Instance.RoutingItems() ?? [] : [];
@@ -1139,13 +1139,13 @@ public sealed partial class V2rayRuntime
             var current = CurrentCoreRuntime;
             if (context.HadActiveChild
                 && current.State == CoreRuntimeState.Running
-                && CoreManager.Instance.HasActiveCoreProcesses)
+                && HasTrackedCoreProcesses)
             {
                 AddLog("settings", $"Core settings apply failed ({failureCode}); the original Core remained healthy and its previous configuration was restored.");
                 return new(true, true, true, null);
             }
 
-            if (CoreManager.Instance.HasActiveCoreProcesses || current.State != CoreRuntimeState.Stopped)
+            if (HasTrackedCoreProcesses || current.State != CoreRuntimeState.Stopped)
             {
                 var stop = await StopCoreLockedAsync(CancellationToken.None);
                 if (!stop.Success)
@@ -1176,7 +1176,7 @@ public sealed partial class V2rayRuntime
         }
         catch (Exception exception)
         {
-            var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+            var processIds = GetActiveCoreProcessIds();
             SetCoreRuntime(CurrentCoreRuntime with
             {
                 State = CoreRuntimeState.Faulted,

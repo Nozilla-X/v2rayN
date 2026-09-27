@@ -338,7 +338,7 @@ public sealed partial class V2rayRuntime
     {
         cancellationToken.ThrowIfCancellationRequested();
         var current = CurrentCoreRuntime;
-        var wasRunning = CoreManager.Instance.HasActiveCoreProcesses
+        var wasRunning = HasTrackedCoreProcesses
             && current.State is CoreRuntimeState.Running or CoreRuntimeState.Faulted;
         var runtimeIntent = new RuntimeRestartIntent(wasRunning, wasRunning ? current.ProfileId : null)
         {
@@ -424,7 +424,7 @@ public sealed partial class V2rayRuntime
     private string? GetWebUpdateRuntimeInstallReason()
     {
         var snapshot = CurrentCoreRuntime;
-        var activeChild = CoreManager.Instance.HasActiveCoreProcesses;
+        var activeChild = HasTrackedCoreProcesses;
         if (snapshot.State is CoreRuntimeState.Starting or CoreRuntimeState.Stopping or CoreRuntimeState.Restarting)
             return ApiMessageKeys.CoreRuntimeBusy;
         if (snapshot.State == CoreRuntimeState.Faulted && activeChild)
@@ -565,7 +565,7 @@ public sealed partial class V2rayRuntime
         bool batch = false)
     {
         var progress = new CoreUpdateProgressView(WebUpdateTarget, phase, complete, success,
-            CoreManager.Instance.HasActiveCoreProcesses, version, detail, batch);
+            HasTrackedCoreProcesses, version, detail, batch);
         _updateProgress[WebUpdateTarget] = progress;
         _events.Publish("core-update-progress", progress);
         AddLog("update", $"v2rayN Web update phase: {phase}");

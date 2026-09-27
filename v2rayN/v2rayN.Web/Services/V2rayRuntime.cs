@@ -44,6 +44,7 @@ public sealed partial class V2rayRuntime(
     private CoreRuntimeSnapshot _coreRuntime = CoreRuntimeSnapshot.Stopped;
     private CancellationTokenSource? _coreMonitorCancellation;
     private Task? _coreMonitorTask;
+    private CoreProcessIdentity[] _trackedCoreProcesses = [];
     private string? _xrayPath;
     private ServerSpeedItem? _latestTraffic;
     private bool _initialized;
@@ -54,7 +55,7 @@ public sealed partial class V2rayRuntime(
     private CoreRuntimeSnapshot CurrentCoreRuntime => Volatile.Read(ref _coreRuntime);
     public bool RestoreAndRestartRequested => Volatile.Read(ref _restoreAndRestartRequested) != 0;
 
-    public int[] GetCoreProcessIds() => CoreManager.Instance.ActiveProcessIds.ToArray();
+    public int[] GetCoreProcessIds() => GetActiveCoreProcessIds();
 
     public string? GetCoreRuntimeProfileId() => CurrentCoreRuntime.ProfileId;
 
@@ -62,6 +63,7 @@ public sealed partial class V2rayRuntime(
 
     private void SetCoreRuntime(CoreRuntimeSnapshot snapshot)
     {
+        snapshot = snapshot with { ProcessIds = GetActiveCoreProcessIds() };
         Volatile.Write(ref _coreRuntime, snapshot);
         if (snapshot.State != CoreRuntimeState.Running)
         {
@@ -115,6 +117,69 @@ public sealed partial class V2rayRuntime(
         }
     }
 
+    private CoreProcessIdentity[] GetActiveCoreProcesses() =>
+        CoreProcessTracker.GetActiveProcesses(Volatile.Read(ref _trackedCoreProcesses));
+
+    private int[] GetActiveCoreProcessIds() =>
+        GetActiveCoreProcesses().Select(process => process.ProcessId).ToArray();
+
+    private bool HasTrackedCoreProcesses => GetActiveCoreProcesses().Length > 0;
+
+    private void SetTrackedCoreProcesses(IEnumerable<CoreProcessIdentity> processes) =>
+        Volatile.Write(ref _trackedCoreProcesses, processes.DistinctBy(process => process.ProcessId).ToArray());
+
+    private async Task StopCoreAndConfirmAsync(CancellationToken cancellationToken)
+    {
+        var listeners = CurrentCoreRuntime.Listeners;
+        await CoreManager.Instance.CoreStop();
+
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var activeProcesses = GetActiveCoreProcesses();
+            var activeListeners = new List<int>();
+            foreach (var listener in listeners)
+            {
+                if (await IsListeningAsync(listener.Port, cancellationToken))
+                {
+                    activeListeners.Add(listener.Port);
+                }
+            }
+
+            if (activeProcesses.Length == 0 && activeListeners.Count == 0)
+            {
+                SetTrackedCoreProcesses([]);
+                return;
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                var details = new List<string>();
+                if (activeProcesses.Length > 0)
+                {
+                    details.Add($"Core processes remain: {string.Join(",", activeProcesses.Select(process => process.ProcessId))}.");
+                }
+                if (activeListeners.Count > 0)
+                {
+                    details.Add($"Core listeners remain: {string.Join(",", activeListeners.Distinct())}.");
+                }
+                throw new TimeoutException(string.Join(" ", details));
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+        }
+    }
+
+    private async Task<bool> HasCoreListenerAsync(CancellationToken cancellationToken)
+    {
+        foreach (var listener in CurrentCoreRuntime.Listeners)
+        {
+            if (await IsListeningAsync(listener.Port, cancellationToken)) return true;
+        }
+        return false;
+    }
+
     private async Task MonitorCoreRuntimeAsync(CancellationToken cancellationToken)
     {
         try
@@ -128,7 +193,7 @@ public sealed partial class V2rayRuntime(
                     continue;
                 }
 
-                var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+                var processIds = GetActiveCoreProcessIds();
                 var listening = await IsListeningAsync(port, cancellationToken);
                 if (!ReferenceEquals(snapshot, CurrentCoreRuntime) || CurrentCoreRuntime.State != CoreRuntimeState.Running)
                 {
@@ -222,7 +287,7 @@ public sealed partial class V2rayRuntime(
         await _mutations.RunAsync(() => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)));
         await ProfileExManager.Instance.Init();
         await CertPemManager.Instance.Init(Config);
-        // ServiceLib remains unchanged; this frontend rejects generated launch contexts that enable TUN.
+        // The Web frontend owns its runtime and rejects generated launch contexts that enable TUN.
         await CoreManager.Instance.Init(Config, OnCoreMessageAsync);
         if (Config.GuiItem.EnableStatistics || Config.GuiItem.DisplayRealTimeSpeed)
         {
@@ -292,12 +357,7 @@ public sealed partial class V2rayRuntime(
                 try
                 {
                     await StopCoreMonitorAsync();
-                    await CoreManager.Instance.CoreStopGracefully(deadline.Token);
-                    var remaining = CoreManager.Instance.ActiveProcessIds;
-                    if (remaining.Count > 0)
-                    {
-                        throw new InvalidOperationException($"Core child processes remain: {string.Join(",", remaining)}.");
-                    }
+                    await StopCoreAndConfirmAsync(deadline.Token);
                     SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
                     return true;
                 }
@@ -306,7 +366,7 @@ public sealed partial class V2rayRuntime(
                     SetCoreRuntime(CurrentCoreRuntime with
                     {
                         State = CoreRuntimeState.Faulted,
-                        ProcessIds = CoreManager.Instance.ActiveProcessIds.ToArray(),
+                        ProcessIds = GetActiveCoreProcessIds(),
                         LastFailure = exception.Message,
                     });
                     throw;
@@ -569,7 +629,7 @@ public sealed partial class V2rayRuntime(
         var profileItems = await AppManager.Instance.ProfileItems(string.Empty) ?? [];
         var subscriptions = await AppManager.Instance.SubItems() ?? [];
         var snapshot = CurrentCoreRuntime;
-        var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+        var processIds = GetActiveCoreProcessIds();
         var listenerDefinitions = snapshot.ProxyPort.HasValue && snapshot.State != CoreRuntimeState.Stopped
             ? snapshot.Listeners
             : GetConfiguredListenerSnapshots();
@@ -690,7 +750,7 @@ public sealed partial class V2rayRuntime(
         if (!selectProfile
             && current.State == CoreRuntimeState.Running
             && current.ProfileId == profile.IndexId
-            && CoreManager.Instance.HasActiveCoreProcesses)
+            && HasTrackedCoreProcesses)
         {
             return OperationView.Ok(ApiMessageKeys.CoreStarted, new { profileId = profile.IndexId, alreadyRunning = true });
         }
@@ -750,7 +810,7 @@ public sealed partial class V2rayRuntime(
 
         if (preflight.Success)
         {
-            RuntimeListenerSnapshot[] currentlyOwnedListeners = CoreManager.Instance.HasActiveCoreProcesses
+            RuntimeListenerSnapshot[] currentlyOwnedListeners = HasTrackedCoreProcesses
                 ? CurrentCoreRuntime.Listeners
                 : [];
             foreach (var listener in GetConfiguredListenerSnapshots())
@@ -776,25 +836,27 @@ public sealed partial class V2rayRuntime(
         var profile = preflight.Profile;
         var built = preflight.BuiltContext;
         var port = Config.Inbound.FirstOrDefault()?.LocalPort ?? 0;
-        if (!CoreManager.Instance.HasActiveCoreProcesses && await IsListeningAsync(port, cancellationToken))
+        if (!HasTrackedCoreProcesses && CurrentCoreRuntime.State == CoreRuntimeState.Stopped
+            && await IsListeningAsync(port, cancellationToken))
         {
             return OperationView.Fail("proxy_port_in_use", ApiMessageKeys.CorePortInUse, new { port });
         }
 
-        if (CoreManager.Instance.HasActiveCoreProcesses)
+        if (CurrentCoreRuntime.State != CoreRuntimeState.Stopped || HasTrackedCoreProcesses)
         {
             SetCoreRuntime(CurrentCoreRuntime with { State = CoreRuntimeState.Stopping, LastFailure = null });
             try
             {
                 await StopCoreMonitorAsync();
-                await CoreManager.Instance.CoreStopGracefully(cancellationToken);
+                await StopCoreAndConfirmAsync(cancellationToken);
+                SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
             }
             catch (Exception exception)
             {
                 var failedStop = CurrentCoreRuntime with
                 {
                     State = CoreRuntimeState.Faulted,
-                    ProcessIds = CoreManager.Instance.ActiveProcessIds.ToArray(),
+                    ProcessIds = GetActiveCoreProcessIds(),
                     LastFailure = exception.Message,
                 };
                 SetCoreRuntime(failedStop);
@@ -819,25 +881,31 @@ public sealed partial class V2rayRuntime(
 
         try
         {
-            await CoreManager.Instance.LoadCore(built.MainResult.Context, built.PreSocksResult?.Context);
+            var existingProcessIds = CoreProcessTracker.CaptureExistingProcessIds();
+            var expectedProcessNames = GetExpectedCoreProcessNames(built);
+            try
+            {
+                await CoreManager.Instance.LoadCore(built.MainResult.Context, built.PreSocksResult?.Context);
+            }
+            finally
+            {
+                SetTrackedCoreProcesses(CoreProcessTracker.CaptureStartedProcesses(existingProcessIds, expectedProcessNames));
+            }
             var started = await WaitForListenerAsync(port, cancellationToken);
-            var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+            var processIds = GetActiveCoreProcessIds();
             if (!started || processIds.Length == 0)
             {
                 var failure = !started
                     ? "The Core process did not open its configured proxy listener."
-                    : "ServiceLib did not retain a live Core child process.";
-                if (processIds.Length > 0)
+                    : "The Web runtime could not identify a live Core child process.";
+                try
                 {
-                    try
-                    {
-                        await CoreManager.Instance.CoreStopGracefully(CancellationToken.None);
-                        processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
-                    }
-                    catch (Exception stopException)
-                    {
-                        failure += $" Cleanup also failed: {stopException.Message}";
-                    }
+                    await StopCoreAndConfirmAsync(CancellationToken.None);
+                    processIds = GetActiveCoreProcessIds();
+                }
+                catch (Exception stopException)
+                {
+                    failure += $" Cleanup also failed: {stopException.Message}";
                 }
                 SetCoreRuntime(CurrentCoreRuntime with
                 {
@@ -867,7 +935,19 @@ public sealed partial class V2rayRuntime(
         catch (Exception exception)
         {
             AddLog("core", $"Core start failed: {exception}");
-            var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+            var processIds = GetActiveCoreProcessIds();
+            if (CurrentCoreRuntime.State == CoreRuntimeState.Starting || processIds.Length > 0)
+            {
+                try
+                {
+                    await StopCoreAndConfirmAsync(CancellationToken.None);
+                    processIds = GetActiveCoreProcessIds();
+                }
+                catch (Exception stopException)
+                {
+                    AddLog("core", $"Core start cleanup failed: {stopException}");
+                }
+            }
             SetCoreRuntime(CurrentCoreRuntime with
             {
                 State = CoreRuntimeState.Faulted,
@@ -903,7 +983,7 @@ public sealed partial class V2rayRuntime(
 
     private async Task<OperationView> StopCoreLockedAsync(CancellationToken cancellationToken)
     {
-        if (CurrentCoreRuntime.State == CoreRuntimeState.Stopped && !CoreManager.Instance.HasActiveCoreProcesses)
+        if (CurrentCoreRuntime.State == CoreRuntimeState.Stopped && !HasTrackedCoreProcesses)
         {
             return OperationView.Ok(ApiMessageKeys.CoreStopped);
         }
@@ -912,12 +992,7 @@ public sealed partial class V2rayRuntime(
         try
         {
             await StopCoreMonitorAsync();
-            await CoreManager.Instance.CoreStopGracefully(cancellationToken);
-            var remaining = CoreManager.Instance.ActiveProcessIds.ToArray();
-            if (remaining.Length > 0)
-            {
-                throw new InvalidOperationException($"Core child processes remain after graceful stop: {string.Join(",", remaining)}.");
-            }
+            await StopCoreAndConfirmAsync(cancellationToken);
             SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
             AddLog("core", ApiMessageKeys.CoreStopped);
             _events.Publish("status", await GetStatusAsync());
@@ -925,14 +1000,14 @@ public sealed partial class V2rayRuntime(
         }
         catch (Exception exception)
         {
-            var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+            var processIds = GetActiveCoreProcessIds();
             SetCoreRuntime(CurrentCoreRuntime with
             {
                 State = CoreRuntimeState.Faulted,
                 ProcessIds = processIds,
                 LastFailure = exception.Message,
             });
-            AddLog("core", $"Core graceful stop failed: {exception}");
+            AddLog("core", $"Core stop failed: {exception}");
             _events.Publish("status", await GetStatusAsync());
             return OperationView.Fail("core_stop_failed", ApiMessageKeys.CoreStopFailed,
                 new { detail = exception.Message, processIds });
@@ -955,13 +1030,11 @@ public sealed partial class V2rayRuntime(
     private async Task<OperationView> RestartCoreLockedAsync(CancellationToken cancellationToken)
     {
         var previous = CurrentCoreRuntime;
-            var recoveringFaultedChild = previous.State == CoreRuntimeState.Faulted
-                && CoreManager.Instance.HasActiveCoreProcesses;
-            if ((previous.State != CoreRuntimeState.Running && !recoveringFaultedChild)
+            if (previous.State is not (CoreRuntimeState.Running or CoreRuntimeState.Faulted)
                 || string.IsNullOrEmpty(previous.ProfileId))
             {
                 return OperationView.Fail("core_not_running", ApiMessageKeys.CoreNotRunning,
-                    new { runtimeState = previous.State.ToString(), processIds = CoreManager.Instance.ActiveProcessIds });
+                    new { runtimeState = previous.State.ToString(), processIds = GetActiveCoreProcessIds() });
             }
 
             var profile = await AppManager.Instance.GetProfileItem(previous.ProfileId);
@@ -982,12 +1055,7 @@ public sealed partial class V2rayRuntime(
                         restartStage = "stop";
                         SetCoreRuntime(previous with { State = CoreRuntimeState.Restarting, LastFailure = null });
                         await StopCoreMonitorAsync();
-                        await CoreManager.Instance.CoreStopGracefully(cancellationToken);
-                        var remaining = CoreManager.Instance.ActiveProcessIds;
-                        if (remaining.Count > 0)
-                        {
-                            throw new InvalidOperationException($"Core child processes remain after restart stop: {string.Join(",", remaining)}.");
-                        }
+                        await StopCoreAndConfirmAsync(cancellationToken);
                     },
                     () =>
                     {
@@ -998,7 +1066,7 @@ public sealed partial class V2rayRuntime(
             }
             catch (Exception exception)
             {
-                var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+                var processIds = GetActiveCoreProcessIds();
                 if (restartStage != "preflight")
                 {
                     SetCoreRuntime(CurrentCoreRuntime with
@@ -1229,6 +1297,26 @@ public sealed partial class V2rayRuntime(
             }
         }
         return listeners.ToArray();
+    }
+
+    private static string[] GetExpectedCoreProcessNames(CoreConfigContextBuilderAllResult built)
+    {
+        var coreTypes = new ECoreType?[]
+            {
+                built.MainResult.Context.RunCoreType,
+                built.PreSocksResult?.Context.RunCoreType,
+            }
+            .Where(coreType => coreType.HasValue)
+            .Select(coreType => coreType!.Value)
+            .Distinct();
+
+        return coreTypes
+            .SelectMany(coreType => CoreInfoManager.Instance.GetCoreInfo(coreType)?.CoreExes ?? [])
+            .Select(Path.GetFileNameWithoutExtension)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
     }
 
     private static string? FindXrayExecutable(out string message)

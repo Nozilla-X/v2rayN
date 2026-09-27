@@ -138,156 +138,14 @@ public partial class UpdateService(Config config, Func<bool, string, Task> updat
 
     public async Task UpdateGeoFileAll(bool blProxy = true, CancellationToken cancellationToken = default)
     {
-        var staged = await StageGeoFileAllAsync(blProxy, cancellationToken);
-        await ApplyGeoFileStageAsync(staged, cancellationToken);
-        await UpdateFunc(true, string.Format(ResUI.MsgDownloadGeoFileSuccessfully, "geo"));
-    }
-
-    public async Task<GeoFileUpdateStage> StageGeoFileAllAsync(bool blProxy = true, CancellationToken cancellationToken = default)
-    {
         var requests = new List<FileDownloadRequest>();
         requests.AddRange(GetGeoFilesRequest());
         requests.AddRange(GetOtherFilesRequest());
         requests.AddRange(await GetSrsFileAllRequest());
         // NOTE: srs files are more small, so we reverse the order to ensure a good download experience for the user.
         requests.Reverse();
-
-        var id = Guid.NewGuid().ToString("N");
-        var stagedEntries = new List<GeoFileUpdateStageEntry>(requests.Count);
-        try
-        {
-            var tempRequests = new List<FileDownloadRequest>(requests.Count);
-            foreach (var request in requests)
-            {
-                var temporaryPath = Utils.GetTempPath($"geo-stage-{id}-{Guid.NewGuid():N}");
-                stagedEntries.Add(new GeoFileUpdateStageEntry(request.FilePath, temporaryPath));
-                tempRequests.Add(request with { FilePath = temporaryPath });
-            }
-
-            var failure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var download = new DownloadService();
-            download.Error += (_, args) => failure.TrySetResult(args.GetException());
-            download.UpdateCompleted += (_, state) =>
-            {
-                if (!state.Success && !string.IsNullOrWhiteSpace(state.Msg))
-                {
-                    _ = UpdateFunc(false, state.Msg);
-                }
-            };
-            await download.DownloadSmallFilesAsync(tempRequests, blProxy, cancellationToken);
-            if (failure.Task.IsCompletedSuccessfully)
-            {
-                throw new IOException("GeoFiles download failed.", await failure.Task);
-            }
-            foreach (var item in stagedEntries)
-            {
-                if (!File.Exists(item.TemporaryPath) || new FileInfo(item.TemporaryPath).Length <= 0)
-                {
-                    throw new IOException($"GeoFiles download did not stage a complete file for {Path.GetFileName(item.TargetPath)}.");
-                }
-            }
-            return new GeoFileUpdateStage(id, stagedEntries);
-        }
-        catch
-        {
-            foreach (var item in stagedEntries)
-            {
-                if (File.Exists(item.TemporaryPath)) File.Delete(item.TemporaryPath);
-            }
-            throw;
-        }
-    }
-
-    public async Task ApplyGeoFileStageAsync(GeoFileUpdateStage staged, CancellationToken cancellationToken = default)
-    {
-        var backupDirectory = Utils.GetTempPath($"geo-backup-{staged.Id}");
-        Directory.CreateDirectory(backupDirectory);
-        var backups = new List<(string Target, string? Backup)>();
-        var replacements = new List<string>();
-        var applySucceeded = false;
-        var rollbackSucceeded = false;
-        try
-        {
-            // Snapshot every current target before replacing any of them. If one replacement
-            // fails, the Core/Geo set is restored as a unit rather than left half-applied.
-            foreach (var item in staged.Files)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                string? backupPath = null;
-                if (File.Exists(item.TargetPath))
-                {
-                    backupPath = Path.Combine(backupDirectory, Guid.NewGuid().ToString("N"));
-                    File.Copy(item.TargetPath, backupPath);
-                }
-                backups.Add((item.TargetPath, backupPath));
-            }
-
-            foreach (var item in staged.Files)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var parent = Path.GetDirectoryName(item.TargetPath)
-                    ?? throw new IOException("A GeoFiles target has no parent directory.");
-                Directory.CreateDirectory(parent);
-                var replacement = Path.Combine(parent, $".{Path.GetFileName(item.TargetPath)}.{staged.Id}.new");
-                replacements.Add(replacement);
-                File.Copy(item.TemporaryPath, replacement, overwrite: true);
-                File.Move(replacement, item.TargetPath, overwrite: true);
-            }
-            applySucceeded = true;
-        }
-        catch (Exception applyException)
-        {
-            try
-            {
-                foreach (var item in backups.AsEnumerable().Reverse())
-                {
-                    if (item.Backup is null)
-                    {
-                        if (File.Exists(item.Target)) File.Delete(item.Target);
-                    }
-                    else if (File.Exists(item.Backup))
-                    {
-                        File.Copy(item.Backup, item.Target, overwrite: true);
-                    }
-                }
-                rollbackSucceeded = true;
-            }
-            catch (Exception rollbackException)
-            {
-                throw new IOException(
-                    $"GeoFiles apply failed and rollback is incomplete; the backup set was retained at {backupDirectory}.",
-                    new AggregateException(applyException, rollbackException));
-            }
-            throw;
-        }
-        finally
-        {
-            foreach (var item in staged.Files)
-            {
-                if (File.Exists(item.TemporaryPath)) File.Delete(item.TemporaryPath);
-            }
-            foreach (var replacement in replacements)
-            {
-                if (File.Exists(replacement)) File.Delete(replacement);
-            }
-            if ((applySucceeded || rollbackSucceeded) && Directory.Exists(backupDirectory))
-                Directory.Delete(backupDirectory, recursive: true);
-        }
-    }
-
-    public void DiscardGeoFileStage(GeoFileUpdateStage staged)
-    {
-        foreach (var item in staged.Files)
-        {
-            try
-            {
-                if (File.Exists(item.TemporaryPath)) File.Delete(item.TemporaryPath);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                Logging.SaveLog(_tag, exception);
-            }
-        }
+        await DownloadGeoFiles(requests, blProxy, cancellationToken);
+        await UpdateFunc(true, string.Format(ResUI.MsgDownloadGeoFileSuccessfully, "geo"));
     }
 
     #region CheckUpdate private
@@ -672,6 +530,64 @@ public partial class UpdateService(Config config, Func<bool, string, Task> updat
         };
     }
 
+    private async Task DownloadGeoFiles(List<FileDownloadRequest> requests, bool blProxy, CancellationToken cancellationToken = default)
+    {
+        var tmpFilePathDict = new Dictionary<string, string>();
+        var tmpFileRequests = new List<FileDownloadRequest>();
+        foreach (var request in requests)
+        {
+            var tmpFilePath = Utils.GetTempPath(Utils.GetGuid());
+            tmpFilePathDict[request.FilePath] = tmpFilePath;
+            tmpFileRequests.Add(request with
+            {
+                FilePath = tmpFilePath,
+            });
+        }
+
+        DownloadService downloadHandle = new();
+        downloadHandle.UpdateCompleted += (sender2, args) =>
+        {
+            if (args.Success)
+            {
+                //_ = UpdateFunc(false, string.Format(ResUI.MsgDownloadGeoFileSuccessfully, fileName));
+
+                foreach (var request in requests)
+                {
+                    try
+                    {
+                        //if (File.Exists(tmpFileName))
+                        //{
+                        //    File.Copy(tmpFileName, targetPath, true);
+
+                        //    File.Delete(tmpFileName);
+                        //    //await    UpdateFunc(true, "");
+                        //}
+                        var tmpFileName = tmpFilePathDict[request.FilePath];
+                        if (File.Exists(tmpFileName))
+                        {
+                            File.Copy(tmpFileName, request.FilePath, true);
+                            File.Delete(tmpFileName);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _ = UpdateFunc(false, ex.Message);
+                    }
+                }
+            }
+            else
+            {
+                _ = UpdateFunc(false, args.Msg);
+            }
+        };
+        downloadHandle.Error += (sender2, args) =>
+        {
+            _ = UpdateFunc(false, args.GetException().Message);
+        };
+
+        await downloadHandle.DownloadSmallFilesAsync(tmpFileRequests, blProxy, cancellationToken);
+    }
+
     #endregion Geo private
 
     private async Task UpdateFunc(bool notify, string msg)
@@ -679,7 +595,3 @@ public partial class UpdateService(Config config, Func<bool, string, Task> updat
         await _updateFunc?.Invoke(notify, msg);
     }
 }
-
-public sealed record GeoFileUpdateStage(string Id, IReadOnlyList<GeoFileUpdateStageEntry> Files);
-
-public sealed record GeoFileUpdateStageEntry(string TargetPath, string TemporaryPath);

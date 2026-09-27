@@ -201,15 +201,10 @@ public sealed partial class V2rayRuntime
                 previousRuntime.ProfileId);
             await WriteRestoreRuntimeStateAsync(restoreState);
             restoreStateWritten = true;
+            SetCoreRuntime(previousRuntime with { State = CoreRuntimeState.Stopping, LastFailure = null });
             await StopCoreMonitorAsync();
-            await CoreManager.Instance.CoreStopGracefully(cancellationToken);
+            await StopCoreAndConfirmAsync(cancellationToken);
             SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
-            var remainingCoreProcesses = CoreManager.Instance.ActiveProcessIds;
-            if (remainingCoreProcesses.Count > 0)
-            {
-                throw new InvalidOperationException(
-                    $"Core child processes remain after restore shutdown: {string.Join(",", remainingCoreProcesses)}.");
-            }
             await ProfileExManager.Instance.SaveTo();
             await StatisticsManager.Instance.SaveTo();
             StatisticsManager.Instance.Close();
@@ -253,10 +248,11 @@ public sealed partial class V2rayRuntime
                 TryDeleteRestoreRuntimeState();
                 if (restoreState is { WasRunning: true })
                 {
-                    var remainingCoreProcesses = CoreManager.Instance.ActiveProcessIds.ToArray();
-                    if (remainingCoreProcesses.Length > 0)
+                    var remainingCoreProcesses = GetActiveCoreProcessIds();
+                    var listenerStillOpen = await HasCoreListenerAsync(CancellationToken.None);
+                    if (remainingCoreProcesses.Length > 0 || listenerStillOpen)
                     {
-                        var failure = "Restore was canceled before database replacement; existing Core child processes were left untouched because graceful shutdown did not confirm their exit.";
+                        var failure = "Restore was canceled before database replacement; the Web runtime could not confirm that the previous Core had stopped.";
                         SetCoreRuntime(CurrentCoreRuntime with
                         {
                             State = CoreRuntimeState.Faulted,
@@ -405,37 +401,67 @@ public sealed partial class V2rayRuntime
     {
         try
         {
+            // Keep the primary marker until every abandoned claim has been removed. If
+            // cleanup fails or the process crashes here, startup still has a recoverable
+            // authoritative marker and can retry cleanup.
+            DeleteRestoreRuntimeClaims(path, requireComplete: true);
             if (File.Exists(path)) File.Delete(path);
-            DeleteRestoreRuntimeClaims(path);
+            if (File.Exists(path))
+            {
+                throw new IOException("The committed restore runtime-state marker still exists.");
+            }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             Logging.SaveLog("Committed restore runtime-state marker could not be removed: " + exception.Message);
+            return Task.FromException(exception);
         }
         return Task.CompletedTask;
     }
 
     private static void RequeueAbandonedRestoreRuntimeClaim(string path)
     {
-        if (File.Exists(path)) return;
         var directory = Path.GetDirectoryName(path);
         if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory)) return;
         try
         {
             var pattern = Path.GetFileName(path) + ".consuming-*";
-            foreach (var abandonedClaim in Directory.EnumerateFiles(directory, pattern, SearchOption.TopDirectoryOnly))
+            var claims = Directory.EnumerateFiles(directory, pattern, SearchOption.TopDirectoryOnly)
+                .OrderBy(claim => claim, StringComparer.Ordinal)
+                .Select(ReadRestoreRuntimeClaim)
+                .ToArray();
+
+            if (File.Exists(path))
+            {
+                DeleteRestoreRuntimeClaims(path);
+                return;
+            }
+
+            // A consuming claim is a renamed copy of the marker. Prefer the most recently
+            // written valid intent; ties prefer the more informative running/profile state,
+            // then the ordinal filename. Never rely on directory enumeration order.
+            var selected = claims
+                .Where(claim => claim.Intent is not null)
+                .OrderByDescending(claim => claim.LastWriteTimeUtc)
+                .ThenByDescending(claim => claim.Intent!.WasRunning)
+                .ThenByDescending(claim => !string.IsNullOrWhiteSpace(claim.Intent!.PreferredProfileId))
+                .ThenBy(claim => claim.Path, StringComparer.Ordinal)
+                .FirstOrDefault();
+
+            if (selected is not null)
             {
                 try
                 {
-                    File.Move(abandonedClaim, path);
-                    Logging.SaveLog("Recovered an interrupted restore runtime-state marker claim.");
-                    return;
+                    File.Move(selected.Path, path);
+                    Logging.SaveLog("Recovered the newest valid interrupted restore runtime-state marker claim.");
                 }
                 catch (IOException) when (File.Exists(path))
                 {
-                    return;
+                    // Another writer restored the primary marker; it is now authoritative.
                 }
             }
+
+            DeleteRestoreRuntimeClaims(path);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
@@ -443,7 +469,28 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private static void DeleteRestoreRuntimeClaims(string path)
+    private static RestoreRuntimeClaim ReadRestoreRuntimeClaim(string claimPath)
+    {
+        RuntimeRestartIntent? intent = null;
+        try
+        {
+            intent = JsonSerializer.Deserialize<RuntimeRestartIntent>(File.ReadAllText(claimPath));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            Logging.SaveLog($"Ignoring invalid abandoned restore runtime-state claim {Path.GetFileName(claimPath)}: {exception.Message}");
+        }
+
+        DateTime lastWriteTimeUtc;
+        try { lastWriteTimeUtc = File.GetLastWriteTimeUtc(claimPath); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            lastWriteTimeUtc = DateTime.MinValue;
+        }
+        return new RestoreRuntimeClaim(claimPath, intent, lastWriteTimeUtc);
+    }
+
+    private static void DeleteRestoreRuntimeClaims(string path, bool requireComplete = false)
     {
         var directory = Path.GetDirectoryName(path);
         if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory)) return;
@@ -452,14 +499,29 @@ public sealed partial class V2rayRuntime
             var pattern = Path.GetFileName(path) + ".consuming-*";
             foreach (var claim in Directory.EnumerateFiles(directory, pattern, SearchOption.TopDirectoryOnly))
             {
-                File.Delete(claim);
+                try
+                {
+                    File.Delete(claim);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    if (requireComplete) throw;
+                    Logging.SaveLog("Committed abandoned restore runtime-state claim could not be removed: " + exception.Message);
+                }
+            }
+            if (requireComplete && Directory.EnumerateFiles(directory, pattern, SearchOption.TopDirectoryOnly).Any())
+            {
+                throw new IOException("One or more abandoned restore runtime-state claims still exist.");
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
+            if (requireComplete) throw;
             Logging.SaveLog("Committed abandoned restore runtime-state claims could not be removed: " + exception.Message);
         }
     }
+
+    private sealed record RestoreRuntimeClaim(string Path, RuntimeRestartIntent? Intent, DateTime LastWriteTimeUtc);
 
     private static void TryDeleteRestoreRuntimeState() =>
         _ = CommitRestoreRuntimeStateAsync(RestoreRuntimeStatePath);
