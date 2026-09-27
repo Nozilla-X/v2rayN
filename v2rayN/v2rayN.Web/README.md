@@ -2,7 +2,7 @@
 
 `v2rayN.Web` is an ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, or system-proxy integration. **v2rayN.Web currently does not expose TUN. TUN is intentionally deferred from the initial headless Web frontend.** If a shared or restored configuration has TUN enabled, Web refuses to start that Core configuration without changing the saved setting; use the desktop frontend to disable TUN before starting Core from Web.
 
-No existing ServiceLib, WPF, or Avalonia source files are modified. The Web frontend is self-contained under `v2rayN.Web` and uses ServiceLib's existing public APIs. Web owns Core process/listener tracking and GeoFiles update backup, validation, and rollback; Core launch/stop and GeoFiles download behavior remain delegated to ServiceLib.
+No existing ServiceLib, WPF, or Avalonia source files are modified. The Web frontend is self-contained under `v2rayN.Web` and uses ServiceLib through existing public APIs. Web owns Core process/listener tracking and GeoFiles update backup, validation, and rollback; Core launch/stop and GeoFiles download behavior remain delegated to ServiceLib.
 
 The Vue source is in `WebUI/`. The frontend uses TypeScript and `vue-i18n` locale JSON files, and calls the existing Backend/ServiceLib for profile and settings operations. Its primary workspace is a compact, high-density node table.
 
@@ -15,7 +15,7 @@ bash Scripts/publish-native.sh linux-x64
 # or: bash Scripts/publish-native.sh linux-arm64
 ```
 
-NuGet packages are restored into the repository's `.packages/nuget`; npm packages stay in `WebUI/node_modules` and the npm cache defaults to `.packages/npm-cache`. The local publish output is self-contained and includes the built `wwwroot` frontend. v2rayN.Web does not curate its own Core distribution. GitHub artifacts and container images bundle the complete architecture-matched official Linux `2dust/v2rayN-core-bin` payload, using the same source as the original v2rayN Linux ZIP releases:
+NuGet packages are restored into `v2rayN.Web/.packages/nuget`; npm packages stay in `WebUI/node_modules` and the npm cache defaults to `v2rayN.Web/.packages/npm-cache`. The local publish output is self-contained and includes the built `wwwroot` frontend. v2rayN.Web does not curate its own Core distribution. GitHub artifacts and container images bundle the complete architecture-matched official Linux `2dust/v2rayN-core-bin` payload, using the same source as the original v2rayN Linux ZIP releases:
 
 ```bash
 cd publish/linux-x64
@@ -52,6 +52,8 @@ The fixture test exercises real restart behavior, old `RoutingIndexId` migration
 Open `http://127.0.0.1:5080` locally, or use the server private IP from a trusted LAN/VPN. First Run setup or sign-in uses the Management Key (`V2RAYN_WEB_API_KEY` in environment-based deployments). The key is sent only in the login/setup JSON body, is never stored in browser storage, URLs, logs, or EventSource data, and a locally created key is stored only as a PBKDF2 verifier in `webData/web-auth.json` under the current Web host's ServiceLib startup directory. This host identity is separate from v2rayN configuration: normal backups omit it and restore ignores any archive copy. PBKDF2 is used only for setup and Management Key login; authenticated REST requests use the Session Token. Login exchanges the Management Key for a random 256-bit Session Token; only its SHA-256 digest is stored in memory by the Backend. Sessions slide after authenticated REST activity with a 7-day idle expiration and a 30-day absolute expiration. “Idle” means no authenticated REST request other than SSE-ticket issuance, not lack of human mouse/keyboard input; WebUI profile refresh counts as activity; status changes are synchronized through EventHub/SSE. To open EventSource, the WebUI sends an authenticated `POST /api/auth/sse-ticket`; this request does not renew the owning session. The Backend returns a random one-time ticket valid for 45 seconds and stores only its digest plus the owning session digest in memory. The EventSource URL contains that ticket, never the main Session Token. Consuming the ticket does not authenticate REST requests or renew the session; the stream is bound to session revoke/expiry, and SSE heartbeats do not renew it. Sessions and tickets are not persisted and become invalid after a Backend restart. Login attempts are rate-limited per remote IP. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the Web runtime owns scheduling and performs ordered Core/profile/statistics/config/database cleanup under a 20-second overall shutdown budget. If operation drain or a cleanup step times out or fails, later cleanup is skipped to avoid racing active work or closing SQLite while it may still be in use. The example systemd unit allows 30 seconds for process shutdown and disables automatic SIGKILL escalation; if Core stop cannot be confirmed within the cleanup budget, the runtime records a fault and skips later cleanup; check the backend log and tracked Core PIDs/listeners before restarting.
 
 Use `sudo systemctl stop v2rayn-web.service` for the systemd deployment and `docker stop` / `podman stop` for containers; those foreground-managed deployments do not use `--stop`.
+
+Web-host `SIGINT`/`SIGTERM` shutdown is distinct from Core termination: Web calls ServiceLib's existing `CoreStop` API and confirms shutdown using its captured Core process identities.
 
 Subscription interval scheduling is implemented in `Services/V2rayRuntime.Scheduling.cs`; the Web host does not register ServiceLib's desktop `TaskManager`. The Web runtime's `RuntimeMutationGate` serializes its shared configuration and SQLite mutations.
 
@@ -94,7 +96,7 @@ Backup restore accepts archives up to 64 MiB compressed and 256 MiB expanded, wi
 
 ## Native systemd service
 
-The example unit is `Deploy/Systemd/v2rayn-web.service`. It runs the same published executable as a non-root service user, stores ServiceLib state in a single `StateDirectory`, and uses the normal ASP.NET Core shutdown path; the Web runtime calls the upstream CoreStop API and confirms its tracked Core processes and listeners have exited.
+The example unit is `Deploy/Systemd/v2rayn-web.service`. It runs the same published executable as a non-root service user, stores ServiceLib state in a single `StateDirectory`, and uses the normal ASP.NET Core shutdown path; the Web runtime calls the upstream CoreStop API and confirms that its tracked Core process identities have exited. Listener probes are not treated as proof of process ownership or as a stop-failure condition.
 
 Example installation (adapt the account and paths to the server):
 

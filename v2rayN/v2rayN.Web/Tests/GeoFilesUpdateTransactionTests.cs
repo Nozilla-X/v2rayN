@@ -5,6 +5,47 @@ namespace v2rayN.Web.Tests;
 public class GeoFilesUpdateTransactionTests
 {
     [Test]
+    public async Task CallbackFailureIsRejectedEvenWhenUpdaterTaskCompletesNormally()
+    {
+        var completion = new GeoFilesUpdateCompletion();
+        completion.Report(success: false, "download failed", isProgressMessage: false);
+        await Task.CompletedTask;
+
+        var failed = false;
+        try
+        {
+            completion.EnsureSuccessful();
+        }
+        catch (IOException exception) when (exception.Message.Contains("download failed", StringComparison.Ordinal))
+        {
+            failed = true;
+        }
+
+        await failed.Should().BeTrue();
+    }
+
+    [Test]
+    public async Task GeoFilesProgressDoesNotReplaceTheFinalSuccessNotification()
+    {
+        var completion = new GeoFilesUpdateCompletion();
+        completion.Report(success: false, "Downloading geoip.dat", isProgressMessage: true);
+
+        var missingCompletionRejected = false;
+        try
+        {
+            completion.EnsureSuccessful();
+        }
+        catch (IOException exception) when (exception.Message.Contains("did not report successful completion", StringComparison.Ordinal))
+        {
+            missingCompletionRejected = true;
+        }
+
+        completion.Report(success: true, "GeoFiles updated", isProgressMessage: false);
+        completion.EnsureSuccessful();
+        await missingCompletionRejected.Should().BeTrue();
+    }
+
+    [Test]
     public async Task FailedGeoFilesUpdateRestoresReplacedFilesAndRemovesNewFiles()
     {
         using var directory = new TemporaryDirectory();
@@ -16,7 +57,7 @@ public class GeoFilesUpdateTransactionTests
         try
         {
             await GeoFilesUpdateTransaction.ApplyAsync(
-                () => Directory.GetFiles(directory.Path),
+                [existing, created],
                 [existing, created],
                 async _ =>
                 {
@@ -49,7 +90,7 @@ public class GeoFilesUpdateTransactionTests
         try
         {
             await GeoFilesUpdateTransaction.ApplyAsync(
-                () => Directory.GetFiles(directory.Path),
+                [existing, required],
                 [existing, required],
                 async _ =>
                 {
@@ -75,12 +116,124 @@ public class GeoFilesUpdateTransactionTests
         var target = Path.Combine(directory.Path, "geosite.dat");
 
         await GeoFilesUpdateTransaction.ApplyAsync(
-            () => Directory.GetFiles(directory.Path),
+            [target],
             [target],
             token => File.WriteAllTextAsync(target, "verified-update", token),
             CancellationToken.None);
 
         await (await File.ReadAllTextAsync(target)).Should().BeEqualTo("verified-update");
+    }
+
+    [Test]
+    public async Task FailedUpdateRemovesNewMmdbAndSrsTargetsButLeavesUnmanagedFilesAlone()
+    {
+        using var directory = new TemporaryDirectory();
+        var required = Path.Combine(directory.Path, "geosite.dat");
+        var geoip = Path.Combine(directory.Path, "geoip.dat");
+        var newMmdb = Path.Combine(directory.Path, "Country.mmdb");
+        var newSrs = Path.Combine(directory.Path, "geosite-custom.srs");
+        var unrelatedSrs = Path.Combine(directory.Path, "locally-managed.srs");
+        var unrelatedGeo = Path.Combine(directory.Path, "geography-not-managed.db");
+
+        try
+        {
+            await GeoFilesUpdateTransaction.ApplyAsync(
+                [required, geoip, newMmdb, newSrs],
+                [required, geoip],
+                async _ =>
+                {
+                    await File.WriteAllTextAsync(required, "new-geosite");
+                    await File.WriteAllTextAsync(geoip, "new-geoip");
+                    await File.WriteAllTextAsync(newMmdb, "new-mmdb");
+                    await File.WriteAllTextAsync(newSrs, "new-srs");
+                    await File.WriteAllTextAsync(unrelatedSrs, "keep-srs");
+                    await File.WriteAllTextAsync(unrelatedGeo, "keep-geo");
+                    throw new IOException("simulated callback-reported download failure");
+                },
+                CancellationToken.None);
+        }
+        catch (IOException exception) when (exception.Message.Contains("simulated callback-reported", StringComparison.Ordinal))
+        {
+            // The ServiceLib callback can report failure while its Task completes normally;
+            // the Web callback adapter converts that report to this transaction failure.
+        }
+
+        await File.Exists(required).Should().BeFalse();
+        await File.Exists(geoip).Should().BeFalse();
+        await File.Exists(newMmdb).Should().BeFalse();
+        await File.Exists(newSrs).Should().BeFalse();
+        await (await File.ReadAllTextAsync(unrelatedSrs)).Should().BeEqualTo("keep-srs");
+        await (await File.ReadAllTextAsync(unrelatedGeo)).Should().BeEqualTo("keep-geo");
+    }
+
+    [Test]
+    public async Task CancellationRollsBackChangesToTheManagedSet()
+    {
+        using var directory = new TemporaryDirectory();
+        using var cancellation = new CancellationTokenSource();
+        var existing = Path.Combine(directory.Path, "geoip.dat");
+        var newFile = Path.Combine(directory.Path, "geosite-new.srs");
+        await File.WriteAllTextAsync(existing, "before-cancel");
+
+        var canceled = false;
+        try
+        {
+            await GeoFilesUpdateTransaction.ApplyAsync(
+                [existing, newFile],
+                [existing],
+                async token =>
+                {
+                    await File.WriteAllTextAsync(existing, "partial-update", token);
+                    await File.WriteAllTextAsync(newFile, "partial-srs", token);
+                    cancellation.Cancel();
+                    token.ThrowIfCancellationRequested();
+                },
+                cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            canceled = true;
+        }
+
+        await canceled.Should().BeTrue();
+        await (await File.ReadAllTextAsync(existing)).Should().BeEqualTo("before-cancel");
+        await File.Exists(newFile).Should().BeFalse();
+    }
+
+    [Test]
+    public async Task RollbackFailureRetainsItsBackupSetAndReportsBothErrors()
+    {
+        using var directory = new TemporaryDirectory();
+        var target = Path.Combine(directory.Path, "geoip.dat");
+        await File.WriteAllTextAsync(target, "before-update");
+
+        IOException? failure = null;
+        try
+        {
+            await GeoFilesUpdateTransaction.ApplyAsync(
+                [target],
+                [target],
+                _ =>
+                {
+                    File.Delete(target);
+                    Directory.CreateDirectory(target);
+                    throw new IOException("simulated update failure");
+                },
+                CancellationToken.None);
+        }
+        catch (IOException exception) when (exception.Message.Contains("rollback is incomplete", StringComparison.Ordinal))
+        {
+            failure = exception;
+        }
+
+        await (failure is not null).Should().BeTrue();
+        await (failure!.InnerException is AggregateException aggregate
+            && aggregate.InnerExceptions.Count == 2).Should().BeTrue();
+        const string retainedPrefix = "backup set was retained at ";
+        var retainedStart = failure!.Message.IndexOf(retainedPrefix, StringComparison.Ordinal) + retainedPrefix.Length;
+        var retainedPath = failure.Message[retainedStart..].TrimEnd('.');
+        await Directory.Exists(retainedPath).Should().BeTrue();
+        Directory.Delete(retainedPath, recursive: true);
     }
 
     private sealed class TemporaryDirectory : IDisposable

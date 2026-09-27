@@ -215,6 +215,59 @@ public class RuntimeRestartRecoveryTests
     }
 
     [Test]
+    public async Task ValidPrimaryMarkerWinsOverAbandonedClaimsAndCleansThemUp()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "restore-state.json");
+        var primary = new RuntimeRestartIntent(false, "stopped-profile");
+        var claim = new RuntimeRestartIntent(true, "newer-claim");
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(primary));
+        var claimPath = path + ".consuming-abandoned";
+        await File.WriteAllTextAsync(claimPath, JsonSerializer.Serialize(claim));
+        File.SetLastWriteTimeUtc(claimPath, DateTime.UtcNow.AddMinutes(1));
+
+        var recovered = await V2rayRuntime.LoadRuntimeRestartIntentAsync(path, CancellationToken.None);
+
+        await (recovered is { WasRunning: false, PreferredProfileId: "stopped-profile" }).Should().BeTrue();
+        await Directory.GetFiles(directory.Path, "*.consuming-*").Length.Should().BeEqualTo(0);
+        await V2rayRuntime.CommitRestoreRuntimeStateAsync(path);
+        await File.Exists(path).Should().BeFalse();
+    }
+
+    [Test]
+    public async Task InvalidPrimaryMarkerIsReplacedByTheNewestValidClaim()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "restore-state.json");
+        await File.WriteAllTextAsync(path, "not-json");
+        var claimPath = path + ".consuming-recoverable";
+        var expected = new RuntimeRestartIntent(true, "recovered-profile");
+        await File.WriteAllTextAsync(claimPath, JsonSerializer.Serialize(expected));
+
+        var recovered = await V2rayRuntime.LoadRuntimeRestartIntentAsync(path, CancellationToken.None);
+
+        await (recovered is { WasRunning: true, PreferredProfileId: "recovered-profile" }).Should().BeTrue();
+        await Directory.GetFiles(directory.Path, "*.consuming-*").Length.Should().BeEqualTo(0);
+        await V2rayRuntime.CommitRestoreRuntimeStateAsync(path);
+        await File.Exists(path).Should().BeFalse();
+    }
+
+    [Test]
+    public async Task FailedClaimMoveDoesNotDeleteTheOnlyValidClaim()
+    {
+        using var directory = new TemporaryDirectory();
+        var path = Path.Combine(directory.Path, "restore-state.json");
+        Directory.CreateDirectory(path);
+        var claimPath = path + ".consuming-recoverable";
+        await File.WriteAllTextAsync(claimPath, JsonSerializer.Serialize(new RuntimeRestartIntent(true, "recoverable")));
+
+        var recovered = await V2rayRuntime.LoadRuntimeRestartIntentAsync(path, CancellationToken.None);
+
+        await (recovered is null).Should().BeTrue();
+        await File.Exists(claimPath).Should().BeTrue();
+    }
+
+    [Test]
     public async Task WebUpdateRuntimeIntentRemainsUntilTheExternalHealthVerifierCommitsIt()
     {
         using var directory = new TemporaryDirectory();

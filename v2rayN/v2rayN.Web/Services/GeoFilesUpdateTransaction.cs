@@ -7,7 +7,7 @@ namespace v2rayN.Web.Services;
 internal static class GeoFilesUpdateTransaction
 {
     public static async Task ApplyAsync(
-        Func<IReadOnlyCollection<string>> enumerateManagedFiles,
+        IEnumerable<string> managedFiles,
         IEnumerable<string> requiredFiles,
         Func<CancellationToken, Task> update,
         CancellationToken cancellationToken)
@@ -16,7 +16,7 @@ internal static class GeoFilesUpdateTransaction
             .Select(Path.GetFullPath)
             .Distinct(PathComparer)
             .ToArray();
-        var originalTargets = enumerateManagedFiles()
+        var originalTargets = managedFiles
             .Concat(required)
             .Select(Path.GetFullPath)
             .Distinct(PathComparer)
@@ -34,6 +34,14 @@ internal static class GeoFilesUpdateTransaction
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var target = originalTargets[index];
+                if (Directory.Exists(target))
+                {
+                    throw new IOException($"GeoFiles target is a directory: {target}");
+                }
+                if (IsSymbolicLink(target))
+                {
+                    throw new IOException($"GeoFiles target is a symbolic link and cannot be updated safely: {target}");
+                }
                 if (!File.Exists(target)) continue;
                 var backup = Path.Combine(backupRoot, index.ToString("D6", System.Globalization.CultureInfo.InvariantCulture));
                 var lastWriteTimeUtc = File.GetLastWriteTimeUtc(target);
@@ -60,12 +68,9 @@ internal static class GeoFilesUpdateTransaction
                 try
                 {
                     var originallyExisting = backups.Keys.ToHashSet(PathComparer);
-                    foreach (var target in enumerateManagedFiles()
-                                 .Concat(required)
-                                 .Select(Path.GetFullPath)
-                                 .Distinct(PathComparer))
+                    foreach (var target in originalTargets)
                     {
-                        if (!originallyExisting.Contains(target) && File.Exists(target))
+                        if (!originallyExisting.Contains(target) && (File.Exists(target) || IsSymbolicLink(target)))
                         {
                             File.Delete(target);
                         }
@@ -74,6 +79,7 @@ internal static class GeoFilesUpdateTransaction
                     foreach (var (target, backup) in backups)
                     {
                         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                        if (IsSymbolicLink(target)) File.Delete(target);
                         File.Copy(backup.BackupPath, target, overwrite: true);
                         File.SetLastWriteTimeUtc(target, backup.LastWriteTimeUtc);
                     }
@@ -105,6 +111,19 @@ internal static class GeoFilesUpdateTransaction
     private static StringComparer PathComparer => OperatingSystem.IsWindows()
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
+
+    private static bool IsSymbolicLink(string path)
+    {
+        try
+        {
+            if (new FileInfo(path).LinkTarget is not null) return true;
+            return File.Exists(path) && File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return false;
+        }
+    }
 
     private sealed record GeoFileBackup(string BackupPath, DateTime LastWriteTimeUtc);
 }

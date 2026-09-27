@@ -327,11 +327,11 @@ public sealed partial class V2rayRuntime
             if (includeGeoFiles)
             {
                 PublishGeoUpdateProgress("checking", false, false,
-                    "GeoFiles have no read-only check operation in ServiceLib; they are checked while staging the update.", batch: true);
+                    "ServiceLib has no read-only GeoFiles check; the transactional GeoFiles update runs only during batch apply.", batch: true);
                 if (!apply)
                 {
                     PublishGeoUpdateProgress("completed", true, true,
-                        "GeoFiles will be downloaded and verified only when the batch update is applied.", batch: true);
+                        "GeoFiles will be downloaded, validated, and applied only when batch apply is enabled.", batch: true);
                 }
             }
 
@@ -1132,19 +1132,11 @@ public sealed partial class V2rayRuntime
 
     private async Task ApplyGeoFilesUpdateAsync(bool useProxy, CancellationToken cancellationToken)
     {
-        var failures = new ConcurrentQueue<string>();
-        var completionReported = 0;
+        var completion = new GeoFilesUpdateCompletion();
         var updater = new UpdateService(Config, (success, message) =>
         {
             AddLog("update", message);
-            if (success)
-            {
-                Interlocked.Exchange(ref completionReported, 1);
-            }
-            else if (!IsGeoDownloadProgressMessage(message))
-            {
-                failures.Enqueue(message);
-            }
+            completion.Report(success, message, IsGeoDownloadProgressMessage(message));
             _events.Publish("geo-update-progress", new
             {
                 success,
@@ -1155,58 +1147,124 @@ public sealed partial class V2rayRuntime
             return Task.CompletedTask;
         });
 
+        var requiredFiles = GetRequiredGeoFiles();
+        var managedFiles = await GetManagedGeoFilesAsync();
         await GeoFilesUpdateTransaction.ApplyAsync(
-            EnumerateManagedGeoFiles,
-            GetRequiredGeoFiles(),
+            managedFiles,
+            requiredFiles,
             async token =>
             {
                 // Keep download selection, URLs, and installation behavior in the upstream
                 // public API. Its legacy callback reports progress/errors separately from its
                 // final success notification, so reject non-progress failures before commit.
                 await updater.UpdateGeoFileAll(useProxy, token);
-                if (!failures.IsEmpty)
-                {
-                    throw new IOException("GeoFiles update reported an error: " + string.Join("; ", failures));
-                }
-                if (Volatile.Read(ref completionReported) == 0)
-                {
-                    throw new IOException("GeoFiles update did not report successful completion.");
-                }
+                completion.EnsureSuccessful();
             },
             cancellationToken);
     }
 
-    private string[] EnumerateManagedGeoFiles()
+    private async Task<string[]> GetManagedGeoFilesAsync()
     {
-        var binDirectory = Utils.GetBinPath(string.Empty);
-        var files = new HashSet<string>(StringComparerForPaths);
-        if (Directory.Exists(binDirectory))
+        var files = new HashSet<string>(GetRequiredGeoFiles(), StringComparerForPaths);
+        var geoipRules = new List<string>();
+        var geositeRules = new List<string>();
+
+        var routingItems = await AppManager.Instance.RoutingItems();
+        foreach (var routing in routingItems ?? [])
         {
-            foreach (var path in Directory.EnumerateFiles(binDirectory, "*", SearchOption.TopDirectoryOnly))
+            var rules = JsonUtils.Deserialize<List<RulesItem>>(routing.RuleSet);
+            foreach (var rule in rules ?? [])
             {
-                var name = Path.GetFileName(path);
-                if (name.StartsWith("geo", StringComparison.OrdinalIgnoreCase)
-                    || name.EndsWith(".mmdb", StringComparison.OrdinalIgnoreCase))
-                {
-                    files.Add(path);
-                }
+                AddPrefixedItems(rule.Ip, Global.GeoIPPrefix, geoipRules);
+                AddPrefixedItems(rule.Domain, Global.GeoSitePrefix, geositeRules);
             }
         }
 
-        var srsDirectory = Utils.GetBinPath("srss");
-        if (Directory.Exists(srsDirectory))
+        var dnsItem = await AppManager.Instance.GetDNSItem(ECoreType.sing_box);
+        if (dnsItem is not null)
         {
-            foreach (var path in Directory.EnumerateFiles(srsDirectory, "*.srs", SearchOption.TopDirectoryOnly))
+            ExtractDnsRuleSets(dnsItem.NormalDNS, geoipRules, geositeRules);
+            ExtractDnsRuleSets(dnsItem.TunDNS, geoipRules, geositeRules);
+        }
+
+        // Match ServiceLib.UpdateService.GetSrsFileAllRequest exactly: configured rule sets,
+        // plus its default geosite downloads. Do not treat every .srs or geo*-named file in
+        // the Core directory as owned by this transaction.
+        geositeRules.AddRange(["google", "cn", "geolocation-cn", "category-ads-all"]);
+        var srsDirectory = Path.GetFullPath(Utils.GetBinPath("srss"));
+        foreach (var (type, names) in new[] { ("geoip", geoipRules), ("geosite", geositeRules) })
+        {
+            foreach (var name in names.Distinct(StringComparer.Ordinal))
             {
-                files.Add(path);
+                files.Add(GetManagedSrsPath(srsDirectory, type, name));
             }
         }
 
-        foreach (var path in GetRequiredGeoFiles())
+        return files.OrderBy(path => path, StringComparerForPaths).ToArray();
+    }
+
+    private static string GetManagedSrsPath(string srsDirectory, string type, string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)
+            || name is "." or ".."
+            || name.Contains('/')
+            || name.Contains('\\')
+            || name.Contains(':')
+            || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0
+            || !string.Equals(name, name.TrimEnd(' ', '.'), StringComparison.Ordinal)
+            || Path.GetFileName(name) != name)
         {
-            files.Add(path);
+            throw new InvalidDataException("A GeoFiles rule-set name is not a safe file name.");
         }
-        return files.ToArray();
+
+        var directory = Path.GetFullPath(srsDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var path = Path.GetFullPath(Path.Combine(directory, $"{type}-{name}.srs"));
+        if (!string.Equals(Path.GetDirectoryName(path), directory,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+        {
+            throw new InvalidDataException("A GeoFiles rule-set path escapes the managed rules directory.");
+        }
+        return path;
+    }
+
+    private static void AddPrefixedItems(IEnumerable<string>? items, string prefix, ICollection<string> output)
+    {
+        if (items is null) return;
+        foreach (var item in items)
+        {
+            if (item.StartsWith(prefix, StringComparison.Ordinal))
+            {
+                output.Add(item[prefix.Length..]);
+            }
+        }
+    }
+
+    private static void ExtractDnsRuleSets(string? dnsJson, ICollection<string> geoipRules, ICollection<string> geositeRules)
+    {
+        if (string.IsNullOrEmpty(dnsJson)) return;
+        try
+        {
+            var dns = JsonUtils.Deserialize<Dns4Sbox>(dnsJson);
+            foreach (var rule in dns?.rules ?? [])
+            {
+                ExtractSrsRuleSets(rule, geoipRules, geositeRules);
+            }
+        }
+        catch
+        {
+            // Match the updater: malformed optional DNS JSON does not stop GeoFiles updates.
+        }
+    }
+
+    private static void ExtractSrsRuleSets(Rule4Sbox? rule, ICollection<string> geoipRules, ICollection<string> geositeRules)
+    {
+        if (rule is null) return;
+        AddPrefixedItems(rule.rule_set, "geosite-", geositeRules);
+        AddPrefixedItems(rule.rule_set, "geoip-", geoipRules);
+        foreach (var nestedRule in rule.rules ?? [])
+        {
+            ExtractSrsRuleSets(nestedRule, geoipRules, geositeRules);
+        }
     }
 
     private string[] GetRequiredGeoFiles()

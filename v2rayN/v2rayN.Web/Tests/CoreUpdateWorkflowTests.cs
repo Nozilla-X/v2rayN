@@ -108,14 +108,14 @@ public class CoreUpdateWorkflowTests
             },
             () =>
             {
-                sequence.Add("stage:GeoFiles");
+                sequence.Add("prepare:GeoFiles");
                 return Task.CompletedTask;
             });
 
         await results.Should().BeEqualTo(3);
         await sequence.SequenceEqual(new[]
         {
-            "stage:Xray", "stage:sing-box", "stage:Mihomo", "stage:GeoFiles", "CoreStop",
+            "stage:Xray", "stage:sing-box", "stage:Mihomo", "prepare:GeoFiles", "CoreStop",
             "apply:verified:Xray", "apply:verified:sing-box", "apply:verified:Mihomo",
         }).Should().BeTrue();
     }
@@ -135,7 +135,7 @@ public class CoreUpdateWorkflowTests
                     applied = true;
                     return Task.FromResult(true);
                 },
-                () => throw new InvalidDataException("GeoFiles staging failed."));
+                () => throw new InvalidDataException("GeoFiles preparation failed."));
         }
         catch (InvalidDataException)
         {
@@ -192,7 +192,7 @@ public class CoreUpdateWorkflowTests
             },
             () =>
             {
-                sequence.Add("stage:GeoFiles");
+                sequence.Add("prepare:GeoFiles");
                 sequence.Add("stage:v2rayN.Web");
                 return Task.CompletedTask;
             });
@@ -200,7 +200,7 @@ public class CoreUpdateWorkflowTests
 
         await sequence.SequenceEqual(new[]
         {
-            "stage:Xray", "stage:sing-box", "stage:GeoFiles", "stage:v2rayN.Web",
+            "stage:Xray", "stage:sing-box", "prepare:GeoFiles", "stage:v2rayN.Web",
             "apply:Xray", "apply:sing-box", "apply:GeoFiles", "apply:v2rayN.Web",
         }).Should().BeTrue();
     }

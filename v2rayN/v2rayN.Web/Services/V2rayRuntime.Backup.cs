@@ -431,7 +431,10 @@ public sealed partial class V2rayRuntime
                 .Select(ReadRestoreRuntimeClaim)
                 .ToArray();
 
-            if (File.Exists(path))
+            // A valid primary marker is authoritative when an interrupted consume left
+            // duplicate claims behind. An invalid primary must not hide the only valid
+            // recoverable claim.
+            if (TryReadRestoreRuntimeIntent(path) is not null)
             {
                 DeleteRestoreRuntimeClaims(path);
                 return;
@@ -452,13 +455,26 @@ public sealed partial class V2rayRuntime
             {
                 try
                 {
-                    File.Move(selected.Path, path);
+                    File.Move(selected.Path, path, overwrite: true);
                     Logging.SaveLog("Recovered the newest valid interrupted restore runtime-state marker claim.");
+                    DeleteRestoreRuntimeClaims(path);
                 }
-                catch (IOException) when (File.Exists(path))
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
                 {
-                    // Another writer restored the primary marker; it is now authoritative.
+                    if (TryReadRestoreRuntimeIntent(path) is not null)
+                    {
+                        // Another writer restored a valid primary marker; it is authoritative.
+                        DeleteRestoreRuntimeClaims(path);
+                        return;
+                    }
+
+                    // Keep all claims when replacement failed: one of them may be the only
+                    // valid copy needed by a later startup.
+                    Logging.SaveLog("Abandoned restore runtime-state claim could not be moved to the primary marker: " + exception.Message);
+                    return;
                 }
+
+                return;
             }
 
             DeleteRestoreRuntimeClaims(path);
@@ -466,6 +482,19 @@ public sealed partial class V2rayRuntime
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
             Logging.SaveLog("Abandoned restore runtime-state claim could not be recovered: " + exception.Message);
+        }
+    }
+
+    private static RuntimeRestartIntent? TryReadRestoreRuntimeIntent(string path)
+    {
+        try
+        {
+            if (!File.Exists(path)) return null;
+            return JsonSerializer.Deserialize<RuntimeRestartIntent>(File.ReadAllText(path));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
         }
     }
 

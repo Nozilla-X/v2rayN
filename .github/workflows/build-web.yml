@@ -5,6 +5,7 @@ on:
     branches:
       - master
     paths:
+      - '.dockerignore'
       - 'v2rayN/v2rayN.Web/**'
       - 'v2rayN/ServiceLib/**'
       - 'v2rayN/ServiceLib.Tests/**'
@@ -16,6 +17,7 @@ on:
     branches:
       - web
     paths:
+      - '.dockerignore'
       - 'v2rayN/v2rayN.Web/**'
       - 'v2rayN/ServiceLib/**'
       - 'v2rayN/ServiceLib.Tests/**'

@@ -33,8 +33,8 @@ case "$rid" in
   *) printf 'Supported runtime identifiers: linux-x64, linux-arm64 (received %s)\n' "$rid" >&2; exit 2 ;;
 esac
 
-export NUGET_PACKAGES="${NUGET_PACKAGES:-$repo_root/.packages/nuget}"
-export npm_config_cache="${npm_config_cache:-$repo_root/.packages/npm-cache}"
+export NUGET_PACKAGES="${NUGET_PACKAGES:-$web_root/.packages/nuget}"
+export npm_config_cache="${npm_config_cache:-$web_root/.packages/npm-cache}"
 web_version="${V2RAYN_WEB_VERSION:-7.25.2-web.0}"
 web_commit="${V2RAYN_WEB_COMMIT:-$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf unknown)}"
 web_build_date="${V2RAYN_WEB_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"

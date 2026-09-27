@@ -3,7 +3,6 @@ set -euo pipefail
 
 web_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 upstream_root="$(dirname -- "$web_root")"
-repo_root="$(dirname -- "$upstream_root")"
 webui_root="$web_root/WebUI"
 output_dir="${1:-$web_root/publish/verify-linux-x64}"
 
@@ -24,8 +23,8 @@ if [[ -z "$dotnet" || ! -x "$dotnet" ]]; then
 fi
 command -v npm >/dev/null 2>&1 || { printf 'Required build tool is not available: npm\n' >&2; exit 1; }
 
-export NUGET_PACKAGES="${NUGET_PACKAGES:-$repo_root/.packages/nuget}"
-export npm_config_cache="${npm_config_cache:-$repo_root/.packages/npm-cache}"
+export NUGET_PACKAGES="${NUGET_PACKAGES:-$web_root/.packages/nuget}"
+export npm_config_cache="${npm_config_cache:-$web_root/.packages/npm-cache}"
 
 npm ci --prefix "$webui_root"
 npm run build --prefix "$webui_root"

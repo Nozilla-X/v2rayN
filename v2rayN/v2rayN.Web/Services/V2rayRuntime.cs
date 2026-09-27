@@ -130,7 +130,6 @@ public sealed partial class V2rayRuntime(
 
     private async Task StopCoreAndConfirmAsync(CancellationToken cancellationToken)
     {
-        var listeners = CurrentCoreRuntime.Listeners;
         await CoreManager.Instance.CoreStop();
 
         var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
@@ -138,16 +137,10 @@ public sealed partial class V2rayRuntime(
         {
             cancellationToken.ThrowIfCancellationRequested();
             var activeProcesses = GetActiveCoreProcesses();
-            var activeListeners = new List<int>();
-            foreach (var listener in listeners)
-            {
-                if (await IsListeningAsync(listener.Port, cancellationToken))
-                {
-                    activeListeners.Add(listener.Port);
-                }
-            }
-
-            if (activeProcesses.Length == 0 && activeListeners.Count == 0)
+            // Port occupancy is not process ownership: another program may bind a just-released
+            // TCP or UDP port before this check. Only Web's captured process identities can
+            // keep stop pending or cause a stop failure.
+            if (activeProcesses.Length == 0)
             {
                 SetTrackedCoreProcesses([]);
                 return;
@@ -159,10 +152,6 @@ public sealed partial class V2rayRuntime(
                 if (activeProcesses.Length > 0)
                 {
                     details.Add($"Core processes remain: {string.Join(",", activeProcesses.Select(process => process.ProcessId))}.");
-                }
-                if (activeListeners.Count > 0)
-                {
-                    details.Add($"Core listeners remain: {string.Join(",", activeListeners.Distinct())}.");
                 }
                 throw new TimeoutException(string.Join(" ", details));
             }
@@ -882,14 +871,18 @@ public sealed partial class V2rayRuntime(
         try
         {
             var existingProcessIds = CoreProcessTracker.CaptureExistingProcessIds();
-            var expectedProcessNames = GetExpectedCoreProcessNames(built);
+            var expectedExecutablePaths = GetExpectedCoreExecutablePaths(built);
+            var expectedConfigPaths = GetExpectedCoreConfigPaths(built);
             try
             {
                 await CoreManager.Instance.LoadCore(built.MainResult.Context, built.PreSocksResult?.Context);
             }
             finally
             {
-                SetTrackedCoreProcesses(CoreProcessTracker.CaptureStartedProcesses(existingProcessIds, expectedProcessNames));
+                SetTrackedCoreProcesses(CoreProcessTracker.CaptureStartedProcesses(
+                    existingProcessIds,
+                    expectedExecutablePaths,
+                    expectedConfigPaths));
             }
             var started = await WaitForListenerAsync(port, cancellationToken);
             var processIds = GetActiveCoreProcessIds();
@@ -1299,7 +1292,7 @@ public sealed partial class V2rayRuntime(
         return listeners.ToArray();
     }
 
-    private static string[] GetExpectedCoreProcessNames(CoreConfigContextBuilderAllResult built)
+    private static string[] GetExpectedCoreExecutablePaths(CoreConfigContextBuilderAllResult built)
     {
         var coreTypes = new ECoreType?[]
             {
@@ -1311,11 +1304,23 @@ public sealed partial class V2rayRuntime(
             .Distinct();
 
         return coreTypes
-            .SelectMany(coreType => CoreInfoManager.Instance.GetCoreInfo(coreType)?.CoreExes ?? [])
-            .Select(Path.GetFileNameWithoutExtension)
-            .Where(name => !string.IsNullOrWhiteSpace(name))
-            .Select(name => name!)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(coreType => CoreInfoManager.Instance.GetCoreInfo(coreType))
+            .Select(info => info is null ? string.Empty : CoreInfoManager.Instance.GetCoreExecFile(info, out _))
+            .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            .Select(Path.GetFullPath)
+            .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static string[] GetExpectedCoreConfigPaths(CoreConfigContextBuilderAllResult built)
+    {
+        var fileNames = built.PreSocksResult is null
+            ? new[] { Global.CoreConfigFileName }
+            : new[] { Global.CoreConfigFileName, Global.CorePreConfigFileName };
+        return fileNames
+            .Select(Utils.GetBinConfigPath)
+            .Select(Path.GetFullPath)
+            .Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)
             .ToArray();
     }
 
