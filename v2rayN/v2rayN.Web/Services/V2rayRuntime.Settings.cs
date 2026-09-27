@@ -2,6 +2,7 @@ using ServiceLib;
 using ServiceLib.Common;
 using ServiceLib.Enums;
 using ServiceLib.Handler;
+using ServiceLib.Helper;
 using ServiceLib.Manager;
 using ServiceLib.Models.Configs;
 using ServiceLib.Models.Entities;
@@ -129,9 +130,10 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("settings_apply_invalid", ApiMessageKeys.CommonInvalidInput);
         }
 
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var coreFingerprintBefore = GetCoreConfigurationFingerprint();
-        var oldConfig = JsonUtils.DeepCopy(Config)
-            ?? throw new InvalidOperationException("The current configuration could not be copied for an atomic settings apply.");
+        var oldConfig = applyContext.OldConfig;
         var statisticsChanged = Config.GuiItem.EnableStatistics != application.EnableStatistics
             || Config.GuiItem.DisplayRealTimeSpeed != application.DisplayRealTimeSpeed;
         try
@@ -218,7 +220,7 @@ public sealed partial class V2rayRuntime
         }
 
         var coreChanged = coreFingerprintBefore != GetCoreConfigurationFingerprint();
-        return await CompleteCoreAffectingChangeAsync("all-settings", coreChanged);
+        return await CompleteCoreAffectingChangeAsync("all-settings", coreChanged, applyContext);
     }
 
     public async Task<OperationView> UpdateInboundSettingsAsync(InboundSettingsInput input)
@@ -233,6 +235,8 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("inbound_dest_override_invalid", ApiMessageKeys.CommonInvalidInput);
         }
 
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
@@ -250,7 +254,7 @@ public sealed partial class V2rayRuntime
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
 
-        return await CompleteCoreAffectingChangeAsync("inbound", fingerprint != GetCoreConfigurationFingerprint());
+        return await CompleteCoreAffectingChangeAsync("inbound", fingerprint != GetCoreConfigurationFingerprint(), applyContext);
     }
 
     public async Task<OperationView> UpdateCoreSettingsAsync(CoreSettingsInput input)
@@ -278,6 +282,8 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("fragment_setting_invalid", ApiMessageKeys.SettingsInvalidFragment);
         }
 
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
@@ -306,7 +312,7 @@ public sealed partial class V2rayRuntime
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
 
-        return await CompleteCoreAffectingChangeAsync("core", fingerprint != GetCoreConfigurationFingerprint());
+        return await CompleteCoreAffectingChangeAsync("core", fingerprint != GetCoreConfigurationFingerprint(), applyContext);
     }
 
     public async Task<OperationView> UpdateAppSettingsAsync(AppSettingsInput input)
@@ -375,6 +381,8 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("core_type_mapping_invalid", ApiMessageKeys.CommonInvalidInput);
         }
 
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
@@ -389,7 +397,7 @@ public sealed partial class V2rayRuntime
             }
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
-        return await CompleteCoreAffectingChangeAsync("core-types", fingerprint != GetCoreConfigurationFingerprint());
+        return await CompleteCoreAffectingChangeAsync("core-types", fingerprint != GetCoreConfigurationFingerprint(), applyContext);
     }
 
     private void EnsureCoreTypeMappings()
@@ -412,6 +420,8 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("routing_strategy_invalid", ApiMessageKeys.SettingsInvalidRoutingStrategy);
         }
 
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
@@ -419,20 +429,22 @@ public sealed partial class V2rayRuntime
             Config.RoutingBasicItem.DomainStrategy4Singbox = input.DomainStrategy4Singbox!;
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
-        return await CompleteCoreAffectingChangeAsync("routing", fingerprint != GetCoreConfigurationFingerprint());
+        return await CompleteCoreAffectingChangeAsync("routing", fingerprint != GetCoreConfigurationFingerprint(), applyContext);
     }
 
     public Task<SimpleDNSItem> GetSimpleDNSAsync() => Task.FromResult(Config.SimpleDNSItem);
 
     public async Task<OperationView> UpdateSimpleDNSAsync(SimpleDNSItem input)
     {
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
             Config.SimpleDNSItem = input;
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
-        return await CompleteCoreAffectingChangeAsync("dns", fingerprint != GetCoreConfigurationFingerprint());
+        return await CompleteCoreAffectingChangeAsync("dns", fingerprint != GetCoreConfigurationFingerprint(), applyContext);
     }
 
     public async Task<IReadOnlyList<DnsProfileView>> GetDnsProfilesAsync() =>
@@ -443,6 +455,8 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> UpdateDnsProfileAsync(ECoreType coreType, DnsProfileInput input)
     {
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var result = await _mutations.RunAsync(async () =>
         {
             var current = await AppManager.Instance.GetDNSItem(coreType);
@@ -478,7 +492,7 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("dns_profile_save_failed", ApiMessageKeys.DnsSaveFailed);
         }
-        return await CompleteCoreAffectingChangeAsync("dns", result.Changed, data: new { coreType = coreType.ToString() });
+        return await CompleteCoreAffectingChangeAsync("dns", result.Changed, applyContext, data: new { coreType = coreType.ToString() });
     }
 
     public async Task<IReadOnlyList<RoutingItem>> GetRoutingProfilesAsync() => await AppManager.Instance.RoutingItems() ?? [];
@@ -500,6 +514,8 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("routing_rules_json_invalid", ApiMessageKeys.RoutingRulesInvalid);
         }
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var save = await _mutations.RunAsync(async () =>
         {
             RoutingItem item;
@@ -562,12 +578,14 @@ public sealed partial class V2rayRuntime
             return OperationView.Fail("routing_profile_save_failed", ApiMessageKeys.RoutingSaveFailed);
         }
 
-        return await CompleteCoreAffectingChangeAsync("routing-profiles", save.Changed && save.Item.IsActive,
+        return await CompleteCoreAffectingChangeAsync("routing-profiles", save.Changed && save.Item.IsActive, applyContext,
             data: new { routingId = save.Item.Id });
     }
 
     public async Task<OperationView> DeleteRoutingProfileAsync(string id)
     {
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var removed = await _mutations.RunAsync(async () =>
         {
             var item = await AppManager.Instance.GetRoutingItem(id);
@@ -599,12 +617,14 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("routing_profile_not_found", ApiMessageKeys.RoutingProfileNotFound);
         }
-        return await CompleteCoreAffectingChangeAsync("routing-profiles", removed.AffectsCore,
+        return await CompleteCoreAffectingChangeAsync("routing-profiles", removed.AffectsCore, applyContext,
             ApiMessageKeys.CommonDeleted, new { routingId = id });
     }
 
     public async Task<OperationView> ActivateRoutingProfileAsync(string id)
     {
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var result = await _mutations.RunAsync(async () =>
         {
             var item = await AppManager.Instance.GetRoutingItem(id);
@@ -623,7 +643,7 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("routing_profile_activate_failed", ApiMessageKeys.RoutingSaveFailed);
         }
-        return await CompleteCoreAffectingChangeAsync("routing-profiles", result.Changed,
+        return await CompleteCoreAffectingChangeAsync("routing-profiles", result.Changed, applyContext,
             ApiMessageKeys.CommonCompleted, new { routingId = id });
     }
 
@@ -635,6 +655,8 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> SaveRoutingRulesAsync(string routingId, IEnumerable<RulesItem> rules)
     {
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var items = rules.ToArray();
         var before = await AppManager.Instance.GetRoutingItem(routingId);
         var changed = before is not null && before.IsActive
@@ -648,7 +670,7 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed);
         }
-        return await CompleteCoreAffectingChangeAsync("routing-rules", changed, data: new { routingId });
+        return await CompleteCoreAffectingChangeAsync("routing-rules", changed, applyContext, data: new { routingId });
     }
 
     private static async Task<int> SaveRoutingRulesLockedAsync(string routingId, IReadOnlyList<RulesItem> rules)
@@ -684,6 +706,8 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("routing_rules_json_invalid", ApiMessageKeys.RoutingRulesInvalid);
         }
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var activeBefore = await AppManager.Instance.GetRoutingItem(routingId);
         var beforeRuleSet = activeBefore?.RuleSet;
         var saved = await _mutations.RunAsync(async () =>
@@ -711,7 +735,7 @@ public sealed partial class V2rayRuntime
         }
         var activeAfter = await AppManager.Instance.GetRoutingItem(routingId);
         var changed = activeBefore?.IsActive == true && activeAfter?.RuleSet != beforeRuleSet;
-        return await CompleteCoreAffectingChangeAsync("routing-rules", changed, data: new { routingId });
+        return await CompleteCoreAffectingChangeAsync("routing-rules", changed, applyContext, data: new { routingId });
     }
 
     public async Task<OperationView> ImportRoutingRulesFromUrlAsync(string routingId, bool append, CancellationToken cancellationToken)
@@ -739,6 +763,8 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> MoveRoutingRuleAsync(string routingId, string ruleId, EMove direction, int position)
     {
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var routeWasActive = (await AppManager.Instance.GetRoutingItem(routingId))?.IsActive == true;
         var result = await _mutations.RunAsync(async () =>
         {
@@ -769,11 +795,13 @@ public sealed partial class V2rayRuntime
                 _ => OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed),
             };
         }
-        return await CompleteCoreAffectingChangeAsync("routing-rules", routeWasActive, data: new { routingId });
+        return await CompleteCoreAffectingChangeAsync("routing-rules", routeWasActive, applyContext, data: new { routingId });
     }
 
     public async Task<OperationView> DeleteRoutingRuleAsync(string routingId, string ruleId)
     {
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var routeWasActive = (await AppManager.Instance.GetRoutingItem(routingId))?.IsActive == true;
         var result = await _mutations.RunAsync(async () =>
         {
@@ -798,18 +826,20 @@ public sealed partial class V2rayRuntime
                 _ => OperationView.Fail("routing_rules_save_failed", ApiMessageKeys.RoutingSaveFailed),
             };
         }
-        return await CompleteCoreAffectingChangeAsync("routing-rules", routeWasActive, data: new { routingId });
+        return await CompleteCoreAffectingChangeAsync("routing-rules", routeWasActive, applyContext, data: new { routingId });
     }
 
     public async Task<OperationView> ImportRoutingProfilesAsync()
     {
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var before = await GetActiveRoutingSignatureAsync();
         var result = await _mutations.RunAsync(() => ConfigHandler.InitRouting(Config, true));
         if (result != 0)
         {
             return OperationView.Fail("routing_import_failed", ApiMessageKeys.RoutingSaveFailed);
         }
-        return await CompleteCoreAffectingChangeAsync("routing-profiles", before != await GetActiveRoutingSignatureAsync(),
+        return await CompleteCoreAffectingChangeAsync("routing-profiles", before != await GetActiveRoutingSignatureAsync(), applyContext,
             ApiMessageKeys.CommonCompleted);
     }
 
@@ -820,6 +850,8 @@ public sealed partial class V2rayRuntime
 
     public async Task<OperationView> SaveFullConfigTemplateAsync(ECoreType coreType, CoreConfigTemplateInput input)
     {
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var existingBefore = await AppManager.Instance.GetFullConfigTemplateItem(coreType);
         var changed = existingBefore is not null
             && (existingBefore.Remarks != (input.Remarks ?? existingBefore.Remarks)
@@ -857,6 +889,7 @@ public sealed partial class V2rayRuntime
         }
         return await CompleteCoreAffectingChangeAsync("core-template",
             changed && CurrentCoreRuntime.CoreType == coreType,
+            applyContext,
             data: new { coreType = coreType.ToString() });
     }
 
@@ -866,6 +899,8 @@ public sealed partial class V2rayRuntime
         {
             return OperationView.Fail("regional_preset_invalid", ApiMessageKeys.RegionalPresetInvalid);
         }
+        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        if (applyContext.Failure is { } applyFailure) return applyFailure;
         var success = await _mutations.RunAsync(async () =>
         {
             if (!await ConfigHandler.ApplyRegionalPreset(Config, preset))
@@ -884,6 +919,7 @@ public sealed partial class V2rayRuntime
         if (success)
         {
             return await CompleteCoreAffectingChangeAsync("regional-preset", true,
+                applyContext,
                 ApiMessageKeys.CommonCompleted, new { preset = preset.ToString() });
         }
         return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
@@ -999,29 +1035,42 @@ public sealed partial class V2rayRuntime
     private async Task<OperationView> CompleteCoreAffectingChangeAsync(
         string section,
         bool changed,
+        CoreSettingsApplyContext context,
         string successMessageKey = ApiMessageKeys.CommonSaved,
         object? data = null)
     {
-        var restarted = false;
-        var wasRunning = changed && CurrentCoreRuntime.State == CoreRuntimeState.Running;
-        if (wasRunning)
+        var runtime = CurrentCoreRuntime;
+        var hasActiveChild = CoreManager.Instance.HasActiveCoreProcesses;
+        var action = CoreSettingsApplyPolicy.Decide(runtime.State, hasActiveChild, changed);
+        if (action is CoreSettingsApplyAction.Busy or CoreSettingsApplyAction.Inconsistent)
         {
-            var restart = await RestartCoreAsync(CancellationToken.None);
+            var failure = action == CoreSettingsApplyAction.Busy
+                ? OperationView.Fail("core_runtime_busy", ApiMessageKeys.CoreRuntimeBusy,
+                    new { runtimeState = runtime.State.ToString().ToLowerInvariant() })
+                : OperationView.Fail("core_runtime_faulted", ApiMessageKeys.SettingsCoreApplyFailed,
+                    new { runtimeState = runtime.State.ToString().ToLowerInvariant(), processIds = CoreManager.Instance.ActiveProcessIds });
+            var rollback = await RollBackCoreSettingsAsync(context, failure.Code);
+            return CreateSettingsApplyFailure(section, data, failure.Code, ApiMessageKeys.SettingsCoreApplyFailed,
+                rollback.ConfigRestored, rollback.RolledBack, rollback.OldRuntimeRestored, rollback.Detail);
+        }
+
+        if (action == CoreSettingsApplyAction.SaveOnly && runtime.State == CoreRuntimeState.Faulted)
+        {
+            // A faulted runtime with no child is not serving stale configuration. Normalize
+            // the empty runtime to Stopped so the UI does not imply an active Core.
+            SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
+        }
+
+        var restarted = false;
+        if (action == CoreSettingsApplyAction.Restart)
+        {
+            var restart = await RestartCoreLockedAsync(CancellationToken.None);
             if (!restart.Success)
             {
-                var runtime = CurrentCoreRuntime;
-                var failureData = ToResultDictionary(data);
-                failureData["section"] = section;
-                failureData["configSaved"] = true;
-                failureData["restartRequired"] = true;
-                failureData["runtimeState"] = runtime.State.ToString().ToLowerInvariant();
-                failureData["configuredProxyPort"] = Config.Inbound.FirstOrDefault()?.LocalPort;
-                failureData["runningProxyPort"] = runtime.ProxyPort;
-                failureData["coreResultCode"] = restart.Code;
-                failureData["detail"] = runtime.LastFailure;
-                _events.Publish("settings-changed", new { section, restartRequired = true, restartFailed = true });
-                AddLog("settings", $"Settings for {section} were saved but Core apply failed: {restart.Code}; {runtime.LastFailure}");
-                return OperationView.Fail("settings_core_apply_failed", ApiMessageKeys.SettingsCoreApplyFailed, failureData);
+                AddLog("settings", $"Settings for {section} failed to apply: {restart.Code}; {CurrentCoreRuntime.LastFailure}");
+                var rollback = await RollBackCoreSettingsAsync(context, restart.Code);
+                return CreateSettingsApplyFailure(section, data, restart.Code, ApiMessageKeys.SettingsCoreApplyFailed,
+                    rollback.ConfigRestored, rollback.RolledBack, rollback.OldRuntimeRestored, rollback.Detail);
             }
             restarted = true;
         }
@@ -1032,6 +1081,139 @@ public sealed partial class V2rayRuntime
         resultData["coreRestarted"] = restarted;
         resultData["restartRequired"] = false;
         return OperationView.Ok(restarted ? ApiMessageKeys.CoreRestarted : successMessageKey, resultData);
+    }
+
+    private async Task<CoreSettingsApplyContext> BeginCoreSettingsApplyAsync()
+    {
+        await _coreGate.WaitAsync();
+        try
+        {
+            var oldConfig = JsonUtils.DeepCopy(Config)
+                ?? throw new InvalidOperationException("The current configuration could not be copied for a Core settings apply.");
+            var oldRuntime = CurrentCoreRuntime;
+            var hasActiveChild = CoreManager.Instance.HasActiveCoreProcesses;
+            var action = CoreSettingsApplyPolicy.Decide(oldRuntime.State, hasActiveChild, changed: false);
+            var failure = action switch
+            {
+                CoreSettingsApplyAction.Busy => OperationView.Fail("core_runtime_busy", ApiMessageKeys.CoreRuntimeBusy,
+                    new { runtimeState = oldRuntime.State.ToString().ToLowerInvariant() }),
+                CoreSettingsApplyAction.Inconsistent => OperationView.Fail("core_runtime_faulted", ApiMessageKeys.SettingsCoreApplyFailed,
+                    new { runtimeState = oldRuntime.State.ToString().ToLowerInvariant(), processIds = CoreManager.Instance.ActiveProcessIds }),
+                _ => null,
+            };
+            var oldRoutingItems = failure is null ? await AppManager.Instance.RoutingItems() ?? [] : [];
+            var oldDnsItems = failure is null ? await AppManager.Instance.DNSItems() ?? [] : [];
+            var oldFullConfigTemplates = failure is null ? await AppManager.Instance.FullConfigTemplateItem() ?? [] : [];
+            return new CoreSettingsApplyContext(_coreGate, oldConfig, oldRuntime, hasActiveChild,
+                oldRoutingItems.ToArray(), oldDnsItems.ToArray(), oldFullConfigTemplates.ToArray(), failure);
+        }
+        catch
+        {
+            _coreGate.Release();
+            throw;
+        }
+    }
+
+    private async Task<CoreSettingsRollbackResult> RollBackCoreSettingsAsync(CoreSettingsApplyContext context, string failureCode)
+    {
+        var configRestored = false;
+        try
+        {
+            RestoreConfigValues(Config, context.OldConfig);
+            await _mutations.RunAsync(() => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)));
+            configRestored = true;
+            await _mutations.RunAsync(async () =>
+            {
+                await SQLiteHelper.Instance.DeleteAllAsync<RoutingItem>();
+                if (await SQLiteHelper.Instance.InsertAllAsync(context.OldRoutingItems) != context.OldRoutingItems.Length)
+                    throw new IOException("Routing profiles could not be restored from the settings snapshot.");
+                await SQLiteHelper.Instance.DeleteAllAsync<DNSItem>();
+                if (await SQLiteHelper.Instance.InsertAllAsync(context.OldDnsItems) != context.OldDnsItems.Length)
+                    throw new IOException("DNS profiles could not be restored from the settings snapshot.");
+                await SQLiteHelper.Instance.DeleteAllAsync<FullConfigTemplateItem>();
+                if (await SQLiteHelper.Instance.InsertAllAsync(context.OldFullConfigTemplates) != context.OldFullConfigTemplates.Length)
+                    throw new IOException("Core templates could not be restored from the settings snapshot.");
+            });
+            AppManager.Instance.Reset();
+
+            var current = CurrentCoreRuntime;
+            if (context.HadActiveChild
+                && current.State == CoreRuntimeState.Running
+                && CoreManager.Instance.HasActiveCoreProcesses)
+            {
+                AddLog("settings", $"Core settings apply failed ({failureCode}); the original Core remained healthy and its previous configuration was restored.");
+                return new(true, true, true, null);
+            }
+
+            if (CoreManager.Instance.HasActiveCoreProcesses || current.State != CoreRuntimeState.Stopped)
+            {
+                var stop = await StopCoreLockedAsync(CancellationToken.None);
+                if (!stop.Success)
+                {
+                    throw new InvalidOperationException($"Could not stop the failed Core before rollback: {stop.Code}.");
+                }
+            }
+
+            if (!context.HadActiveChild)
+            {
+                SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
+                AddLog("settings", $"Core settings apply failed ({failureCode}); the original stopped runtime intent was restored.");
+                return new(true, true, true, null);
+            }
+
+            await CoreManager.Instance.Init(Config, OnCoreMessageAsync);
+            var oldProfileId = context.OldRuntime.ProfileId ?? Config.IndexId;
+            var oldProfile = await AppManager.Instance.GetProfileItem(oldProfileId)
+                ?? throw new InvalidOperationException($"The previous Core profile {oldProfileId} no longer exists.");
+            var restored = await StartCoreLockedAsync(oldProfile, CancellationToken.None);
+            if (!restored.Success)
+            {
+                throw new InvalidOperationException($"The previous Core runtime could not be restored ({restored.Code}).");
+            }
+
+            AddLog("settings", $"Core settings apply failed ({failureCode}); the previous configuration and Core runtime were restored.");
+            return new(true, true, true, null);
+        }
+        catch (Exception exception)
+        {
+            var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+            SetCoreRuntime(CurrentCoreRuntime with
+            {
+                State = CoreRuntimeState.Faulted,
+                ProcessIds = processIds,
+                LastFailure = $"Settings apply failed ({failureCode}); rollback failed: {exception.Message}",
+            });
+            AddLog("settings", $"Settings rollback failed after {failureCode}: {exception}");
+            return new(false, false, configRestored, exception.Message);
+        }
+    }
+
+    private OperationView CreateSettingsApplyFailure(
+        string section,
+        object? data,
+        string? failureCode,
+        string messageKey,
+        bool configRestored,
+        bool rolledBack,
+        bool oldRuntimeRestored,
+        string? rollbackDetail)
+    {
+        var runtime = CurrentCoreRuntime;
+        var failureData = ToResultDictionary(data);
+        failureData["section"] = section;
+        failureData["configSaved"] = !configRestored;
+        failureData["configRestored"] = configRestored;
+        failureData["restartRequired"] = true;
+        failureData["rolledBack"] = rolledBack;
+        failureData["oldRuntimeRestored"] = oldRuntimeRestored;
+        failureData["runtimeState"] = runtime.State.ToString().ToLowerInvariant();
+        failureData["configuredProxyPort"] = Config.Inbound.FirstOrDefault()?.LocalPort;
+        failureData["runningProxyPort"] = runtime.ProxyPort;
+        failureData["coreResultCode"] = failureCode;
+        failureData["detail"] = runtime.LastFailure;
+        failureData["rollbackDetail"] = rollbackDetail;
+        _events.Publish("settings-changed", new { section, restartRequired = true, restartFailed = true, rolledBack, oldRuntimeRestored });
+        return OperationView.Fail("settings_core_apply_failed", messageKey, failureData);
     }
 
     private static Dictionary<string, object?> ToResultDictionary(object? data)
@@ -1109,4 +1291,33 @@ public sealed partial class V2rayRuntime
             }
         }
     }
+
+    private sealed class CoreSettingsApplyContext(
+        SemaphoreSlim gate,
+        Config oldConfig,
+        CoreRuntimeSnapshot oldRuntime,
+        bool hadActiveChild,
+        RoutingItem[] oldRoutingItems,
+        DNSItem[] oldDnsItems,
+        FullConfigTemplateItem[] oldFullConfigTemplates,
+        OperationView? failure) : IAsyncDisposable
+    {
+        private int _disposed;
+
+        public Config OldConfig { get; } = oldConfig;
+        public CoreRuntimeSnapshot OldRuntime { get; } = oldRuntime;
+        public bool HadActiveChild { get; } = hadActiveChild;
+        public RoutingItem[] OldRoutingItems { get; } = oldRoutingItems;
+        public DNSItem[] OldDnsItems { get; } = oldDnsItems;
+        public FullConfigTemplateItem[] OldFullConfigTemplates { get; } = oldFullConfigTemplates;
+        public OperationView? Failure { get; } = failure;
+
+        public ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0) gate.Release();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed record CoreSettingsRollbackResult(bool RolledBack, bool OldRuntimeRestored, bool ConfigRestored, string? Detail);
 }

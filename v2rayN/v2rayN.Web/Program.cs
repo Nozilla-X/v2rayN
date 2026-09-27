@@ -16,6 +16,11 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--apply-web-update")
+        {
+            return await NativeWebUpdateHelper.RunAsync(args[1]);
+        }
+
         PrepareDataScope();
 
         var environment = ReadEnvironment();

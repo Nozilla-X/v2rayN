@@ -29,6 +29,37 @@ const activeTab = ref('updates')
         </div>
       </div>
 
+      <div class="form-section update-section web-app-update">
+        <div class="section-heading">
+          <div>
+            <h2>{{ t('maintenance.webApp') }}</h2>
+            <small v-if="state.updateSettings.webTarget">{{ t('maintenance.webCurrentVersion', { version: state.updateSettings.webTarget.version }) }}</small>
+            <small v-if="state.updateSettings.webTarget?.latestVersion">{{ t('maintenance.webLatestVersion', { version: state.updateSettings.webTarget.latestVersion }) }}</small>
+            <small v-if="state.updateSettings.webTarget">{{ t('maintenance.webBuildIdentity', {
+              commit: state.updateSettings.webTarget.commit,
+              buildDate: state.updateSettings.webTarget.buildDate,
+              rid: state.updateSettings.webTarget.rid,
+              deployment: state.updateSettings.webTarget.deployment,
+            }) }}</small>
+            <small v-if="state.updateSettings.webTarget?.installReasonKey" class="field-hint">{{ t(state.updateSettings.webTarget.installReasonKey) }}</small>
+          </div>
+          <span v-if="state.updateResults['v2rayN.Web']?.updateAvailable" class="update-state">{{ t('maintenance.updateAvailable', { version: state.updateResults['v2rayN.Web'].latestVersion }) }}</span>
+          <span v-else-if="state.updateResults['v2rayN.Web'] && !state.updateResults['v2rayN.Web'].updateAvailable" class="muted">{{ t('maintenance.upToDateGeneric') }}</span>
+        </div>
+        <div class="update-core-row">
+          <label class="check-inline"><UiCheckbox v-model="state.updateSettings.webSelected" :disabled="!state.updateSettings.webTarget?.isSupported" />{{ t('maintenance.includeWebUpdate') }}</label>
+          <span v-if="state.updateProgress['v2rayN.Web'] && !state.updateProgress['v2rayN.Web'].isComplete" class="update-state">{{ t(`maintenance.phase.${state.updateProgress['v2rayN.Web'].phase}`) }}</span>
+          <span v-else-if="state.updateProgress['v2rayN.Web']?.isComplete" :class="state.updateProgress['v2rayN.Web'].success ? 'update-state' : 'danger-note'">{{ t(state.updateProgress['v2rayN.Web'].success ? 'maintenance.phase.completed' : 'maintenance.phase.failed') }}</span>
+        </div>
+        <p v-if="state.updateProgress['v2rayN.Web']?.detail" class="field-hint update-detail">{{ state.updateProgress['v2rayN.Web'].detail }}</p>
+        <p v-if="state.updateProgress['v2rayN.Web']?.isComplete && state.updateProgress['v2rayN.Web'].success === false && state.updateProgress['v2rayN.Web'].rollbackSucceeded !== null && state.updateProgress['v2rayN.Web'].rollbackSucceeded !== undefined" class="field-hint update-detail">{{ t(state.updateProgress['v2rayN.Web'].rollbackSucceeded ? 'maintenance.webRollbackSucceeded' : 'maintenance.webRollbackFailed') }}</p>
+        <p v-if="state.updateResults['v2rayN.Web']?.detail" class="field-hint update-detail">{{ state.updateResults['v2rayN.Web'].detail }}</p>
+        <div class="button-row">
+          <button class="button" :disabled="!state.updateSettings.webTarget?.canCheck || state.operations.includes('core-update-batch') || state.operations.includes('web-update')" @click="actions.checkWebUpdate">{{ t('maintenance.checkWebUpdate') }}</button>
+          <button class="button primary" :disabled="!state.updateSettings.webSelected || !state.updateSettings.webTarget?.canInstall || state.operations.includes('core-update-batch') || state.operations.includes('web-update')" @click="actions.updateWeb">{{ t('maintenance.installWebUpdate') }}</button>
+        </div>
+      </div>
+
       <div v-for="target in state.updateSettings.targets" :key="target.coreType" class="form-section update-section">
         <div class="section-heading">
           <div><h2>{{ t(target.nameKey) }}</h2><small v-if="target.unsupportedReasonKey">{{ t(target.unsupportedReasonKey) }}</small></div>

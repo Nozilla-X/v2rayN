@@ -5,7 +5,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>false</InvariantGlobalization>
     <DefaultItemExcludes>$(DefaultItemExcludes);.NET/**;Tests/**;publish/**</DefaultItemExcludes>
+    <WebVersion Condition="'$(WebVersion)' == ''">7.25.2-web.0</WebVersion>
+    <WebCommit Condition="'$(WebCommit)' == ''">unknown</WebCommit>
+    <WebBuildDate Condition="'$(WebBuildDate)' == ''">unknown</WebBuildDate>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="WebVersion" Value="$(WebVersion)" />
+    <AssemblyMetadata Include="WebCommit" Value="$(WebCommit)" />
+    <AssemblyMetadata Include="WebBuildDate" Value="$(WebBuildDate)" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="NLog" />

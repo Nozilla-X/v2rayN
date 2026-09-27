@@ -18,6 +18,7 @@ namespace v2rayN.Web.Services;
 public sealed partial class V2rayRuntime
 {
     private const string GeoFilesUpdateTarget = "GeoFiles";
+    private const string WebUpdateTarget = "v2rayN.Web";
     private readonly object _updateTaskGate = new();
     private readonly ConcurrentDictionary<ECoreType, Task> _coreUpdateTasks = new();
     private readonly ConcurrentDictionary<string, CoreUpdateProgressView> _updateProgress = new(StringComparer.Ordinal);
@@ -60,12 +61,20 @@ public sealed partial class V2rayRuntime
     }
 
     public IReadOnlyList<CoreUpdateProgressView> GetCoreUpdateProgress() =>
-        _updateProgress.Values.OrderBy(item => item.CoreType, StringComparer.Ordinal).ToArray();
+        _updateProgress.Values
+            .Append(GetWebUpdateProgress())
+            .Where(item => item is not null)
+            .Select(item => item!)
+            .GroupBy(item => item.CoreType, StringComparer.Ordinal)
+            .Select(group => group.Last())
+            .OrderBy(item => item.CoreType, StringComparer.Ordinal)
+            .ToArray();
 
     public async Task<OperationView> SaveCoreUpdateSettingsAsync(CoreUpdateSettingsInput input)
     {
         var supportedNames = GetAvailableWebCoreUpdateTypes()
             .Select(type => type.ToString())
+            .Append(WebUpdateTarget)
             .ToHashSet(StringComparer.Ordinal);
         var requestedNames = (input.SelectedCoreTypes ?? [])
             .Distinct(StringComparer.Ordinal)
@@ -170,14 +179,19 @@ public sealed partial class V2rayRuntime
     public OperationView StartSelectedCoreUpdateBatch(bool apply)
     {
         var selected = Config.CheckUpdateItem.SelectedCoreTypes;
+        var webSupported = WebBuildIdentity.Current.Rid is "linux-x64" or "linux-arm64";
         var selectedNames = selected is null
-            ? GetAvailableWebCoreUpdateTypes().Select(coreType => coreType.ToString()).Append(GeoFilesUpdateTarget).ToArray()
+            ? GetAvailableWebCoreUpdateTypes().Select(coreType => coreType.ToString())
+                .Append(GeoFilesUpdateTarget)
+                .Concat(webSupported ? [WebUpdateTarget] : [])
+                .ToArray()
             : selected.ToArray();
         var targets = GetAvailableWebCoreUpdateTypes()
             .Where(coreType => selectedNames.Contains(coreType.ToString(), StringComparer.Ordinal))
             .ToArray();
         var includeGeoFiles = selectedNames.Contains(GeoFilesUpdateTarget, StringComparer.Ordinal);
-        if (targets.Length == 0 && !includeGeoFiles)
+        var includeWeb = webSupported && selectedNames.Contains(WebUpdateTarget, StringComparer.Ordinal);
+        if (targets.Length == 0 && !includeGeoFiles && !includeWeb)
         {
             return OperationView.Fail("core_update_batch_empty", ApiMessageKeys.CommonInvalidInput);
         }
@@ -192,6 +206,7 @@ public sealed partial class V2rayRuntime
             _coreUpdateBatchTask = Task.Run(() => RunSelectedCoreUpdateBatchAsync(
                 targets,
                 includeGeoFiles,
+                includeWeb,
                 apply,
                 Config.CheckUpdateItem.CheckPreReleaseUpdate,
                 Config.CheckUpdateItem.UpdateViaProxy));
@@ -199,6 +214,7 @@ public sealed partial class V2rayRuntime
 
         var targetNames = targets.Select(coreType => coreType.ToString()).ToList();
         if (includeGeoFiles) targetNames.Add(GeoFilesUpdateTarget);
+        if (includeWeb) targetNames.Add(WebUpdateTarget);
         return OperationView.Ok(ApiMessageKeys.CoreUpdateBatchStarted, new { apply, targets = targetNames });
     }
 
@@ -235,6 +251,10 @@ public sealed partial class V2rayRuntime
             {
                 operations.Add("geo-update");
             }
+            if (_webUpdateTask is { IsCompleted: false })
+            {
+                operations.Add("web-update");
+            }
             if (_coreUpdateBatchTask is { IsCompleted: false })
             {
                 operations.Add("core-update-batch");
@@ -246,11 +266,13 @@ public sealed partial class V2rayRuntime
     private bool IsUpdateRunningLocked() =>
         _coreUpdateTasks.Values.Any(task => !task.IsCompleted)
         || _geoUpdateTask is { IsCompleted: false }
+        || _webUpdateTask is { IsCompleted: false }
         || _coreUpdateBatchTask is { IsCompleted: false };
 
     private async Task RunSelectedCoreUpdateBatchAsync(
         IReadOnlyList<ECoreType> coreTypes,
         bool includeGeoFiles,
+        bool includeWeb,
         bool apply,
         bool preRelease,
         bool useProxy)
@@ -258,6 +280,9 @@ public sealed partial class V2rayRuntime
         var staged = new List<CoreUpdateStage>();
         var overallSuccess = true;
         var currentTarget = string.Empty;
+        GeoFileUpdateStage? geoStage = null;
+        UpdateService? geoUpdater = null;
+        WebUpdateStage? webStage = null;
         try
         {
             // Holding the runtime's exclusive mutation lease prevents a restore or profile
@@ -312,13 +337,44 @@ public sealed partial class V2rayRuntime
                 }
             }
 
+            WebUpdateReleaseCheck? webCheck = null;
+            if (includeWeb)
+            {
+                currentTarget = WebUpdateTarget;
+                PublishWebUpdateProgress("checking", false, false, null, batch: true);
+                webCheck = await CheckWebUpdateReleaseAsync(preRelease, useProxy, token);
+                Volatile.Write(ref _latestWebUpdateVersion, webCheck.Version);
+                if (!string.IsNullOrEmpty(webCheck.Error))
+                {
+                    overallSuccess = false;
+                    PublishWebUpdateProgress("failed", true, false, webCheck.Error, webCheck.Version, batch: true);
+                }
+                else if (!webCheck.IsUpdateAvailable)
+                {
+                    PublishWebUpdateProgress("completed", true, true, webCheck.Detail ?? "The Web application is up to date.",
+                        webCheck.Version, batch: true);
+                }
+                else if (!apply)
+                {
+                    var detail = CanInstallWebUpdate()
+                        ? "An update is available."
+                        : $"An update is available; {GetWebUpdateInstallReasonKey()}";
+                    PublishWebUpdateProgress("completed", true, true, detail, webCheck.Version, batch: true);
+                }
+                else if (!CanInstallWebUpdate())
+                {
+                    overallSuccess = false;
+                    PublishWebUpdateProgress("failed", true, false, GetWebUpdateInstallReasonKey(), webCheck.Version, batch: true);
+                }
+            }
+
             if (!apply)
             {
                 _events.Publish("core-update-batch-completed", new { success = overallSuccess, apply = false });
                 return;
             }
 
-            if (checks.Any(item => item.CheckFailed))
+            if (checks.Any(item => item.CheckFailed) || webCheck is { Error: { Length: > 0 } })
             {
                 overallSuccess = false;
                 foreach (var item in checks.Where(item => !item.CheckFailed && !item.IsUpToDate))
@@ -329,6 +385,11 @@ public sealed partial class V2rayRuntime
                 if (includeGeoFiles)
                 {
                     PublishGeoUpdateProgress("failed", true, false, "No updates were installed because a selected update check failed.", batch: true);
+                }
+                if (webCheck is { Error: { Length: > 0 } })
+                {
+                    PublishWebUpdateProgress("failed", true, false, "No updates were installed because a selected update check failed.",
+                        webCheck.Version, batch: true);
                 }
                 _events.Publish("core-update-batch-completed", new { success = false, apply = true });
                 return;
@@ -346,7 +407,8 @@ public sealed partial class V2rayRuntime
                 }
                 targetsToStage = targetsToStage.Where(item => CanInstallCoreUpdate(item.CoreType)).ToArray();
             }
-            if (targetsToStage.Length == 0 && !includeGeoFiles)
+            var shouldInstallWeb = includeWeb && webCheck is { IsUpdateAvailable: true } && CanInstallWebUpdate();
+            if (targetsToStage.Length == 0 && !includeGeoFiles && !shouldInstallWeb)
             {
                 _events.Publish("core-update-batch-completed", new { success = overallSuccess, apply = true });
                 return;
@@ -355,24 +417,32 @@ public sealed partial class V2rayRuntime
             // ServiceLib downloads GeoFiles to temporary paths and then moves them into
             // place before returning. Finish that network work while the serving Core is
             // still available, after all Core packages have been staged.
-            async Task UpdateGeoFilesBeforeCoreApplyAsync()
+            async Task PrepareAdditionalUpdatesBeforeCoreApplyAsync()
             {
-                currentTarget = GeoFilesUpdateTarget;
-                PublishGeoUpdateProgress("downloading", false, false, null, batch: true);
-                var geoUpdater = new UpdateService(Config, (success, message) =>
+                if (includeGeoFiles)
                 {
-                    AddLog("update", message);
-                    _events.Publish("geo-update-progress", new
+                    currentTarget = GeoFilesUpdateTarget;
+                    PublishGeoUpdateProgress("downloading", false, false, null, batch: true);
+                    geoUpdater = new UpdateService(Config, (success, message) =>
                     {
-                        success,
-                        code = success ? "ok" : "geo_update_progress",
-                        messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
-                        rawLog = message,
+                        AddLog("update", message);
+                        _events.Publish("geo-update-progress", new
+                        {
+                            success,
+                            code = success ? "ok" : "geo_update_progress",
+                            messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
+                            rawLog = message,
+                        });
+                        return Task.CompletedTask;
                     });
-                    return Task.CompletedTask;
-                });
-                await geoUpdater.UpdateGeoFileAll(useProxy, token);
-                PublishGeoUpdateProgress("completed", true, true, null, batch: true);
+                    geoStage = await geoUpdater.StageGeoFileAllAsync(useProxy, token);
+                    PublishGeoUpdateProgress("staged", false, true, "GeoFiles were downloaded before Core shutdown.", batch: true);
+                }
+                if (shouldInstallWeb && webCheck is { } availableWebCheck)
+                {
+                    currentTarget = WebUpdateTarget;
+                    webStage = await StageWebUpdateAsync(availableWebCheck, useProxy, token, batch: true);
+                }
             }
 
             await CoreUpdateWorkflow.StageAllThenApplyAsync(
@@ -408,9 +478,26 @@ public sealed partial class V2rayRuntime
                             result.Detail,
                             batch: true);
                     }
+                    if (geoStage is not null && geoUpdater is not null)
+                    {
+                        currentTarget = GeoFilesUpdateTarget;
+                        PublishGeoUpdateProgress("installing", false, false, null, batch: true);
+                        await geoUpdater.ApplyGeoFileStageAsync(geoStage, token);
+                        geoStage = null;
+                        PublishGeoUpdateProgress("completed", true, true, null, batch: true);
+                    }
                     return true;
                 },
-                includeGeoFiles ? UpdateGeoFilesBeforeCoreApplyAsync : null);
+                includeGeoFiles || shouldInstallWeb ? PrepareAdditionalUpdatesBeforeCoreApplyAsync : null);
+
+            if (webStage is not null)
+            {
+                currentTarget = WebUpdateTarget;
+                await ApplyStagedWebUpdateAsync(webStage, token, batch: true);
+                // The helper takes over only after every selected Core/Geo package has
+                // completed its apply phase; no remaining batch work follows the restart.
+                return;
+            }
 
             _events.Publish("core-update-batch-completed", new { success = overallSuccess, apply = true });
         }
@@ -420,6 +507,10 @@ public sealed partial class V2rayRuntime
             if (currentTarget == GeoFilesUpdateTarget)
             {
                 PublishGeoUpdateProgress("failed", true, false, "Canceled during graceful shutdown.", batch: true);
+            }
+            else if (currentTarget == WebUpdateTarget)
+            {
+                PublishWebUpdateProgress("failed", true, false, "Canceled during graceful shutdown.", batch: true);
             }
             else if (Enum.TryParse<ECoreType>(currentTarget, out var coreType))
             {
@@ -440,6 +531,10 @@ public sealed partial class V2rayRuntime
             {
                 PublishGeoUpdateProgress("failed", true, false, exception.Message, batch: true);
             }
+            else if (currentTarget == WebUpdateTarget)
+            {
+                PublishWebUpdateProgress("failed", true, false, exception.Message, batch: true);
+            }
             foreach (var notApplied in staged)
             {
                 var progress = _updateProgress.GetValueOrDefault(notApplied.CoreType.ToString());
@@ -454,6 +549,8 @@ public sealed partial class V2rayRuntime
         }
         finally
         {
+            if (geoStage is not null) geoUpdater?.DiscardGeoFileStage(geoStage);
+            CleanupWebUpdateStage(webStage);
             foreach (var stage in staged) CleanupCoreUpdateStage(stage);
             lock (_updateTaskGate)
             {
@@ -466,7 +563,8 @@ public sealed partial class V2rayRuntime
     {
         var manager = CoreInfoManager.Instance;
         return manager.GetCheckUpdateCoreTypes()
-            .Where(coreType => manager.IsCheckUpdateSupported(coreType)
+            .Where(coreType => coreType != ECoreType.v2rayN
+                && manager.IsCheckUpdateSupported(coreType)
                 && manager.GetCoreInfo(coreType) is { } coreInfo
                 && IsCurrentPlatformDownloadSupported(coreInfo))
             .ToArray();
@@ -475,7 +573,8 @@ public sealed partial class V2rayRuntime
     private bool CanCheckCoreUpdate(ECoreType coreType)
     {
         var manager = CoreInfoManager.Instance;
-        return manager.GetCheckUpdateCoreTypes().Contains(coreType)
+        return coreType != ECoreType.v2rayN
+            && manager.GetCheckUpdateCoreTypes().Contains(coreType)
             && manager.IsCheckUpdateSupported(coreType)
             && manager.GetCoreInfo(coreType) is { } coreInfo
             && IsCurrentPlatformDownloadSupported(coreInfo);

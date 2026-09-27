@@ -296,7 +296,33 @@ public sealed record CoreUpdateProgressView(
     bool CoreWasRunning,
     string? Version,
     string? Detail,
-    bool Batch = false);
+    bool Batch = false,
+    bool? RollbackSucceeded = null);
+
+public sealed record WebUpdateTargetView(
+    string Name,
+    string Version,
+    string Commit,
+    string BuildDate,
+    string Rid,
+    string Deployment,
+    bool IsSupported,
+    bool CanCheck,
+    bool CanInstall,
+    bool Selected,
+    string? InstallReasonKey,
+    string? LatestVersion = null);
+
+public sealed record WebUpdateCheckView(
+    bool UpdateAvailable,
+    string CurrentVersion,
+    string CurrentCommit,
+    string Rid,
+    string? LatestVersion,
+    string? LatestCommit,
+    bool CanInstall,
+    string? InstallReasonKey,
+    string? Detail = null);
 
 public sealed record WebDavSettingsView(string? Url, string? UserName, string? DirName, bool HasPassword);
 
@@ -347,6 +373,8 @@ public static class ApiMessageKeys
     public const string CoreStartFailed = "core.startFailed";
     public const string CoreStopFailed = "core.stopFailed";
     public const string CoreNotRunning = "core.notRunning";
+    public const string CoreRuntimeBusy = "core.runtimeBusy";
+    public const string WebUpdateCheckFailed = "maintenance.webUpdateCheckFailed";
     public const string CoreBinaryMissing = "core.binaryMissing";
     public const string CorePortInUse = "core.portInUse";
     public const string CoreTunNotSupported = "core.tunNotSupported";
@@ -463,7 +491,11 @@ public sealed record StatusView(
     string? RunningProfileName = null,
     int? ApiPort = null,
     int[]? CoreProcessIds = null,
-    string? RuntimeFailure = null);
+    string? RuntimeFailure = null,
+    string? WebVersion = null,
+    string? GitCommit = null,
+    string? RuntimeIdentifier = null,
+    string? WebBuildDate = null);
 
 public sealed record LogView(DateTimeOffset Timestamp, string Source, string Message, long Generation = 0);
 

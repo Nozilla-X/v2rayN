@@ -166,7 +166,7 @@ public sealed partial class V2rayRuntime
         var databaseClosed = false;
         RuntimeOperationCoordinator.Lease? operation = null;
         var restoreStateWritten = false;
-        RestoreRuntimeIntent? restoreState = null;
+        RuntimeRestartIntent? restoreState = null;
         try
         {
             operation = await _operations.EnterExclusiveAsync(cancellationToken);
@@ -196,7 +196,7 @@ public sealed partial class V2rayRuntime
             }
 
             var previousRuntime = CurrentCoreRuntime;
-            restoreState = new RestoreRuntimeIntent(
+            restoreState = new RuntimeRestartIntent(
                 previousRuntime.State == CoreRuntimeState.Running,
                 previousRuntime.ProfileId);
             await WriteRestoreRuntimeStateAsync(restoreState);
@@ -350,13 +350,19 @@ public sealed partial class V2rayRuntime
     }
 
     private static string RestoreRuntimeStatePath => Path.Combine(Utils.StartupPath(), RestoreRuntimeStateFileName);
+    internal static string WebUpdateRuntimeStatePath => Utils.GetTempPath("web-update-runtime-state.json");
 
-    private static async Task WriteRestoreRuntimeStateAsync(RestoreRuntimeIntent state)
+    private static async Task WriteRestoreRuntimeStateAsync(RuntimeRestartIntent state)
     {
-        var path = RestoreRuntimeStatePath;
+        await WriteRuntimeIntentAsync(RestoreRuntimeStatePath, state);
+    }
+
+    internal static async Task WriteRuntimeIntentAsync(string path, RuntimeRestartIntent state)
+    {
         var temporary = path + $".{Guid.NewGuid():N}.tmp";
         try
         {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             await File.WriteAllTextAsync(temporary, JsonSerializer.Serialize(state));
             File.Move(temporary, path, overwrite: true);
         }
@@ -366,16 +372,17 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private static Task<RestoreRuntimeIntent?> ConsumeRestoreRuntimeStateAsync(CancellationToken cancellationToken) =>
-        ConsumeRestoreRuntimeStateAsync(RestoreRuntimeStatePath, cancellationToken);
+    private static Task<RuntimeRestartIntent?> LoadRestoreRuntimeStateAsync(CancellationToken cancellationToken) =>
+        LoadRuntimeRestartIntentAsync(RestoreRuntimeStatePath, cancellationToken);
 
-    internal static async Task<RestoreRuntimeIntent?> ConsumeRestoreRuntimeStateAsync(string path, CancellationToken cancellationToken)
+    internal static async Task<RuntimeRestartIntent?> LoadRuntimeRestartIntentAsync(string path, CancellationToken cancellationToken)
     {
-        CleanupAbandonedRestoreRuntimeClaims(path);
-        var claimedPath = path + $".consuming-{Environment.ProcessId}-{Guid.NewGuid():N}";
+        RequeueAbandonedRestoreRuntimeClaim(path);
         try
         {
-            File.Move(path, claimedPath);
+            if (!File.Exists(path)) return null;
+            var json = await File.ReadAllTextAsync(path, cancellationToken);
+            return JsonSerializer.Deserialize<RuntimeRestartIntent>(json);
         }
         catch (FileNotFoundException)
         {
@@ -385,37 +392,32 @@ public sealed partial class V2rayRuntime
         {
             return null;
         }
-        catch (IOException exception)
-        {
-            Logging.SaveLog("Restore runtime-state marker could not be claimed: " + exception.Message);
-            return null;
-        }
-
-        try
-        {
-            var json = await File.ReadAllTextAsync(claimedPath, cancellationToken);
-            return JsonSerializer.Deserialize<RestoreRuntimeIntent>(json);
-        }
         catch (Exception exception) when (exception is IOException or JsonException)
         {
             Logging.SaveLog("Restore runtime-state marker could not be read: " + exception.Message);
             return null;
         }
-        finally
-        {
-            try
-            {
-                if (File.Exists(claimedPath)) File.Delete(claimedPath);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                Logging.SaveLog("Claimed restore runtime-state marker could not be removed: " + exception.Message);
-            }
-        }
     }
 
-    private static void CleanupAbandonedRestoreRuntimeClaims(string path)
+    internal static Task CommitRestoreRuntimeStateAsync() => CommitRestoreRuntimeStateAsync(RestoreRuntimeStatePath);
+
+    internal static Task CommitRestoreRuntimeStateAsync(string path)
     {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+            DeleteRestoreRuntimeClaims(path);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Logging.SaveLog("Committed restore runtime-state marker could not be removed: " + exception.Message);
+        }
+        return Task.CompletedTask;
+    }
+
+    private static void RequeueAbandonedRestoreRuntimeClaim(string path)
+    {
+        if (File.Exists(path)) return;
         var directory = Path.GetDirectoryName(path);
         if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory)) return;
         try
@@ -425,30 +427,54 @@ public sealed partial class V2rayRuntime
             {
                 try
                 {
-                    File.Delete(abandonedClaim);
+                    File.Move(abandonedClaim, path);
+                    Logging.SaveLog("Recovered an interrupted restore runtime-state marker claim.");
+                    return;
                 }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                catch (IOException) when (File.Exists(path))
                 {
-                    Logging.SaveLog("Abandoned restore runtime-state claim could not be removed: " + exception.Message);
+                    return;
                 }
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            Logging.SaveLog("Abandoned restore runtime-state claims could not be enumerated: " + exception.Message);
+            Logging.SaveLog("Abandoned restore runtime-state claim could not be recovered: " + exception.Message);
         }
     }
 
-    private static void TryDeleteRestoreRuntimeState()
+    private static void DeleteRestoreRuntimeClaims(string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory)) return;
+        try
+        {
+            var pattern = Path.GetFileName(path) + ".consuming-*";
+            foreach (var claim in Directory.EnumerateFiles(directory, pattern, SearchOption.TopDirectoryOnly))
+            {
+                File.Delete(claim);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Logging.SaveLog("Committed abandoned restore runtime-state claims could not be removed: " + exception.Message);
+        }
+    }
+
+    private static void TryDeleteRestoreRuntimeState() =>
+        _ = CommitRestoreRuntimeStateAsync(RestoreRuntimeStatePath);
+
+    internal static Task DeleteRuntimeIntentAsync(string path)
     {
         try
         {
-            if (File.Exists(RestoreRuntimeStatePath)) File.Delete(RestoreRuntimeStatePath);
+            if (File.Exists(path)) File.Delete(path);
         }
-        catch (Exception exception)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            Logging.SaveLog("Restore runtime-state marker could not be removed: " + exception.Message);
+            Logging.SaveLog("Runtime restart intent could not be removed: " + exception.Message);
         }
+        return Task.CompletedTask;
     }
 
     private async Task WaitForRestoreShutdownRequestAsync(CancellationToken cancellationToken)

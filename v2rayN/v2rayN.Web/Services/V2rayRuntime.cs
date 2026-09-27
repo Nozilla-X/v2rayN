@@ -1,4 +1,6 @@
 using System.Net.Sockets;
+using System.Net;
+using System.Net.NetworkInformation;
 using ServiceLib;
 using ServiceLib.Common;
 using ServiceLib.Enums;
@@ -53,6 +55,8 @@ public sealed partial class V2rayRuntime(
     public bool RestoreAndRestartRequested => Volatile.Read(ref _restoreAndRestartRequested) != 0;
 
     public int[] GetCoreProcessIds() => CoreManager.Instance.ActiveProcessIds.ToArray();
+
+    public string? GetCoreRuntimeProfileId() => CurrentCoreRuntime.ProfileId;
 
     public string GetCoreRuntimeState() => CurrentCoreRuntime.State.ToString().ToLowerInvariant();
 
@@ -160,7 +164,12 @@ public sealed partial class V2rayRuntime(
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
-        var restoreState = await ConsumeRestoreRuntimeStateAsync(cancellationToken);
+        var restoreState = await LoadRestoreRuntimeStateAsync(cancellationToken);
+        var updateStatePath = WebUpdateRuntimeStatePath;
+        var updateRuntimeState = restoreState is null
+            ? await LoadRuntimeRestartIntentAsync(updateStatePath, cancellationToken)
+            : null;
+        var startupRuntimeIntent = restoreState ?? updateRuntimeState;
         if (!AppManager.Instance.InitApp())
         {
             throw new InvalidOperationException("ServiceLib could not load its configuration.");
@@ -208,7 +217,7 @@ public sealed partial class V2rayRuntime(
             AddLog("restore", "The selected subscription group no longer exists; normalized the selection to all profiles.");
             Config.SubIndexId = normalizedSubIndexId;
         }
-        var restoredSelectedProfileId = Config.IndexId;
+        var selectedProfileId = Config.IndexId;
         var defaultProfile = await ConfigHandler.GetDefaultServer(Config);
         await _mutations.RunAsync(() => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)));
         await ProfileExManager.Instance.Init();
@@ -229,18 +238,22 @@ public sealed partial class V2rayRuntime(
         AddLog("web", "serviceLib.initialized");
         StartScheduledOperations(cancellationToken);
 
-        if (restoreState is not null)
+        if (startupRuntimeIntent is not null)
         {
-            await RestoreRuntimeRecovery.RecoverAsync(
-                restoreState,
-                restoredSelectedProfileId,
+            await RuntimeRestartRecovery.RecoverAsync(
+                startupRuntimeIntent,
+                selectedProfileId,
                 defaultProfile?.IndexId,
                 async (profileId, _) => await AppManager.Instance.GetProfileItem(profileId) is not null,
                 StartCoreAsync,
-                message => AddLog("restore", message),
+                message => AddLog(restoreState is not null ? "restore" : "update", message),
                 cancellationToken);
+            if (restoreState is not null)
+            {
+                await CommitRestoreRuntimeStateAsync();
+            }
         }
-        else if (RestoreRuntimeRecovery.ShouldAutoStart(restoreState, _configuration.GetValue("V2RAYN_WEB_AUTOSTART", false)))
+        else if (RuntimeRestartRecovery.ShouldAutoStart(startupRuntimeIntent, _configuration.GetValue("V2RAYN_WEB_AUTOSTART", false)))
         {
             var result = await StartCoreAsync(null, cancellationToken);
             if (!result.Success)
@@ -618,7 +631,11 @@ public sealed partial class V2rayRuntime(
             runningProfile?.Remarks,
             snapshot.ApiPort,
             processIds,
-            snapshot.LastFailure);
+            snapshot.LastFailure,
+            WebBuildIdentity.Current.Version,
+            WebBuildIdentity.Current.Commit,
+            WebBuildIdentity.Current.Rid,
+            WebBuildIdentity.Current.BuildDate);
 
     }
 
@@ -728,6 +745,24 @@ public sealed partial class V2rayRuntime(
                          .Concat(preflight.BuiltContext.CombinedValidatorResult.Warnings))
             {
                 AddLog("core-validation", message);
+            }
+        }
+
+        if (preflight.Success)
+        {
+            RuntimeListenerSnapshot[] currentlyOwnedListeners = CoreManager.Instance.HasActiveCoreProcesses
+                ? CurrentCoreRuntime.Listeners
+                : [];
+            foreach (var listener in GetConfiguredListenerSnapshots())
+            {
+                if (await IsProjectedListenerUnavailableAsync(listener, currentlyOwnedListeners, CancellationToken.None))
+                {
+                    return new CoreLaunchPreflightResult(
+                        preflight.Profile,
+                        preflight.BuiltContext,
+                        OperationView.Fail("proxy_port_in_use", ApiMessageKeys.CorePortInUse,
+                            new { port = listener.Port, listener = listener.Name }));
+                }
             }
         }
 
@@ -858,44 +893,49 @@ public sealed partial class V2rayRuntime(
         await _coreGate.WaitAsync(cancellationToken);
         try
         {
-            if (CurrentCoreRuntime.State == CoreRuntimeState.Stopped && !CoreManager.Instance.HasActiveCoreProcesses)
-            {
-                return OperationView.Ok(ApiMessageKeys.CoreStopped);
-            }
-
-            SetCoreRuntime(CurrentCoreRuntime with { State = CoreRuntimeState.Stopping, LastFailure = null });
-            try
-            {
-                await StopCoreMonitorAsync();
-                await CoreManager.Instance.CoreStopGracefully(cancellationToken);
-                var remaining = CoreManager.Instance.ActiveProcessIds.ToArray();
-                if (remaining.Length > 0)
-                {
-                    throw new InvalidOperationException($"Core child processes remain after graceful stop: {string.Join(",", remaining)}.");
-                }
-                SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
-                AddLog("core", ApiMessageKeys.CoreStopped);
-                _events.Publish("status", await GetStatusAsync());
-                return OperationView.Ok(ApiMessageKeys.CoreStopped);
-            }
-            catch (Exception exception)
-            {
-                var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
-                SetCoreRuntime(CurrentCoreRuntime with
-                {
-                    State = CoreRuntimeState.Faulted,
-                    ProcessIds = processIds,
-                    LastFailure = exception.Message,
-                });
-                AddLog("core", $"Core graceful stop failed: {exception}");
-                _events.Publish("status", await GetStatusAsync());
-                return OperationView.Fail("core_stop_failed", ApiMessageKeys.CoreStopFailed,
-                    new { detail = exception.Message, processIds });
-            }
+            return await StopCoreLockedAsync(cancellationToken);
         }
         finally
         {
             _coreGate.Release();
+        }
+    }
+
+    private async Task<OperationView> StopCoreLockedAsync(CancellationToken cancellationToken)
+    {
+        if (CurrentCoreRuntime.State == CoreRuntimeState.Stopped && !CoreManager.Instance.HasActiveCoreProcesses)
+        {
+            return OperationView.Ok(ApiMessageKeys.CoreStopped);
+        }
+
+        SetCoreRuntime(CurrentCoreRuntime with { State = CoreRuntimeState.Stopping, LastFailure = null });
+        try
+        {
+            await StopCoreMonitorAsync();
+            await CoreManager.Instance.CoreStopGracefully(cancellationToken);
+            var remaining = CoreManager.Instance.ActiveProcessIds.ToArray();
+            if (remaining.Length > 0)
+            {
+                throw new InvalidOperationException($"Core child processes remain after graceful stop: {string.Join(",", remaining)}.");
+            }
+            SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
+            AddLog("core", ApiMessageKeys.CoreStopped);
+            _events.Publish("status", await GetStatusAsync());
+            return OperationView.Ok(ApiMessageKeys.CoreStopped);
+        }
+        catch (Exception exception)
+        {
+            var processIds = CoreManager.Instance.ActiveProcessIds.ToArray();
+            SetCoreRuntime(CurrentCoreRuntime with
+            {
+                State = CoreRuntimeState.Faulted,
+                ProcessIds = processIds,
+                LastFailure = exception.Message,
+            });
+            AddLog("core", $"Core graceful stop failed: {exception}");
+            _events.Publish("status", await GetStatusAsync());
+            return OperationView.Fail("core_stop_failed", ApiMessageKeys.CoreStopFailed,
+                new { detail = exception.Message, processIds });
         }
     }
 
@@ -904,11 +944,24 @@ public sealed partial class V2rayRuntime(
         await _coreGate.WaitAsync(cancellationToken);
         try
         {
-            var previous = CurrentCoreRuntime;
-            if (previous.State != CoreRuntimeState.Running || string.IsNullOrEmpty(previous.ProfileId))
+            return await RestartCoreLockedAsync(cancellationToken);
+        }
+        finally
+        {
+            _coreGate.Release();
+        }
+    }
+
+    private async Task<OperationView> RestartCoreLockedAsync(CancellationToken cancellationToken)
+    {
+        var previous = CurrentCoreRuntime;
+            var recoveringFaultedChild = previous.State == CoreRuntimeState.Faulted
+                && CoreManager.Instance.HasActiveCoreProcesses;
+            if ((previous.State != CoreRuntimeState.Running && !recoveringFaultedChild)
+                || string.IsNullOrEmpty(previous.ProfileId))
             {
                 return OperationView.Fail("core_not_running", ApiMessageKeys.CoreNotRunning,
-                    new { runtimeState = previous.State.ToString() });
+                    new { runtimeState = previous.State.ToString(), processIds = CoreManager.Instance.ActiveProcessIds });
             }
 
             var profile = await AppManager.Instance.GetProfileItem(previous.ProfileId);
@@ -962,11 +1015,6 @@ public sealed partial class V2rayRuntime(
                     : OperationView.Fail("core_restart_failed", ApiMessageKeys.CoreStartFailed,
                         new { stage = restartStage, detail = exception.Message, processIds });
             }
-        }
-        finally
-        {
-            _coreGate.Release();
-        }
     }
 
     public async Task<OperationView> StartLatencyTestAsync(string profileId)
@@ -1161,14 +1209,15 @@ public sealed partial class V2rayRuntime(
         }
 
         var listeners = new List<RuntimeListenerSnapshot>();
+        string[] localProtocols = inbound.UdpEnabled ? ["http", "socks", "udp"] : ["http", "socks"];
         var localAddress = inbound.AllowLANConn && !inbound.NewPort4LAN ? "0.0.0.0" : "127.0.0.1";
-        listeners.Add(new RuntimeListenerSnapshot("local", ["http", "socks"], localAddress, inbound.LocalPort));
+        listeners.Add(new RuntimeListenerSnapshot("local", localProtocols, localAddress, inbound.LocalPort));
         if (inbound.SecondLocalPortEnabled)
         {
             var secondaryPort = AppManager.Instance.GetLocalPort(EInboundProtocol.socks2);
             if (secondaryPort is > 0 and <= 65535)
             {
-                listeners.Add(new RuntimeListenerSnapshot("local-secondary", ["http", "socks"], "127.0.0.1", secondaryPort));
+                listeners.Add(new RuntimeListenerSnapshot("local-secondary", localProtocols, "127.0.0.1", secondaryPort));
             }
         }
         if (inbound.AllowLANConn && inbound.NewPort4LAN)
@@ -1176,7 +1225,7 @@ public sealed partial class V2rayRuntime(
             var lanPort = AppManager.Instance.GetLocalPort(EInboundProtocol.socks3);
             if (lanPort is > 0 and <= 65535)
             {
-                listeners.Add(new RuntimeListenerSnapshot("lan", ["http", "socks"], "0.0.0.0", lanPort));
+                listeners.Add(new RuntimeListenerSnapshot("lan", localProtocols, "0.0.0.0", lanPort));
             }
         }
         return listeners.ToArray();
@@ -1234,6 +1283,102 @@ public sealed partial class V2rayRuntime(
             throw;
         }
         catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> IsProjectedListenerUnavailableAsync(
+        RuntimeListenerSnapshot target,
+        IReadOnlyCollection<RuntimeListenerSnapshot> runtimeOwned,
+        CancellationToken cancellationToken)
+    {
+        foreach (var address in GetProbeAddresses(target.ListenAddress))
+        {
+            var ownsTcp = runtimeOwned.Any(listener => listener.Port == target.Port
+                && ListenerOwnsAddress(listener.ListenAddress, address));
+            if (!ownsTcp
+                && (await IsListeningOnAddressAsync(address, target.Port, cancellationToken)
+                    || !CanBind(address, target.Port, SocketType.Stream, ProtocolType.Tcp)))
+            {
+                return true;
+            }
+            var targetUsesUdp = target.Protocols.Contains("udp", StringComparer.OrdinalIgnoreCase);
+            var ownsUdp = runtimeOwned.Any(listener => listener.Port == target.Port
+                && listener.Protocols.Contains("udp", StringComparer.OrdinalIgnoreCase)
+                && ListenerOwnsAddress(listener.ListenAddress, address));
+            if (targetUsesUdp && !ownsUdp
+                && !CanBind(address, target.Port, SocketType.Dgram, ProtocolType.Udp))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static IPAddress[] GetProbeAddresses(string listenAddress)
+    {
+        if (IPAddress.TryParse(listenAddress, out var explicitAddress)
+            && !explicitAddress.Equals(IPAddress.Any))
+        {
+            return [explicitAddress];
+        }
+
+        var addresses = new HashSet<IPAddress> { IPAddress.Loopback };
+        foreach (var network in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (network.OperationalStatus != OperationalStatus.Up) continue;
+            foreach (var address in network.GetIPProperties().UnicastAddresses
+                         .Select(item => item.Address)
+                         .Where(address => address.AddressFamily == AddressFamily.InterNetwork))
+            {
+                addresses.Add(address);
+            }
+        }
+        return addresses.ToArray();
+    }
+
+    private static bool ListenerOwnsAddress(string listenAddress, IPAddress address) =>
+        IPAddress.TryParse(listenAddress, out var parsed)
+        && (parsed.Equals(IPAddress.Any) || parsed.Equals(address));
+
+    private static async Task<bool> IsListeningOnAddressAsync(IPAddress address, int port, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var client = new TcpClient(address.AddressFamily);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromMilliseconds(250));
+            await client.ConnectAsync(address, port, timeout.Token);
+            return true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool CanBind(IPAddress address, int port, SocketType socketType, ProtocolType protocolType)
+    {
+        try
+        {
+            using var socket = new Socket(address.AddressFamily, socketType, protocolType)
+            {
+                ExclusiveAddressUse = true,
+            };
+            socket.Bind(new IPEndPoint(address, port));
+            if (socketType == SocketType.Stream) socket.Listen(1);
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
         {
             return false;
         }

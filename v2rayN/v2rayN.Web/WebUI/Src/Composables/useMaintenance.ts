@@ -20,14 +20,15 @@ export function useMaintenance(options: ApiServices & {
   const updateProgress = ref<Record<string, Dict>>({})
 
   async function loadMaintenance() {
-    const [webdav, updates, progress] = await Promise.all([
+    const [webdav, updates, progress, webTarget] = await Promise.all([
       options.data('/api/settings/webdav'),
       options.data('/api/core-updates'),
       options.data('/api/core-updates/progress'),
+      options.data('/api/web-updates'),
       options.loadOperations(),
     ])
     webdavForm.value = { ...webdav, password: '' }
-    updateSettings.value = { ...updates }
+    updateSettings.value = { ...updates, webTarget, webSelected: Boolean(webTarget?.selected) }
     updateProgress.value = Object.fromEntries((progress || []).map((item: Dict) => [item.coreType, item]))
   }
 
@@ -67,6 +68,7 @@ export function useMaintenance(options: ApiServices & {
         .filter((target: Dict) => target.selected)
         .map((target: Dict) => target.coreType)
       if (updateSettings.value.geoFilesSelected) selectedCoreTypes.push('GeoFiles')
+      if (updateSettings.value.webSelected) selectedCoreTypes.push('v2rayN.Web')
       const result = await options.request('/api/core-updates/settings', {
         method: 'PUT',
         body: {
@@ -103,6 +105,27 @@ export function useMaintenance(options: ApiServices & {
     try {
       if (!await persistUpdateSettings(false)) return
       const result = await options.request(`/api/core-updates/${encodeURIComponent(coreType)}/update`, { method: 'POST' })
+      options.showNotice(options.operationMessage(result, 'maintenance.updateStarted'))
+      await options.loadOperations()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function checkWebUpdate() {
+    try {
+      const result = await options.request('/api/web-updates/check')
+      const check = result.data || {}
+      updateResults.value = { ...updateResults.value, 'v2rayN.Web': check }
+      options.showNotice(check.updateAvailable
+        ? t('maintenance.updateAvailable', { version: check.latestVersion })
+        : check.detail || options.translateKey(result.messageKey), check.updateAvailable ? 'info' : 'success')
+      await loadMaintenance()
+    } catch (error) { options.showError(error) }
+  }
+
+  async function updateWeb() {
+    try {
+      if (!await persistUpdateSettings(false)) return
+      const result = await options.request('/api/web-updates/update', { method: 'POST' })
       options.showNotice(options.operationMessage(result, 'maintenance.updateStarted'))
       await options.loadOperations()
     } catch (error) { options.showError(error) }
@@ -198,7 +221,7 @@ export function useMaintenance(options: ApiServices & {
     webdavForm, updateSettings, updateResults, updateProgress, loadMaintenance, loadCoreUpdateProgress,
     recordCoreUpdateProgress, notifyCoreUpdateBatchComplete, notifyGeoUpdateComplete, maintenancePageState,
     maintenancePageActions: {
-      checkCoreUpdate, updateCore, runSelectedUpdateBatch, saveUpdateSettings, updateGeo, clearStatistics, saveWebdav,
+      checkCoreUpdate, updateCore, checkWebUpdate, updateWeb, runSelectedUpdateBatch, saveUpdateSettings, updateGeo, clearStatistics, saveWebdav,
       webdavAction, downloadBackup, uploadRestore, loadMaintenance, loadOperations: options.loadOperations,
     },
   }

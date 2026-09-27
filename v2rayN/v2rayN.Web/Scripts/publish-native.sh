@@ -35,6 +35,13 @@ esac
 
 export NUGET_PACKAGES="${NUGET_PACKAGES:-$repo_root/.packages/nuget}"
 export npm_config_cache="${npm_config_cache:-$repo_root/.packages/npm-cache}"
+web_version="${V2RAYN_WEB_VERSION:-7.25.2-web.0}"
+web_commit="${V2RAYN_WEB_COMMIT:-$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || printf unknown)}"
+web_build_date="${V2RAYN_WEB_BUILD_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+if [[ ! "$web_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-web\.[0-9]+$ ]]; then
+  printf 'Invalid Web version identity: %s\n' "$web_version" >&2
+  exit 2
+fi
 
 npm ci --prefix "$webui_root"
 npm run build --prefix "$webui_root"
@@ -44,9 +51,26 @@ npm run build --prefix "$webui_root"
   --self-contained true \
   -p:PublishSingleFile=true \
   -p:IncludeNativeLibrariesForSelfExtract=true \
+  -p:WebVersion="$web_version" \
+  -p:WebCommit="$web_commit" \
+  -p:WebBuildDate="$web_build_date" \
   --output "$output_dir"
 
 mkdir -p "$output_dir/wwwroot"
 cp -a "$webui_root/dist/." "$output_dir/wwwroot/"
+python3 - "$output_dir/v2rayN.Web.build.json" "$web_version" "$web_commit" "$web_build_date" "$rid" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, version, commit, build_date, rid = sys.argv[1:]
+Path(path).write_text(json.dumps({
+    "product": "v2rayN.Web",
+    "version": version,
+    "commit": commit,
+    "buildDate": build_date,
+    "rid": rid,
+}, separators=(",", ":")) + "\n", encoding="utf-8")
+PY
 test -x "$output_dir/v2rayN.Web"
 printf 'Native publish ready: %s\n' "$output_dir/v2rayN.Web"

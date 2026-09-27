@@ -14,7 +14,9 @@ public sealed record WebHealthProbeResult(
     int? InstanceProcessId,
     string? ShutdownStage = null,
     IReadOnlyList<int>? CoreProcessIds = null,
-    string? CoreState = null);
+    string? CoreState = null,
+    string? WebVersion = null,
+    string? CoreProfileId = null);
 
 public interface IBrowserOpener
 {
@@ -54,7 +56,14 @@ public sealed class HttpWebHealthProbe : IWebHealthProbe
             var coreState = response.Headers.TryGetValues("X-v2rayn-web-core-state", out var stateValues)
                 ? stateValues.FirstOrDefault()
                 : null;
-            return new WebHealthProbeResult(response.IsSuccessStatusCode, instanceProcessId, shutdownStage, coreProcessIds, coreState);
+            var webVersion = response.Headers.TryGetValues("X-v2rayn-web-version", out var versionValues)
+                ? versionValues.FirstOrDefault()
+                : null;
+            var coreProfileId = response.Headers.TryGetValues("X-v2rayn-web-core-profile-id", out var profileValues)
+                ? profileValues.FirstOrDefault()
+                : null;
+            return new WebHealthProbeResult(response.IsSuccessStatusCode, instanceProcessId, shutdownStage,
+                coreProcessIds, coreState, webVersion, coreProfileId);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
         {

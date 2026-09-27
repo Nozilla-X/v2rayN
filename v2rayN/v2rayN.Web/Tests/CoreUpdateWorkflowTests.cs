@@ -174,6 +174,38 @@ public class CoreUpdateWorkflowTests
     }
 
     [Test]
+    public async Task SelectedBatchStagesWebWithOtherTargetsAndAppliesItOnlyAfterCoreAndGeo()
+    {
+        var sequence = new List<string>();
+        await CoreUpdateWorkflow.StageAllThenApplyAsync(
+            new[] { "Xray", "sing-box" },
+            target =>
+            {
+                sequence.Add($"stage:{target}");
+                return Task.FromResult(target);
+            },
+            stages =>
+            {
+                sequence.AddRange(stages.Select(stage => $"apply:{stage}"));
+                sequence.Add("apply:GeoFiles");
+                return Task.FromResult(true);
+            },
+            () =>
+            {
+                sequence.Add("stage:GeoFiles");
+                sequence.Add("stage:v2rayN.Web");
+                return Task.CompletedTask;
+            });
+        sequence.Add("apply:v2rayN.Web");
+
+        await sequence.SequenceEqual(new[]
+        {
+            "stage:Xray", "stage:sing-box", "stage:GeoFiles", "stage:v2rayN.Web",
+            "apply:Xray", "apply:sing-box", "apply:GeoFiles", "apply:v2rayN.Web",
+        }).Should().BeTrue();
+    }
+
+    [Test]
     public async Task ApplyFailureRestoresThePreviousBinaryBeforeRestartingTheOldCore()
     {
         using var directory = new TemporaryDirectory();

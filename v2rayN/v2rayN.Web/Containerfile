@@ -1,4 +1,7 @@
 ARG RID=linux-x64
+ARG WEB_VERSION=7.25.2-web.0
+ARG WEB_COMMIT=unknown
+ARG WEB_BUILD_DATE=unknown
 
 FROM --platform=$BUILDPLATFORM docker.io/library/node:22-bookworm-slim AS webui
 WORKDIR /src
@@ -16,6 +19,9 @@ RUN sh /usr/local/bin/fetch-core-bundle "$RID" /out/bin
 
 FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS publish
 ARG RID
+ARG WEB_VERSION
+ARG WEB_COMMIT
+ARG WEB_BUILD_DATE
 WORKDIR /src
 COPY v2rayN/ ./v2rayN/
 RUN NUGET_PACKAGES=/src/.packages/nuget dotnet publish v2rayN/v2rayN.Web/v2rayN.Web.csproj \
@@ -24,6 +30,9 @@ RUN NUGET_PACKAGES=/src/.packages/nuget dotnet publish v2rayN/v2rayN.Web/v2rayN.
     --self-contained true \
     -p:PublishSingleFile=true \
     -p:IncludeNativeLibrariesForSelfExtract=true \
+    -p:WebVersion="$WEB_VERSION" \
+    -p:WebCommit="$WEB_COMMIT" \
+    -p:WebBuildDate="$WEB_BUILD_DATE" \
     --output /out \
     && mkdir -p /runtime-data
 COPY --from=webui /src/v2rayN/v2rayN.Web/WebUI/dist/ /out/wwwroot/

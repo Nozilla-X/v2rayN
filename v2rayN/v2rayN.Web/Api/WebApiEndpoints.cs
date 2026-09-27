@@ -21,8 +21,10 @@ public static class WebApiEndpoints
         app.MapGet("/api/health", (HttpContext context, V2rayRuntime runtime) =>
         {
             context.Response.Headers["X-v2rayn-web-instance-pid"] = Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            context.Response.Headers["X-v2rayn-web-version"] = WebBuildIdentity.Current.Version;
             context.Response.Headers["X-v2rayn-web-core-state"] = runtime.GetCoreRuntimeState();
             context.Response.Headers["X-v2rayn-web-core-process-ids"] = string.Join(',', runtime.GetCoreProcessIds());
+            context.Response.Headers["X-v2rayn-web-core-profile-id"] = runtime.GetCoreRuntimeProfileId() ?? string.Empty;
             if (ShutdownDiagnostics.CurrentStage is { Length: > 0 } stage)
             {
                 context.Response.Headers["X-v2rayn-web-shutdown-stage"] = stage;
@@ -236,6 +238,14 @@ public static class WebApiEndpoints
     {
         app.MapGet("/api/core-updates", (V2rayRuntime runtime) =>
             ApiReplies.Ok(runtime.GetCoreUpdateSettings(), "maintenance.updatesLoaded"));
+        app.MapGet("/api/web-updates", (V2rayRuntime runtime) =>
+            ApiReplies.Ok(runtime.GetWebUpdateTarget(), "maintenance.updatesLoaded"));
+        app.MapGet("/api/web-updates/check", async (bool? preRelease, bool? useProxy, V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            Results.Ok(await runtime.CheckWebUpdateAsync(preRelease, useProxy, cancellationToken)));
+        app.MapPost("/api/web-updates/update", (bool? preRelease, bool? useProxy, V2rayRuntime runtime) =>
+            ApiReplies.Operation(runtime.StartWebUpdate(preRelease, useProxy),
+                successStatus: StatusCodes.Status202Accepted,
+                failureStatus: StatusCodes.Status409Conflict));
         app.MapGet("/api/core-updates/progress", (V2rayRuntime runtime) =>
             ApiReplies.Ok(runtime.GetCoreUpdateProgress(), "maintenance.updatesLoaded"));
         app.MapPut("/api/core-updates/settings", async (CoreUpdateSettingsInput input, V2rayRuntime runtime) =>

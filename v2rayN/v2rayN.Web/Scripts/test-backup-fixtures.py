@@ -245,13 +245,21 @@ def add_auth_file_to_web_archive(source: Path, destination: Path) -> None:
 
 def install_fake_cores(startup_path: Path) -> None:
     lifecycle_log = repr(str(startup_path / "core-lifecycle.log"))
+    ignore_term_file = repr(str(startup_path / "fake-core-ignore-term"))
+    fail_once_file = repr(str(startup_path / "fake-core-fail-once-port"))
+    fail_ports_file = repr(str(startup_path / "fake-core-fail-ports"))
     executable_source = f"""#!/usr/bin/python3
 import json, os, re, signal, socket, sys
 log_path = {lifecycle_log}
+ignore_term_file = {ignore_term_file}
+fail_once_file = {fail_once_file}
+fail_ports_file = {fail_ports_file}
 def record(event):
     with open(log_path, 'a', encoding='utf-8') as log:
         log.write(f"{{event}} {{os.getpid()}}\\n")
 def stop(signum, frame):
+    if os.path.exists(ignore_term_file):
+        return
     record('stop')
     raise SystemExit(0)
 signal.signal(signal.SIGTERM, stop)
@@ -262,6 +270,16 @@ try:
     port = int(json.loads(text)['inbounds'][0]['port'])
 except (json.JSONDecodeError, KeyError, IndexError, TypeError):
     port = int(re.search(r'(?m)^\\s*(?:mixed-port|port):\\s*(\\d+)', text).group(1))
+if os.path.exists(fail_ports_file):
+    if str(port) in open(fail_ports_file, encoding='utf-8').read().splitlines():
+        record(f'failed-launch:{{port}}')
+        raise SystemExit(19)
+if os.path.exists(fail_once_file):
+    failed_once_port = open(fail_once_file, encoding='utf-8').read().strip()
+    if failed_once_port == str(port):
+        os.unlink(fail_once_file)
+        record(f'failed-launch-once:{{port}}')
+        raise SystemExit(18)
 listener = socket.socket()
 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 listener.bind(('0.0.0.0', port))
@@ -495,7 +513,7 @@ def main() -> int:
     require(Path(DOTNET).is_file() or subprocess.call([DOTNET, "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0,
             "The configured .NET SDK was not found.")
 
-    with tempfile.TemporaryDirectory(prefix="v2rayn-backup-fixture-", dir="/tmp/opencode") as temp:
+    with tempfile.TemporaryDirectory(prefix="v2rayn-backup-fixture-") as temp:
         root = Path(temp)
         data_home = root / "data"
         host = WebHost(data_home, free_port())
@@ -555,6 +573,59 @@ def main() -> int:
             lifecycle_log = auth_path.parent.parent / "core-lifecycle.log"
             lifecycle_before = lifecycle_log.read_text().splitlines()
             settings = authorized_json(host, token, "GET", "/api/settings")
+
+            # The projected listener check must reject a conflicting port while the
+            # currently healthy Core still owns its previous listener.
+            conflict_listener = socket.socket()
+            conflict_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            conflict_listener.bind(("127.0.0.1", 0))
+            conflict_listener.listen(8)
+            try:
+                conflicting_settings = settings_apply_body(settings)
+                conflicting_settings["inbound"]["localPort"] = conflict_listener.getsockname()[1]
+                conflict_status, conflict_result = host.request("PUT", "/api/settings/apply", conflicting_settings, token)
+                conflict_data = conflict_result.get("data", {})
+                after_conflict = authorized_json(host, token, "GET", "/api/status")
+                require(conflict_status == 400 and conflict_result.get("success") is False
+                        and conflict_data.get("coreResultCode") == "proxy_port_in_use"
+                        and conflict_data.get("rolledBack") is True
+                        and conflict_data.get("configRestored") is True
+                        and conflict_data.get("configSaved") is False
+                        and conflict_data.get("oldRuntimeRestored") is True
+                        and after_conflict["coreRunning"] is True
+                        and after_conflict["coreProcessIds"] == running_status["coreProcessIds"]
+                        and after_conflict["runningProxyPort"] == running_status["runningProxyPort"]
+                        and after_conflict["configuredProxyPort"] == running_status["configuredProxyPort"]
+                        and lifecycle_log.read_text().splitlines() == lifecycle_before,
+                        "An occupied projected listener caused an unnecessary Core outage or left Config changed.")
+            finally:
+                conflict_listener.close()
+
+            udp_conflict_listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            udp_conflict_listener.bind(("127.0.0.1", 0))
+            try:
+                udp_conflicting_settings = settings_apply_body(settings)
+                udp_conflicting_settings["inbound"].update({
+                    "localPort": udp_conflict_listener.getsockname()[1],
+                    "udpEnabled": True,
+                    "secondLocalPortEnabled": False,
+                    "allowLANConn": False,
+                    "newPort4LAN": False,
+                })
+                udp_conflict_status, udp_conflict_result = host.request(
+                    "PUT", "/api/settings/apply", udp_conflicting_settings, token)
+                udp_conflict_data = udp_conflict_result.get("data", {})
+                after_udp_conflict = authorized_json(host, token, "GET", "/api/status")
+                require(udp_conflict_status == 400 and udp_conflict_result.get("success") is False
+                        and udp_conflict_data.get("coreResultCode") == "proxy_port_in_use"
+                        and udp_conflict_data.get("rolledBack") is True
+                        and after_udp_conflict["coreRunning"] is True
+                        and after_udp_conflict["coreProcessIds"] == running_status["coreProcessIds"]
+                        and lifecycle_log.read_text().splitlines() == lifecycle_before,
+                        "An occupied UDP inbound port was not rejected before stopping the old Core.")
+            finally:
+                udp_conflict_listener.close()
+
             no_change_result = apply_all_settings(host, token, settings_apply_body(settings))
             no_change_status = authorized_json(host, token, "GET", "/api/status")
             require(no_change_result.get("data", {}).get("coreRestarted") is False
@@ -585,6 +656,104 @@ def main() -> int:
                     and sum(line.startswith("stop ") for line in new_lifecycle) == 1
                     and sum(line.startswith("start:") for line in new_lifecycle) == 1,
                     "All-settings apply did not perform exactly one restart on the new actual listener port.")
+
+            # A Faulted snapshot with a still-live Core child is a recovery case, not
+            # a stopped-runtime success path. Once graceful stopping becomes available,
+            # the next Core-affecting settings mutation must recover and apply it.
+            ignore_term_file = auth_path.parent.parent / "fake-core-ignore-term"
+            ignore_term_file.write_text("ignore SIGTERM until the first timeout")
+            failed_stop_status, failed_stop = host.request("POST", "/api/core/stop", token=token)
+            ignore_term_file.unlink(missing_ok=True)
+            faulted_status = authorized_json(host, token, "GET", "/api/status")
+            require(failed_stop_status == 400 and failed_stop.get("success") is False
+                    and faulted_status["runtimeState"] == "faulted"
+                    and len(faulted_status["coreProcessIds"]) > 0,
+                    "The fake Core did not enter the Faulted-with-active-child regression state.")
+            recovered_port = free_port()
+            recovery_settings = settings_apply_body(authorized_json(host, token, "GET", "/api/settings"))
+            recovery_settings["inbound"]["localPort"] = recovered_port
+            recovery_result = apply_all_settings(host, token, recovery_settings)
+            recovered_status = authorized_json(host, token, "GET", "/api/status")
+            require(recovery_result.get("data", {}).get("coreRestarted") is True
+                    and recovered_status["runtimeState"] == "running"
+                    and recovered_status["coreRunning"] is True
+                    and recovered_status["configuredProxyPort"] == recovered_port
+                    and recovered_status["runningProxyPort"] == recovered_port,
+                    "Faulted Core with a live child was reported as applied without a controlled recovery restart.")
+
+            # Active routing rows are part of the generated Core configuration too.
+            # A failed restart must restore the old SQLite routing snapshot, not only Config JSON.
+            route_profiles = authorized_json(host, token, "GET", "/api/settings/routing-profiles")
+            active_route = next(route for route in route_profiles if route["isActive"])
+            route_path = f"/api/settings/routing-profiles/{urllib.parse.quote(active_route['id'])}/rules"
+            old_active_rules = authorized_json(host, token, "GET", route_path)
+            fail_once_path = auth_path.parent.parent / "fake-core-fail-once-port"
+            fail_once_path.write_text(str(recovered_port))
+            route_status, route_apply = host.request("POST", route_path + "/import", {
+                "content": json.dumps([{
+                    "id": "fixture-route-rollback",
+                    "outboundTag": "direct",
+                    "domain": ["domain:example.invalid"],
+                    "enabled": True,
+                    "remarks": "rollback regression",
+                }]),
+                "append": False,
+            }, token)
+            after_route_rollback = authorized_json(host, token, "GET", route_path)
+            route_rollback_status = authorized_json(host, token, "GET", "/api/status")
+            require(route_status == 400 and route_apply.get("success") is False
+                    and route_apply.get("data", {}).get("rolledBack") is True
+                    and route_apply.get("data", {}).get("configRestored") is True
+                    and route_apply.get("data", {}).get("oldRuntimeRestored") is True
+                    and after_route_rollback == old_active_rules
+                    and route_rollback_status["coreRunning"] is True
+                    and route_rollback_status["runningProxyPort"] == recovered_port,
+                    "A failed active-routing restart did not restore both SQLite rows and the old Core runtime.")
+
+            # If the newly generated Core exits after old Core shutdown, the settings
+            # transaction must persist old Config and return the old proxy runtime.
+            failed_new_port = free_port()
+            fail_once_path.write_text(str(failed_new_port))
+            failed_launch_settings = settings_apply_body(authorized_json(host, token, "GET", "/api/settings"))
+            failed_launch_settings["inbound"]["localPort"] = failed_new_port
+            failed_launch_status, failed_launch = host.request(
+                "PUT", "/api/settings/apply", failed_launch_settings, token)
+            rolled_back_status = authorized_json(host, token, "GET", "/api/status")
+            rollback_data = failed_launch.get("data", {})
+            require(failed_launch_status == 400 and failed_launch.get("success") is False
+                    and rollback_data.get("coreResultCode") == "core_start_failed"
+                    and rollback_data.get("rolledBack") is True
+                    and rollback_data.get("configRestored") is True
+                    and rollback_data.get("oldRuntimeRestored") is True
+                    and rolled_back_status["coreRunning"] is True
+                    and rolled_back_status["runtimeState"] == "running"
+                    and rolled_back_status["configuredProxyPort"] == recovered_port
+                    and rolled_back_status["runningProxyPort"] == recovered_port,
+                    "A failed new Core launch did not restore the previous Config and working proxy runtime.")
+
+            # A failed rollback is not hidden: keep the old Config, expose Faulted state,
+            # and preserve both the original apply error and rollback diagnostics.
+            fail_ports_path = auth_path.parent.parent / "fake-core-fail-ports"
+            failed_new_port = free_port()
+            fail_ports_path.write_text(f"{failed_new_port}\n{recovered_port}\n")
+            rollback_failure_settings = settings_apply_body(authorized_json(host, token, "GET", "/api/settings"))
+            rollback_failure_settings["inbound"]["localPort"] = failed_new_port
+            rollback_failure_status, rollback_failure = host.request(
+                "PUT", "/api/settings/apply", rollback_failure_settings, token)
+            faulted_rollback_status = authorized_json(host, token, "GET", "/api/status")
+            rollback_failure_data = rollback_failure.get("data", {})
+            require(rollback_failure_status == 400 and rollback_failure.get("success") is False
+                    and rollback_failure_data.get("rolledBack") is False
+                    and rollback_failure_data.get("configRestored") is True
+                    and rollback_failure_data.get("oldRuntimeRestored") is False
+                    and rollback_failure_data.get("rollbackDetail")
+                    and faulted_rollback_status["runtimeState"] == "faulted"
+                    and faulted_rollback_status["configuredProxyPort"] == recovered_port,
+                    "A failed runtime rollback was not reported with explicit Faulted diagnostics.")
+            fail_ports_path.unlink(missing_ok=True)
+            start_after_rollback, start_after_rollback_result = host.request("POST", "/api/core/start", token=token)
+            require(start_after_rollback == 200 and start_after_rollback_result.get("success") is True,
+                    "The fixture Core could not recover after the rollback-failure diagnostic case.")
 
             stop_status, stop_result = host.request("POST", "/api/core/stop", token=token)
             require(stop_status == 200 and stop_result.get("success") is True,
