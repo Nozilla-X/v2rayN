@@ -105,14 +105,45 @@ public class CoreUpdateWorkflowTests
                 sequence.Add("CoreStop");
                 sequence.AddRange(stages.Select(stage => $"apply:{stage}"));
                 return Task.FromResult(stages.Count);
+            },
+            () =>
+            {
+                sequence.Add("stage:GeoFiles");
+                return Task.CompletedTask;
             });
 
         await results.Should().BeEqualTo(3);
         await sequence.SequenceEqual(new[]
         {
-            "stage:Xray", "stage:sing-box", "stage:Mihomo", "CoreStop",
+            "stage:Xray", "stage:sing-box", "stage:Mihomo", "stage:GeoFiles", "CoreStop",
             "apply:verified:Xray", "apply:verified:sing-box", "apply:verified:Mihomo",
         }).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task FailedAdditionalNetworkPreparationPreventsEveryCoreApply()
+    {
+        var applied = false;
+        var failed = false;
+        try
+        {
+            await CoreUpdateWorkflow.StageAllThenApplyAsync(
+                new[] { "Xray" },
+                target => Task.FromResult($"verified:{target}"),
+                _ =>
+                {
+                    applied = true;
+                    return Task.FromResult(true);
+                },
+                () => throw new InvalidDataException("GeoFiles staging failed."));
+        }
+        catch (InvalidDataException)
+        {
+            failed = true;
+        }
+
+        await failed.Should().BeTrue();
+        await applied.Should().BeFalse();
     }
 
     [Test]

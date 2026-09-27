@@ -46,11 +46,11 @@ public sealed partial class V2rayRuntime(
     private ServerSpeedItem? _latestTraffic;
     private bool _initialized;
     private bool _restoring;
-    private int _applicationRestartRequested;
+    private int _restoreAndRestartRequested;
 
     private Config Config => AppManager.Instance.Config;
     private CoreRuntimeSnapshot CurrentCoreRuntime => Volatile.Read(ref _coreRuntime);
-    public bool ApplicationRestartRequested => Volatile.Read(ref _applicationRestartRequested) != 0;
+    public bool RestoreAndRestartRequested => Volatile.Read(ref _restoreAndRestartRequested) != 0;
 
     public int[] GetCoreProcessIds() => CoreManager.Instance.ActiveProcessIds.ToArray();
 
@@ -160,6 +160,7 @@ public sealed partial class V2rayRuntime(
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
+        var restoreState = await ConsumeRestoreRuntimeStateAsync(cancellationToken);
         if (!AppManager.Instance.InitApp())
         {
             throw new InvalidOperationException("ServiceLib could not load its configuration.");
@@ -207,7 +208,8 @@ public sealed partial class V2rayRuntime(
             AddLog("restore", "The selected subscription group no longer exists; normalized the selection to all profiles.");
             Config.SubIndexId = normalizedSubIndexId;
         }
-        _ = await ConfigHandler.GetDefaultServer(Config);
+        var restoredSelectedProfileId = Config.IndexId;
+        var defaultProfile = await ConfigHandler.GetDefaultServer(Config);
         await _mutations.RunAsync(() => EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config)));
         await ProfileExManager.Instance.Init();
         await CertPemManager.Instance.Init(Config);
@@ -227,16 +229,18 @@ public sealed partial class V2rayRuntime(
         AddLog("web", "serviceLib.initialized");
         StartScheduledOperations(cancellationToken);
 
-        var restoreState = await ConsumeRestoreRuntimeStateAsync(cancellationToken);
-        if (restoreState is { WasRunning: true, ProfileId.Length: > 0 } priorRuntime)
+        if (restoreState is not null)
         {
-            var result = await StartCoreAsync(priorRuntime.ProfileId, cancellationToken);
-            if (!result.Success)
-            {
-                AddLog("core", $"Could not restore the pre-backup Core state: {result.Code}");
-            }
+            await RestoreRuntimeRecovery.RecoverAsync(
+                restoreState,
+                restoredSelectedProfileId,
+                defaultProfile?.IndexId,
+                async (profileId, _) => await AppManager.Instance.GetProfileItem(profileId) is not null,
+                StartCoreAsync,
+                message => AddLog("restore", message),
+                cancellationToken);
         }
-        else if (restoreState is null && _configuration.GetValue("V2RAYN_WEB_AUTOSTART", false))
+        else if (RestoreRuntimeRecovery.ShouldAutoStart(restoreState, _configuration.GetValue("V2RAYN_WEB_AUTOSTART", false)))
         {
             var result = await StartCoreAsync(null, cancellationToken);
             if (!result.Success)
@@ -250,9 +254,9 @@ public sealed partial class V2rayRuntime(
     {
         var steps = new List<ShutdownCleanupStep>
         {
-            new("scheduled restart", async deadline =>
+            new("restore shutdown request", async deadline =>
             {
-                await WaitForScheduledRestartAsync(deadline.Token);
+                await WaitForRestoreShutdownRequestAsync(deadline.Token);
                 return true;
             }),
             new("scheduled operations stop", deadline => StopScheduledOperationsAsync(deadline.Token)),

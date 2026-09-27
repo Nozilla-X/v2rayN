@@ -96,11 +96,41 @@ internal static class Program
             hostResult = await RunWebHostAsync(launchOptions.HostArguments, showForegroundPrompt);
         }
 
-        if (hostResult.RestartRequested && launchOptions.Mode == WebLaunchMode.BackgroundChild
-            && !StartNativeRestartChild(launchOptions.HostArguments))
+        // The host cleanup is complete and the old owner has disposed this lock. The
+        // handoff still verifies the lock state before allowing a replacement to start.
+        var exitAction = hostResult.RestoreAndRestartRequested
+            ? WebLifecycleAction.RestoreAndRestart
+            : WebLifecycleAction.Shutdown;
+        var lifecyclePlan = WebLifecyclePlanner.Create(
+            exitAction,
+            OperatingSystem.IsLinux(),
+            daemonEnvironment || WebStopper.IsManagedBySystemd(Environment.ProcessId),
+            containerEnvironment);
+        if (lifecyclePlan.ShouldStartReplacement)
         {
-            Console.Error.WriteLine("The Web instance stopped after restore, but the native launcher could not start its replacement process.");
-            return 1;
+            var processPath = Environment.ProcessPath;
+            var commandLine = Environment.GetCommandLineArgs();
+            var command = WebReplacementCommand.Create(
+                LinuxXdgBrowserOpener.FindExecutable("setsid"),
+                processPath,
+                WebReplacementCommand.GetManagedEntryPoint(processPath, commandLine),
+                launchOptions.HostArguments);
+            if (command is null)
+            {
+                WriteNativeRestartDiagnostic("Restore requested a native Web restart, but the executable entry point or setsid could not be resolved.");
+                return 1;
+            }
+
+            var coordinator = new NativeWebRestartCoordinator(
+                new HttpWebHealthProbe(),
+                new LinuxReplacementProcessStarter(),
+                new FileWebInstanceOwnershipProbe());
+            var handoff = await coordinator.StartReplacementAfterOwnerReleaseAsync(
+                GetInstanceLockPath(),
+                GetLauncherUris(launchOptions.HostArguments).HealthUri,
+                command);
+            WriteNativeRestartDiagnostic(handoff.Message, handoff.Success, handoff.ReplacementProcessId);
+            return handoff.Success ? hostResult.ExitCode : 1;
         }
         return hostResult.ExitCode;
     }
@@ -234,42 +264,28 @@ internal static class Program
         }
 
         await app.RunAsync();
-        return new WebHostRunResult(0, runtime.ApplicationRestartRequested);
+        return new WebHostRunResult(0, runtime.RestoreAndRestartRequested);
     }
 
-    private static bool StartNativeRestartChild(string[] hostArguments)
+    private static void WriteNativeRestartDiagnostic(string message, bool success = false, int? processId = null)
     {
-        var setsid = LinuxXdgBrowserOpener.FindExecutable("setsid");
-        var processPath = Environment.ProcessPath;
-        if (setsid is null || string.IsNullOrWhiteSpace(processPath)) return false;
-
-        var startInfo = new System.Diagnostics.ProcessStartInfo { FileName = setsid, UseShellExecute = false };
-        var commandLine = Environment.GetCommandLineArgs();
-        if (Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase)
-            && commandLine.Length > 0
-            && commandLine[0].EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-        {
-            startInfo.ArgumentList.Add(processPath);
-            startInfo.ArgumentList.Add(commandLine[0]);
-        }
-        else
-        {
-            startInfo.ArgumentList.Add(processPath);
-        }
-
-        startInfo.ArgumentList.Add(WebLaunchOptions.BackgroundChildFlag);
-        foreach (var argument in hostArguments) startInfo.ArgumentList.Add(argument);
+        var line = $"{DateTimeOffset.UtcNow:O} {(success ? "INFO" : "ERROR")} {message}"
+            + (processId.HasValue ? $" ProcessId={processId.Value}." : string.Empty)
+            + Environment.NewLine;
+        if (!success) Console.Error.WriteLine(message);
         try
         {
-            return System.Diagnostics.Process.Start(startInfo) is not null;
+            var path = Utils.GetLogPath("native-restore-restart.log");
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.AppendAllText(path, line);
         }
-        catch (Exception exception) when (exception is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            return false;
+            if (!success) Console.Error.WriteLine($"Could not persist the native restart diagnostic: {exception.Message}");
         }
     }
 
-    private sealed record WebHostRunResult(int ExitCode, bool RestartRequested);
+    private sealed record WebHostRunResult(int ExitCode, bool RestoreAndRestartRequested);
 
     private static void PrepareDataScope()
     {

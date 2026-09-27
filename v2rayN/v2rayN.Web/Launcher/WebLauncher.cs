@@ -296,40 +296,18 @@ public sealed class WebLauncher
     private static Process? StartDetachedChild(string executablePath, string[] hostArguments)
     {
         var setsid = LinuxXdgBrowserOpener.FindExecutable("setsid");
-        if (setsid is null)
-        {
-            return null;
-        }
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = setsid,
-            UseShellExecute = false,
-        };
-        var processPath = Environment.ProcessPath;
+        var processPath = Environment.ProcessPath ?? executablePath;
         var commandLine = Environment.GetCommandLineArgs();
-        if (processPath is not null
-            && Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase)
-            && commandLine.Length > 0
-            && commandLine[0].EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-        {
-            startInfo.ArgumentList.Add(processPath);
-            startInfo.ArgumentList.Add(commandLine[0]);
-        }
-        else
-        {
-            startInfo.ArgumentList.Add(executablePath);
-        }
-
-        startInfo.ArgumentList.Add(WebLaunchOptions.BackgroundChildFlag);
-        foreach (var argument in hostArguments)
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
+        var command = WebReplacementCommand.Create(
+            setsid,
+            processPath,
+            WebReplacementCommand.GetManagedEntryPoint(processPath, commandLine),
+            hostArguments);
+        if (command is null) return null;
 
         try
         {
-            return Process.Start(startInfo);
+            return Process.Start(command.ToProcessStartInfo());
         }
         catch (Exception exception) when (exception is InvalidOperationException or IOException or System.ComponentModel.Win32Exception)
         {

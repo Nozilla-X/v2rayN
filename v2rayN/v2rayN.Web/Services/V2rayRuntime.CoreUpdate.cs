@@ -352,6 +352,29 @@ public sealed partial class V2rayRuntime
                 return;
             }
 
+            // ServiceLib downloads GeoFiles to temporary paths and then moves them into
+            // place before returning. Finish that network work while the serving Core is
+            // still available, after all Core packages have been staged.
+            async Task UpdateGeoFilesBeforeCoreApplyAsync()
+            {
+                currentTarget = GeoFilesUpdateTarget;
+                PublishGeoUpdateProgress("downloading", false, false, null, batch: true);
+                var geoUpdater = new UpdateService(Config, (success, message) =>
+                {
+                    AddLog("update", message);
+                    _events.Publish("geo-update-progress", new
+                    {
+                        success,
+                        code = success ? "ok" : "geo_update_progress",
+                        messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
+                        rawLog = message,
+                    });
+                    return Task.CompletedTask;
+                });
+                await geoUpdater.UpdateGeoFileAll(useProxy, token);
+                PublishGeoUpdateProgress("completed", true, true, null, batch: true);
+            }
+
             await CoreUpdateWorkflow.StageAllThenApplyAsync(
                 targetsToStage,
                 async target =>
@@ -386,27 +409,8 @@ public sealed partial class V2rayRuntime
                             batch: true);
                     }
                     return true;
-                });
-
-            if (includeGeoFiles)
-            {
-                currentTarget = GeoFilesUpdateTarget;
-                PublishGeoUpdateProgress("downloading", false, false, null, batch: true);
-                var geoUpdater = new UpdateService(Config, (success, message) =>
-                {
-                    AddLog("update", message);
-                    _events.Publish("geo-update-progress", new
-                    {
-                        success,
-                        code = success ? "ok" : "geo_update_progress",
-                        messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
-                        rawLog = message,
-                    });
-                    return Task.CompletedTask;
-                });
-                await geoUpdater.UpdateGeoFileAll(useProxy, token);
-                PublishGeoUpdateProgress("completed", true, true, null, batch: true);
-            }
+                },
+                includeGeoFiles ? UpdateGeoFilesBeforeCoreApplyAsync : null);
 
             _events.Publish("core-update-batch-completed", new { success = overallSuccess, apply = true });
         }
@@ -1182,12 +1186,17 @@ internal static class CoreUpdateWorkflow
     public static async Task<TResult> StageAllThenApplyAsync<TTarget, TStage, TResult>(
         IReadOnlyList<TTarget> targets,
         Func<TTarget, Task<TStage>> stageAsync,
-        Func<IReadOnlyList<TStage>, Task<TResult>> applyAsync)
+        Func<IReadOnlyList<TStage>, Task<TResult>> applyAsync,
+        Func<Task>? beforeApplyAsync = null)
     {
         var staged = new List<TStage>(targets.Count);
         foreach (var target in targets)
         {
             staged.Add(await stageAsync(target));
+        }
+        if (beforeApplyAsync is not null)
+        {
+            await beforeApplyAsync();
         }
         return await applyAsync(staged);
     }

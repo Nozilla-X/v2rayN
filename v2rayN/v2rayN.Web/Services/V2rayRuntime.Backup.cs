@@ -13,8 +13,8 @@ namespace v2rayN.Web.Services;
 
 public sealed partial class V2rayRuntime
 {
-    private readonly object _restartGate = new();
-    private Task? _restartTask;
+    private readonly object _restoreShutdownGate = new();
+    private Task? _restoreShutdownTask;
     private const long MaxBackupArchiveBytes = 64L * 1024 * 1024;
     private const long MaxBackupExpandedBytes = 256L * 1024 * 1024;
     private const int MaxBackupEntries = 2048;
@@ -166,7 +166,7 @@ public sealed partial class V2rayRuntime
         var databaseClosed = false;
         RuntimeOperationCoordinator.Lease? operation = null;
         var restoreStateWritten = false;
-        RestoreRuntimeState? restoreState = null;
+        RestoreRuntimeIntent? restoreState = null;
         try
         {
             operation = await _operations.EnterExclusiveAsync(cancellationToken);
@@ -196,7 +196,7 @@ public sealed partial class V2rayRuntime
             }
 
             var previousRuntime = CurrentCoreRuntime;
-            restoreState = new RestoreRuntimeState(
+            restoreState = new RestoreRuntimeIntent(
                 previousRuntime.State == CoreRuntimeState.Running,
                 previousRuntime.ProfileId);
             await WriteRestoreRuntimeStateAsync(restoreState);
@@ -204,6 +204,12 @@ public sealed partial class V2rayRuntime
             await StopCoreMonitorAsync();
             await CoreManager.Instance.CoreStopGracefully(cancellationToken);
             SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
+            var remainingCoreProcesses = CoreManager.Instance.ActiveProcessIds;
+            if (remainingCoreProcesses.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"Core child processes remain after restore shutdown: {string.Join(",", remainingCoreProcesses)}.");
+            }
             await ProfileExManager.Instance.SaveTo();
             await StatisticsManager.Instance.SaveTo();
             StatisticsManager.Instance.Close();
@@ -229,7 +235,7 @@ public sealed partial class V2rayRuntime
 
             _restoring = true;
             _operations.RejectNewOperations();
-            ScheduleApplicationRestart();
+            RequestHostShutdownForRestore();
             return OperationView.Ok(ApiMessageKeys.BackupRestoreStarted,
                 new { restartRequired = true, safetyBackup = Path.GetFileName(safetyBackupPath) });
         }
@@ -240,17 +246,32 @@ public sealed partial class V2rayRuntime
             {
                 _restoring = true;
                 _operations.RejectNewOperations();
-                ScheduleApplicationRestart();
+                RequestHostShutdownForRestore();
             }
             else if (restoreStateWritten)
             {
                 TryDeleteRestoreRuntimeState();
-                if (restoreState is { WasRunning: true, ProfileId.Length: > 0 })
+                if (restoreState is { WasRunning: true })
                 {
-                    var restart = await StartCoreAsync(restoreState.ProfileId, CancellationToken.None);
-                    if (!restart.Success)
+                    var remainingCoreProcesses = CoreManager.Instance.ActiveProcessIds.ToArray();
+                    if (remainingCoreProcesses.Length > 0)
                     {
-                        AddLog("backup", $"Restore was canceled before database replacement, and the previous Core could not be restored: {restart.Code}");
+                        var failure = "Restore was canceled before database replacement; existing Core child processes were left untouched because graceful shutdown did not confirm their exit.";
+                        SetCoreRuntime(CurrentCoreRuntime with
+                        {
+                            State = CoreRuntimeState.Faulted,
+                            ProcessIds = remainingCoreProcesses,
+                            LastFailure = failure,
+                        });
+                        AddLog("backup", failure);
+                    }
+                    else
+                    {
+                        var restart = await StartCoreAsync(restoreState.PreferredProfileId, CancellationToken.None);
+                        if (!restart.Success)
+                        {
+                            AddLog("backup", $"Restore was canceled before database replacement, and the previous Core runtime intent could not be restored: {restart.Code}");
+                        }
                     }
                 }
             }
@@ -298,20 +319,22 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private void ScheduleApplicationRestart()
+    private void RequestHostShutdownForRestore()
     {
-        Interlocked.Exchange(ref _applicationRestartRequested, 1);
-        lock (_restartGate)
+        Interlocked.Exchange(ref _restoreAndRestartRequested, 1);
+        lock (_restoreShutdownGate)
         {
-            if (_restartTask is { IsCompleted: false })
+            if (_restoreShutdownTask is { IsCompleted: false })
             {
                 return;
             }
             var stoppingToken = _lifetime.ApplicationStopping;
-            _restartTask = Task.Run(async () =>
+            _restoreShutdownTask = Task.Run(async () =>
             {
                 try
                 {
+                    // Give the restore API response time to flush; process handoff below
+                    // waits for the actual instance lock, never for this delay.
                     await Task.Delay(TimeSpan.FromSeconds(1), stoppingToken);
                     if (!stoppingToken.IsCancellationRequested)
                     {
@@ -328,7 +351,7 @@ public sealed partial class V2rayRuntime
 
     private static string RestoreRuntimeStatePath => Path.Combine(Utils.StartupPath(), RestoreRuntimeStateFileName);
 
-    private static async Task WriteRestoreRuntimeStateAsync(RestoreRuntimeState state)
+    private static async Task WriteRestoreRuntimeStateAsync(RestoreRuntimeIntent state)
     {
         var path = RestoreRuntimeStatePath;
         var temporary = path + $".{Guid.NewGuid():N}.tmp";
@@ -343,14 +366,35 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private static async Task<RestoreRuntimeState?> ConsumeRestoreRuntimeStateAsync(CancellationToken cancellationToken)
+    private static Task<RestoreRuntimeIntent?> ConsumeRestoreRuntimeStateAsync(CancellationToken cancellationToken) =>
+        ConsumeRestoreRuntimeStateAsync(RestoreRuntimeStatePath, cancellationToken);
+
+    internal static async Task<RestoreRuntimeIntent?> ConsumeRestoreRuntimeStateAsync(string path, CancellationToken cancellationToken)
     {
-        var path = RestoreRuntimeStatePath;
-        if (!File.Exists(path)) return null;
+        CleanupAbandonedRestoreRuntimeClaims(path);
+        var claimedPath = path + $".consuming-{Environment.ProcessId}-{Guid.NewGuid():N}";
         try
         {
-            var json = await File.ReadAllTextAsync(path, cancellationToken);
-            return JsonSerializer.Deserialize<RestoreRuntimeState>(json);
+            File.Move(path, claimedPath);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (IOException exception)
+        {
+            Logging.SaveLog("Restore runtime-state marker could not be claimed: " + exception.Message);
+            return null;
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(claimedPath, cancellationToken);
+            return JsonSerializer.Deserialize<RestoreRuntimeIntent>(json);
         }
         catch (Exception exception) when (exception is IOException or JsonException)
         {
@@ -359,7 +403,39 @@ public sealed partial class V2rayRuntime
         }
         finally
         {
-            TryDeleteRestoreRuntimeState();
+            try
+            {
+                if (File.Exists(claimedPath)) File.Delete(claimedPath);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                Logging.SaveLog("Claimed restore runtime-state marker could not be removed: " + exception.Message);
+            }
+        }
+    }
+
+    private static void CleanupAbandonedRestoreRuntimeClaims(string path)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory)) return;
+        try
+        {
+            var pattern = Path.GetFileName(path) + ".consuming-*";
+            foreach (var abandonedClaim in Directory.EnumerateFiles(directory, pattern, SearchOption.TopDirectoryOnly))
+            {
+                try
+                {
+                    File.Delete(abandonedClaim);
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+                {
+                    Logging.SaveLog("Abandoned restore runtime-state claim could not be removed: " + exception.Message);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Logging.SaveLog("Abandoned restore runtime-state claims could not be enumerated: " + exception.Message);
         }
     }
 
@@ -375,14 +451,12 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private sealed record RestoreRuntimeState(bool WasRunning, string? ProfileId);
-
-    private async Task WaitForScheduledRestartAsync(CancellationToken cancellationToken)
+    private async Task WaitForRestoreShutdownRequestAsync(CancellationToken cancellationToken)
     {
         Task? restartTask;
-        lock (_restartGate)
+        lock (_restoreShutdownGate)
         {
-            restartTask = _restartTask;
+            restartTask = _restoreShutdownTask;
         }
         if (restartTask is not null)
         {
