@@ -964,13 +964,11 @@ public sealed partial class V2rayRuntime
             ?? throw new InvalidDataException($"{coreType} has no version-check command configured.");
         var versionOutput = await Utils.GetCliWrapOutput(executablePath, versionArgument, cancellationToken);
         var expectedName = coreInfo.Match ?? coreType.ToString();
-        if (string.IsNullOrWhiteSpace(versionOutput)
-            || !versionOutput.Contains(expectedName, StringComparison.OrdinalIgnoreCase)
-            || !Regex.IsMatch(versionOutput, @"\b\d+\.\d+\.\d+\b", RegexOptions.CultureInvariant))
+        if (!CoreExecutableVersionCheck.IsValid(versionOutput, expectedName))
         {
             throw new InvalidDataException($"The staged {coreType} executable did not pass its version check.");
         }
-        return versionOutput.Trim();
+        return versionOutput!.Trim();
     }
 
     private static string? FindCoreExecutable(CoreInfo coreInfo, string directory) =>

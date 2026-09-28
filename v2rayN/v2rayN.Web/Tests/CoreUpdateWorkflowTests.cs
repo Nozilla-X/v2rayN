@@ -12,6 +12,21 @@ namespace v2rayN.Web.Tests;
 public class CoreUpdateWorkflowTests
 {
     [Test]
+    public async Task CoreVersionCheckAcceptsVPrefixedMihomoVersion()
+    {
+        var output = "Mihomo Meta v1.19.31 linux amd64 with go1.26.8";
+
+        await CoreExecutableVersionCheck.IsValid(output, "Mihomo").Should().BeTrue();
+    }
+
+    [Test]
+    public async Task CoreVersionCheckStillRequiresExpectedNameAndSemanticVersion()
+    {
+        await CoreExecutableVersionCheck.IsValid("Xray 25.9.11", "Mihomo").Should().BeFalse();
+        await CoreExecutableVersionCheck.IsValid("Mihomo Meta development build", "Mihomo").Should().BeFalse();
+    }
+
+    [Test]
     public async Task XraySingBoxAndMihomoPackagesAreStagedUsingTheirNativeArchiveFormats()
     {
         using var directory = new TemporaryDirectory();
