@@ -10,46 +10,60 @@ namespace v2rayN.Web.Tests;
 public class WebUpdatePackageStagerTests
 {
     [Test]
-    public async Task VersionChannelHandlesOlderNewerEqualPrereleaseAndBuildIdentity()
+    public async Task OfficialVersionChannelHandlesOlderNewerEqualPrereleaseAndLegacyBuilds()
     {
-        await WebUpdatePackageStager.IsUpdateAvailable("7.25.2-web.1", "7.25.2-web.2", allowPrerelease: false)
+        await WebUpdatePackageStager.IsUpdateAvailable("7.25.2", "7.25.3", allowPrerelease: false)
             .Should().BeTrue();
-        await WebUpdatePackageStager.IsUpdateAvailable("7.25.2-web.2", "7.25.2-web.2", allowPrerelease: true)
+        await WebUpdatePackageStager.IsUpdateAvailable("7.25.3", "7.25.3", allowPrerelease: true)
             .Should().BeFalse();
-        await WebUpdatePackageStager.IsUpdateAvailable("7.25.2-web.2", "7.25.2-web.2", allowPrerelease: true,
+        await WebUpdatePackageStager.IsUpdateAvailable("7.25.3", "7.25.3", allowPrerelease: true,
             currentCommit: "old-build", candidateCommit: "release-build").Should().BeTrue();
-        await WebUpdatePackageStager.IsUpdateAvailable("7.25.2-web.2", "7.25.2-web.2", allowPrerelease: true,
+        await WebUpdatePackageStager.IsUpdateAvailable("7.25.3", "7.25.3", allowPrerelease: true,
             currentCommit: "same", candidateCommit: "same").Should().BeFalse();
-        await WebUpdatePackageStager.IsUpdateAvailable("7.25.2-web.3", "7.25.2-web.2", allowPrerelease: true)
+        await WebUpdatePackageStager.IsUpdateAvailable("7.25.3", "7.25.2", allowPrerelease: true)
             .Should().BeFalse();
-        await WebUpdatePackageStager.IsUpdateAvailable("not-a-version", "7.25.2-web.3", allowPrerelease: true)
+        await WebUpdatePackageStager.IsUpdateAvailable("0.0.0-dev", "7.25.3", allowPrerelease: false)
+            .Should().BeTrue();
+        // Development identities are older than the official releases they track.
+        await WebUpdatePackageStager.IsUpdateAvailable("7.25.3-dev.2", "7.25.3", allowPrerelease: true)
+            .Should().BeTrue();
+        // Migration from the retired web-v/-web.N channel: a legacy build upgrades to the official tag,
+        // and an official build is never "updated" back to a legacy prerelease.
+        await WebUpdatePackageStager.IsUpdateAvailable("7.25.2-web.5", "7.25.3", allowPrerelease: false)
+            .Should().BeTrue();
+        await WebUpdatePackageStager.IsUpdateAvailable("7.25.3", "7.25.3-web.1", allowPrerelease: true)
+            .Should().BeFalse();
+        await WebUpdatePackageStager.IsUpdateAvailable("not-a-version", "7.25.3", allowPrerelease: true)
             .Should().BeFalse();
         await WebUpdatePackageStager.ShouldConsiderRelease(isPrerelease: false, allowPrerelease: false).Should().BeTrue();
         await WebUpdatePackageStager.ShouldConsiderRelease(isPrerelease: true, allowPrerelease: false).Should().BeFalse();
         await WebUpdatePackageStager.ShouldConsiderRelease(isPrerelease: true, allowPrerelease: true).Should().BeTrue();
 
         var build = WebBuildIdentity.Current;
-        await build.Version.Should().Contain("-web.");
+        await WebUpdatePackageStager.IsValidVersion(build.Version).Should().BeTrue();
+        await WebReleaseChannel.IsValidRepository(build.Repository).Should().BeTrue();
         await string.IsNullOrWhiteSpace(build.Rid).Should().BeFalse();
     }
 
     [Test]
     public async Task ManifestRequiresWebProductHttpsAssetsAndAnExactRid()
     {
-        var manifest = new WebUpdateManifest("v2rayN.Web", "7.25.2-web.5", "0123456789abcdef", "2026-09-27T00:00:00Z",
+        var manifest = new WebUpdateManifest("v2rayN.Web", "7.25.3", "0123456789abcdef", "2026-09-28T00:00:00Z",
         [
-            new WebUpdatePackage("linux-x64", "v2rayN.Web-app-linux-x64.tar.gz",
-                "https://github.com/Nozilla-X/v2rayN/releases/download/web-v7.25.2-web.5/v2rayN.Web-app-linux-x64.tar.gz",
+            new WebUpdatePackage("linux-x64", "v2rayN.Web-app-linux-64.tar.gz",
+                "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN.Web-app-linux-64.tar.gz",
                 new string('a', 64), 1234),
             new WebUpdatePackage("linux-arm64", "v2rayN.Web-app-linux-arm64.tar.gz",
-                "https://github.com/Nozilla-X/v2rayN/releases/download/web-v7.25.2-web.5/v2rayN.Web-app-linux-arm64.tar.gz",
+                "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN.Web-app-linux-arm64.tar.gz",
                 new string('b', 64), 2345),
         ]);
         var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         var parsed = WebUpdatePackageStager.ParseManifest(json);
-        await parsed.Version.Should().BeEqualTo(manifest.Version);
+        await parsed.Version.Should().BeEqualTo("7.25.3");
         await WebUpdatePackageStager.RequirePackage(parsed, "linux-x64").Rid.Should().BeEqualTo("linux-x64");
         await WebUpdatePackageStager.RequirePackage(parsed, "linux-arm64").Rid.Should().BeEqualTo("linux-arm64");
+        await WebReleaseChannel.IsTrustedAssetUrl(parsed.Packages[0].Url, "2dust/v2rayN", parsed.Version, parsed.Packages[0].Asset)
+            .Should().BeTrue();
 
         var wrongRidRejected = false;
         try { _ = WebUpdatePackageStager.RequirePackage(parsed, "linux-riscv64"); }
@@ -74,7 +88,7 @@ public class WebUpdatePackageStagerTests
     {
         using var directory = new TemporaryDirectory();
         var archive = Path.Combine(directory.Path, "web-app.tar.gz");
-        var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.2-web.6", "0123456789abcdef", "2026-09-27T01:00:00Z", "linux-x64");
+        var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.3", "0123456789abcdef", "2026-09-28T01:00:00Z", "linux-x64");
         await WriteArchiveAsync(archive,
         [
             ("v2rayN.Web", Encoding.UTF8.GetBytes("native executable")),
@@ -90,13 +104,14 @@ public class WebUpdatePackageStagerTests
         await actualIdentity.Should().BeEqualTo(identity);
         await File.Exists(Path.Combine(extracted, "bin", "xray", "xray")).Should().BeFalse();
         await File.Exists(Path.Combine(extracted, "guiConfigs", "guiNConfig.json")).Should().BeFalse();
+        await File.Exists(Path.Combine(extracted, "webData", "web-auth.json")).Should().BeFalse();
     }
 
     [Test]
     public async Task ChecksumMismatchCorruptArchiveWrongRidAndMissingExecutableAreRejected()
     {
         using var directory = new TemporaryDirectory();
-        var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.2-web.7", "abcdef0123456789", "2026-09-27T02:00:00Z", "linux-x64");
+        var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.4", "abcdef0123456789", "2026-09-28T02:00:00Z", "linux-x64");
         var archive = Path.Combine(directory.Path, "good.tar.gz");
         await WriteArchiveAsync(archive,
         [
@@ -132,7 +147,7 @@ public class WebUpdatePackageStagerTests
     public async Task TarTraversalAndSymbolicLinksAreRejected()
     {
         using var directory = new TemporaryDirectory();
-        var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.2-web.8", "0123abcdef", "2026-09-27T03:00:00Z", "linux-x64");
+        var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.5", "0123abcdef", "2026-09-28T03:00:00Z", "linux-x64");
         foreach (var entryName in new[] { "../escape", "/absolute", "wwwroot/../escape" })
         {
             var archive = Path.Combine(directory.Path, Guid.NewGuid().ToString("N") + ".tar.gz");
@@ -172,9 +187,11 @@ public class WebUpdatePackageStagerTests
     {
         using var stream = File.OpenRead(archive);
         var hash = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        var asset = WebUpdatePackageStager.AppOnlyAssetName(rid)
+            ?? throw new InvalidOperationException($"No app-only asset for {rid}.");
         return new WebUpdateManifest("v2rayN.Web", version, commit, buildDate,
-        [new WebUpdatePackage(rid, $"v2rayN.Web-app-{rid}.tar.gz",
-            $"https://github.com/Nozilla-X/v2rayN/releases/download/web-v{version}/v2rayN.Web-app-{rid}.tar.gz",
+        [new WebUpdatePackage(rid, asset,
+            $"https://github.com/2dust/v2rayN/releases/download/{version}/{asset}",
             hash, new FileInfo(archive).Length)]);
     }
 

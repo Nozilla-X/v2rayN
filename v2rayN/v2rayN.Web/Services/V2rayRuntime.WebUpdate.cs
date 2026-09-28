@@ -13,8 +13,6 @@ namespace v2rayN.Web.Services;
 
 public sealed partial class V2rayRuntime
 {
-    private const string WebReleaseOwner = "Nozilla-X/v2rayN";
-    private const string WebReleaseApi = "https://api.github.com/repos/Nozilla-X/v2rayN/releases?per_page=100";
     private const string WebUpdateProgressFile = "web-update-progress.json";
     private Task? _webUpdateTask;
     private string? _latestWebUpdateVersion;
@@ -178,50 +176,23 @@ public sealed partial class V2rayRuntime
     {
         try
         {
+            var repository = WebBuildIdentity.Current.Repository;
             var downloader = new DownloadService();
             var releaseJson = await downloader.TryDownloadString(
-                WebReleaseApi,
+                WebReleaseChannel.BuildReleaseIndexUrl(repository),
                 useProxy,
                 $"v2rayN.Web/{WebBuildIdentity.Current.Version}",
                 cancellationToken);
             if (string.IsNullOrWhiteSpace(releaseJson) || releaseJson.Length > 8 * 1024 * 1024)
                 return WebUpdateReleaseCheck.Failed("The GitHub Web release index could not be downloaded or exceeded its size limit.");
 
-            using var document = JsonDocument.Parse(releaseJson);
-            if (document.RootElement.ValueKind != JsonValueKind.Array)
-                return WebUpdateReleaseCheck.Failed("The GitHub Web release index has an invalid format.");
-
-            var candidates = new List<WebReleaseCandidate>();
-            foreach (var release in document.RootElement.EnumerateArray())
-            {
-                if (release.TryGetProperty("draft", out var draft) && draft.GetBoolean()) continue;
-                var isPrerelease = release.TryGetProperty("prerelease", out var prerelease) && prerelease.GetBoolean();
-                if (!WebUpdatePackageStager.ShouldConsiderRelease(isPrerelease, allowPrerelease)) continue;
-                var tag = release.TryGetProperty("tag_name", out var tagElement) ? tagElement.GetString() : null;
-                if (tag is null || !tag.StartsWith("web-v", StringComparison.Ordinal)) continue;
-                var version = tag["web-v".Length..];
-                if (!WebUpdatePackageStager.IsValidVersion(version)) continue;
-                var assets = new Dictionary<string, (string Url, long Size)>(StringComparer.Ordinal);
-                if (release.TryGetProperty("assets", out var assetsElement) && assetsElement.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var asset in assetsElement.EnumerateArray())
-                    {
-                        var name = asset.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null;
-                        var url = asset.TryGetProperty("browser_download_url", out var urlElement) ? urlElement.GetString() : null;
-                        var size = asset.TryGetProperty("size", out var sizeElement) && sizeElement.TryGetInt64(out var parsedSize)
-                            ? parsedSize : 0;
-                        if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(url)) assets[name] = (url, size);
-                    }
-                }
-                if (assets.TryGetValue("web-update.json", out var manifestAsset))
-                    candidates.Add(new WebReleaseCandidate(tag, version, isPrerelease, manifestAsset.Url, assets));
-            }
-
-            if (candidates.Count == 0) return WebUpdateReleaseCheck.Failed("No published v2rayN Web releases were found for this channel.");
+            var candidates = ParseWebReleaseCandidates(releaseJson, allowPrerelease);
+            if (candidates.Count == 0)
+                return WebUpdateReleaseCheck.Failed("No v2rayN releases with Web update packages were found for this channel.");
             candidates.Sort((left, right) => new ServiceLib.Models.Dto.SemanticVersion(right.Version)
                 .CompareTo(new ServiceLib.Models.Dto.SemanticVersion(left.Version)));
             var selected = candidates[0];
-            if (!IsTrustedReleaseAsset(selected.ManifestUrl, selected.Tag, "web-update.json"))
+            if (!WebReleaseChannel.IsTrustedAssetUrl(selected.ManifestUrl, repository, selected.Tag, WebReleaseChannel.ManifestAssetName))
                 return WebUpdateReleaseCheck.Failed("The Web release manifest URL did not match the trusted release channel.");
 
             var manifestJson = await downloader.TryDownloadString(
@@ -243,12 +214,13 @@ public sealed partial class V2rayRuntime
                     "This v2rayN Web release does not include a package for the current runtime identifier.",
                     "No package matches runtime " + currentRid + ".");
             }
-            var expectedAsset = $"v2rayN.Web-app-{package.Rid}.tar.gz";
-            if (package.Asset != expectedAsset
+            var expectedAsset = WebUpdatePackageStager.AppOnlyAssetName(package.Rid);
+            if (string.IsNullOrEmpty(expectedAsset)
+                || package.Asset != expectedAsset
                 || !selected.Assets.TryGetValue(package.Asset, out var releaseAsset)
                 || releaseAsset.Url != package.Url
                 || releaseAsset.Size != package.Size
-                || !IsTrustedReleaseAsset(package.Url, selected.Tag, package.Asset))
+                || !WebReleaseChannel.IsTrustedAssetUrl(package.Url, repository, selected.Tag, package.Asset))
             {
                 return WebUpdateReleaseCheck.Failed("The Web package entry does not match a trusted asset attached to this release.");
             }
@@ -272,6 +244,42 @@ public sealed partial class V2rayRuntime
         {
             return WebUpdateReleaseCheck.Failed(exception.Message);
         }
+    }
+
+    /// <summary>
+    /// Extracts official release candidates that carry a Web update manifest from a GitHub
+    /// "list releases" response. Legacy <c>web-v*</c> tags are intentionally ignored.
+    /// </summary>
+    internal static List<WebReleaseCandidate> ParseWebReleaseCandidates(string releaseJson, bool allowPrerelease)
+    {
+        using var document = JsonDocument.Parse(releaseJson);
+        if (document.RootElement.ValueKind != JsonValueKind.Array)
+            throw new InvalidDataException("The GitHub Web release index has an invalid format.");
+
+        var candidates = new List<WebReleaseCandidate>();
+        foreach (var release in document.RootElement.EnumerateArray())
+        {
+            if (release.TryGetProperty("draft", out var draft) && draft.GetBoolean()) continue;
+            var isPrerelease = release.TryGetProperty("prerelease", out var prerelease) && prerelease.GetBoolean();
+            if (!WebUpdatePackageStager.ShouldConsiderRelease(isPrerelease, allowPrerelease)) continue;
+            var tag = release.TryGetProperty("tag_name", out var tagElement) ? tagElement.GetString() : null;
+            if (!WebReleaseChannel.TryParseReleaseTag(tag, out var version)) continue;
+            var assets = new Dictionary<string, (string Url, long Size)>(StringComparer.Ordinal);
+            if (release.TryGetProperty("assets", out var assetsElement) && assetsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var asset in assetsElement.EnumerateArray())
+                {
+                    var name = asset.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : null;
+                    var url = asset.TryGetProperty("browser_download_url", out var urlElement) ? urlElement.GetString() : null;
+                    var size = asset.TryGetProperty("size", out var sizeElement) && sizeElement.TryGetInt64(out var parsedSize)
+                        ? parsedSize : 0;
+                    if (!string.IsNullOrWhiteSpace(name) && !string.IsNullOrWhiteSpace(url)) assets[name] = (url, size);
+                }
+            }
+            if (assets.TryGetValue(WebReleaseChannel.ManifestAssetName, out var manifestAsset))
+                candidates.Add(new WebReleaseCandidate(tag!, version, isPrerelease, manifestAsset.Url, assets));
+        }
+        return candidates;
     }
 
     private async Task<WebUpdateStage> StageWebUpdateAsync(
@@ -466,15 +474,6 @@ public sealed partial class V2rayRuntime
         _ => "unsupported",
     };
 
-    private static bool IsTrustedReleaseAsset(string value, string tag, string assetName)
-    {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
-            || uri.Scheme != Uri.UriSchemeHttps
-            || uri.Host != "github.com") return false;
-        var expectedSuffix = $"/releases/download/{Uri.EscapeDataString(tag)}/{Uri.EscapeDataString(assetName)}";
-        return uri.AbsolutePath.Equals($"/{WebReleaseOwner}{expectedSuffix}", StringComparison.Ordinal);
-    }
-
     private static async Task WriteNativeWebUpdatePlanAsync(string planPath, NativeWebUpdatePlan plan)
     {
         var temporary = planPath + $".{Guid.NewGuid():N}.tmp";
@@ -620,7 +619,7 @@ public sealed partial class V2rayRuntime
         public bool TransferredToHelper { get; set; }
     }
 
-    private sealed record WebReleaseCandidate(
+    internal sealed record WebReleaseCandidate(
         string Tag,
         string Version,
         bool IsPrerelease,

@@ -86,6 +86,29 @@ internal static partial class WebUpdatePackageStager
             ?? throw new InvalidDataException($"The Web release has no package for runtime identifier {rid}.");
     }
 
+    /// <summary>
+    /// Maps a supported .NET runtime identifier to the upstream Linux release architecture suffix
+    /// (<c>linux-x64</c> becomes <c>64</c> and <c>linux-arm64</c> stays <c>arm64</c>).
+    /// </summary>
+    public static string? ArtifactArch(string? rid) => rid switch
+    {
+        "linux-x64" => "64",
+        "linux-arm64" => "arm64",
+        _ => null,
+    };
+
+    public static string? FullInstallAssetName(string? rid)
+    {
+        var arch = ArtifactArch(rid);
+        return arch is null ? null : $"v2rayN.Web-linux-{arch}.tar.gz";
+    }
+
+    public static string? AppOnlyAssetName(string? rid)
+    {
+        var arch = ArtifactArch(rid);
+        return arch is null ? null : $"v2rayN.Web-app-linux-{arch}.tar.gz";
+    }
+
     public static async Task<WebUpdatePackageIdentity> VerifyAndExtractAsync(
         string archivePath,
         string destinationPath,

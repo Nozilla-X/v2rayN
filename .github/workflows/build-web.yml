@@ -1,6 +1,19 @@
-name: Build v2rayN.Web
+name: build v2rayN.Web
 
 on:
+  workflow_call:
+    inputs:
+      release_tag:
+        required: false
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Official upstream release tag (for example 7.25.3). Empty builds a dev identity without release assets.'
+        required: false
+        default: ''
+        type: string
   pull_request:
     branches:
       - master
@@ -30,6 +43,39 @@ permissions:
   contents: read
 
 jobs:
+  identity:
+    name: Resolve Web build identity
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      release: ${{ steps.resolve.outputs.release }}
+    steps:
+      - name: Resolve version from the official release tag
+        id: resolve
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            {
+              echo "version=0.0.0-dev"
+              echo "tag="
+              echo "release=false"
+            } >> "$GITHUB_OUTPUT"
+          else
+            [[ "$RELEASE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+              echo "Invalid official release tag: $RELEASE_TAG" >&2
+              exit 1
+            }
+            {
+              echo "version=$RELEASE_TAG"
+              echo "tag=$RELEASE_TAG"
+              echo "release=true"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
   verify:
     name: Verify Web and tests
     runs-on: ubuntu-24.04
@@ -52,10 +98,11 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Verify frontend, tests, and native publish
+      - name: Verify frontend, tests, native publish, and packaging dry-run
         run: bash v2rayN/v2rayN.Web/Scripts/verify.sh "$RUNNER_TEMP/v2rayN.Web-verify"
 
       - name: Check patch whitespace
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
         shell: bash
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -70,6 +117,7 @@ jobs:
 
   native:
     name: Native artifact (${{ matrix.rid }})
+    needs: identity
     strategy:
       fail-fast: false
       matrix:
@@ -79,6 +127,12 @@ jobs:
           - rid: linux-arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
+    env:
+      RID: ${{ matrix.rid }}
+      V2RAYN_WEB_VERSION: ${{ needs.identity.outputs.version }}
+      V2RAYN_WEB_REPOSITORY: ${{ github.repository }}
+      V2RAYN_WEB_COMMIT: ${{ github.sha }}
+      V2RAYN_WEB_BUILD_DATE: ${{ github.run_started_at }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -96,54 +150,31 @@ jobs:
           node-version: '22'
 
       - name: Publish native Web app
-        env:
-          RID: ${{ matrix.rid }}
         run: bash v2rayN/v2rayN.Web/Scripts/publish-native.sh "$RID"
 
       - name: Integrate original Linux Core bundle
-        env:
-          RID: ${{ matrix.rid }}
         run: sh v2rayN/v2rayN.Web/Scripts/fetch-core-bundle.sh "$RID" "v2rayN/v2rayN.Web/publish/$RID/bin"
 
-      - name: Package native artifact
+      - name: Package the full install and app-only artifacts
         env:
-          RID: ${{ matrix.rid }}
-        shell: bash
+          PUBLISH_DIR: v2rayN/v2rayN.Web/publish/${{ matrix.rid }}
         run: |
           set -euo pipefail
-          publish_dir="v2rayN/v2rayN.Web/publish/$RID"
-          test -x "$publish_dir/v2rayN.Web"
-          test -f "$publish_dir/wwwroot/index.html"
-          test -x "$publish_dir/bin/xray/xray"
-          test -x "$publish_dir/bin/sing_box/sing-box"
-          test -x "$publish_dir/bin/mihomo/mihomo"
-          test -f "$publish_dir/bin/sing_box/libcronet.so"
-          test -s "$publish_dir/bin/geosite.dat"
-          test -s "$publish_dir/bin/geoip.dat"
-          test -s "$publish_dir/bin/geoip.metadb"
-          test -s "$publish_dir/bin/Country.mmdb"
-          test -s "$publish_dir/bin/srss/geosite-category-ads-all.srs"
+          bash v2rayN/v2rayN.Web/Scripts/package-native.sh "$RID" "$PUBLISH_DIR" dist
+          "$PUBLISH_DIR/bin/xray/xray" -version
+          "$PUBLISH_DIR/bin/sing_box/sing-box" version
+          "$PUBLISH_DIR/bin/mihomo/mihomo" -v
 
-          "$publish_dir/bin/xray/xray" -version
-          "$publish_dir/bin/sing_box/sing-box" version
-          "$publish_dir/bin/mihomo/mihomo" -v
-
-          mkdir -p dist
-          archive="$GITHUB_WORKSPACE/dist/v2rayN.Web-$RID.tar.gz"
-          tar -C "$publish_dir" -czf "$archive" .
-          tar -tzf "$archive" > "$RUNNER_TEMP/v2rayN.Web-$RID.contents"
-          grep -Fxq './v2rayN.Web' "$RUNNER_TEMP/v2rayN.Web-$RID.contents"
-          grep -Fxq './wwwroot/index.html' "$RUNNER_TEMP/v2rayN.Web-$RID.contents"
-
-      - name: Upload native artifact
+      - name: Upload native artifacts
         uses: actions/upload-artifact@v7
         with:
           name: v2rayN.Web-${{ matrix.rid }}
-          path: dist/v2rayN.Web-${{ matrix.rid }}.tar.gz
+          path: dist/*.tar.gz
           if-no-files-found: error
 
   container:
     name: Verify Containerfile (${{ matrix.rid }})
+    needs: identity
     strategy:
       fail-fast: false
       matrix:
@@ -173,4 +204,62 @@ jobs:
           tags: v2rayn-web:ci
           build-args: |
             RID=${{ matrix.rid }}
+            WEB_VERSION=${{ needs.identity.outputs.version }}
+            WEB_REPOSITORY=${{ github.repository }}
+            WEB_COMMIT=${{ github.sha }}
+            WEB_BUILD_DATE=${{ github.run_started_at }}
           push: false
+
+  release-assets:
+    name: Assemble and validate Web release assets
+    if: needs.identity.outputs.release == 'true'
+    needs:
+      - identity
+      - verify
+      - native
+      - container
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download verified native artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: v2rayN.Web-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Build and validate web-update.json
+        env:
+          RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 v2rayN/v2rayN.Web/Scripts/web-update-manifest.py write \
+            --version "$RELEASE_TAG" \
+            --repository "${{ github.repository }}" \
+            --commit "${{ github.sha }}" \
+            --build-date "${{ github.run_started_at }}" \
+            --dist release-assets \
+            --output release-assets/web-update.json
+          python3 v2rayN/v2rayN.Web/Scripts/web-update-manifest.py verify \
+            --manifest release-assets/web-update.json \
+            --dist release-assets \
+            --repository "${{ github.repository }}"
+          ls -l release-assets
+
+      - name: Upload Web release packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-release-packages
+          path: release-assets/*.tar.gz
+          if-no-files-found: error
+
+      - name: Upload Web update manifest
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-release-manifest
+          path: release-assets/web-update.json
+          if-no-files-found: error

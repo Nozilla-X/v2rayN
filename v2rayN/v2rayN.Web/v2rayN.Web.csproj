@@ -5,15 +5,17 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>false</InvariantGlobalization>
     <DefaultItemExcludes>$(DefaultItemExcludes);.NET/**;.packages/**;Tests/**;publish/**</DefaultItemExcludes>
-    <WebVersion Condition="'$(WebVersion)' == ''">7.25.2-web.0</WebVersion>
+    <WebVersion Condition="'$(WebVersion)' == ''">0.0.0-dev</WebVersion>
     <WebCommit Condition="'$(WebCommit)' == ''">unknown</WebCommit>
     <WebBuildDate Condition="'$(WebBuildDate)' == ''">unknown</WebBuildDate>
+    <WebRepository Condition="'$(WebRepository)' == ''">2dust/v2rayN</WebRepository>
   </PropertyGroup>
 
   <ItemGroup>
     <AssemblyMetadata Include="WebVersion" Value="$(WebVersion)" />
     <AssemblyMetadata Include="WebCommit" Value="$(WebCommit)" />
     <AssemblyMetadata Include="WebBuildDate" Value="$(WebBuildDate)" />
+    <AssemblyMetadata Include="WebRepository" Value="$(WebRepository)" />
   </ItemGroup>
 
   <ItemGroup>
