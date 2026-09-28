@@ -246,29 +246,20 @@ public sealed partial class V2rayRuntime
             else if (restoreStateWritten)
             {
                 TryDeleteRestoreRuntimeState();
-                if (restoreState is { WasRunning: true })
+                if (restoreState is not null)
                 {
-                    var remainingCoreProcesses = GetActiveCoreProcessIds();
-                    var listenerStillOpen = await HasCoreListenerAsync(CancellationToken.None);
-                    if (remainingCoreProcesses.Length > 0 || listenerStillOpen)
-                    {
-                        var failure = "Restore was canceled before database replacement; the Web runtime could not confirm that the previous Core had stopped.";
-                        SetCoreRuntime(CurrentCoreRuntime with
+                    await RecoverRuntimeAfterFailedRestoreAsync(
+                        restoreState,
+                        GetActiveCoreProcessIds(),
+                        (processIds, failure) => SetCoreRuntime(CurrentCoreRuntime with
                         {
                             State = CoreRuntimeState.Faulted,
-                            ProcessIds = remainingCoreProcesses,
+                            ProcessIds = processIds,
                             LastFailure = failure,
-                        });
-                        AddLog("backup", failure);
-                    }
-                    else
-                    {
-                        var restart = await StartCoreAsync(restoreState.PreferredProfileId, CancellationToken.None);
-                        if (!restart.Success)
-                        {
-                            AddLog("backup", $"Restore was canceled before database replacement, and the previous Core runtime intent could not be restored: {restart.Code}");
-                        }
-                    }
+                        }),
+                        StartCoreAsync,
+                        message => AddLog("backup", message),
+                        CancellationToken.None);
                 }
             }
             return OperationView.Fail("backup_restore_failed", ApiMessageKeys.BackupRestoreFailed);
@@ -298,6 +289,40 @@ public sealed partial class V2rayRuntime
                 }
             }
         }
+    }
+
+    // Restore failed before database replacement: bring the pre-restore Core runtime intent
+    // back. Only Web-captured Core process identities prove that the previous Core still
+    // exists; listener or port occupancy is never used as process ownership. When no tracked
+    // process remains, the normal start path attempts the restart and its launch preflight
+    // reports a port conflict (proxy_port_in_use) if another program now owns the port.
+    internal static async Task<OperationView?> RecoverRuntimeAfterFailedRestoreAsync(
+        RuntimeRestartIntent restoreState,
+        int[] remainingCoreProcessIds,
+        Action<int[], string> markRuntimeFaulted,
+        Func<string?, CancellationToken, Task<OperationView>> startCore,
+        Action<string> log,
+        CancellationToken cancellationToken)
+    {
+        if (!restoreState.WasRunning)
+        {
+            return null;
+        }
+
+        if (remainingCoreProcessIds.Length > 0)
+        {
+            const string failure = "Restore was canceled before database replacement; the Web runtime could not confirm that the previous Core had stopped.";
+            markRuntimeFaulted(remainingCoreProcessIds, failure);
+            log(failure);
+            return null;
+        }
+
+        var restart = await startCore(restoreState.PreferredProfileId, cancellationToken);
+        if (!restart.Success)
+        {
+            log($"Restore was canceled before database replacement, and the previous Core runtime intent could not be restored: {restart.Code}");
+        }
+        return restart;
     }
 
     private void TryDeleteRestoreDirectory(string path, string description)

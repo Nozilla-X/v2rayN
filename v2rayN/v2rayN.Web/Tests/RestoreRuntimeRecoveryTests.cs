@@ -331,3 +331,113 @@ public class RuntimeRestartRecoveryTests
         public void Dispose() => Directory.Delete(Path, recursive: true);
     }
 }
+
+public class FailedRestoreRuntimeRecoveryTests
+{
+    [Test]
+    public async Task TrackedCoreProcessKeepsTheRuntimeFaultedWithoutStartingAnotherCore()
+    {
+        var started = new List<string?>();
+        var faulted = new List<(int[] ProcessIds, string Failure)>();
+        var logs = new List<string>();
+
+        var result = await V2rayRuntime.RecoverRuntimeAfterFailedRestoreAsync(
+            new RuntimeRestartIntent(true, "old"),
+            [4242],
+            (processIds, failure) => faulted.Add((processIds, failure)),
+            (profileId, _) =>
+            {
+                started.Add(profileId);
+                return Task.FromResult(OperationView.Ok(ApiMessageKeys.CoreStarted));
+            },
+            logs.Add,
+            CancellationToken.None);
+
+        await (result is null).Should().BeTrue();
+        await started.Count.Should().BeEqualTo(0);
+        await faulted.Count.Should().BeEqualTo(1);
+        await faulted[0].ProcessIds.SequenceEqual([4242]).Should().BeTrue();
+        await faulted[0].Failure
+            .Contains("could not confirm that the previous Core had stopped", StringComparison.Ordinal)
+            .Should().BeTrue();
+        await logs.Any(log => log.Contains("could not confirm", StringComparison.Ordinal)).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task StoppedCoreWithAnUnrelatedPortOwnerStillAttemptsTheNormalStart()
+    {
+        // Web's tracked Core is gone. An unrelated program has taken over the old proxy
+        // port; that listener must not be mistaken for the previous Core surviving.
+        var started = new List<string?>();
+        var faulted = false;
+        var logs = new List<string>();
+
+        var result = await V2rayRuntime.RecoverRuntimeAfterFailedRestoreAsync(
+            new RuntimeRestartIntent(true, "old"),
+            [],
+            (_, _) => faulted = true,
+            (profileId, _) =>
+            {
+                started.Add(profileId);
+                // The normal launch preflight owns the port-conflict decision.
+                return Task.FromResult(OperationView.Fail(
+                    "proxy_port_in_use",
+                    ApiMessageKeys.CorePortInUse,
+                    new { port = 10808 }));
+            },
+            logs.Add,
+            CancellationToken.None);
+
+        await faulted.Should().BeFalse();
+        await started.SequenceEqual(["old"]).Should().BeTrue();
+        await (result?.Code == "proxy_port_in_use").Should().BeTrue();
+        await logs.Any(log => log.Contains("proxy_port_in_use", StringComparison.Ordinal)).Should().BeTrue();
+        await logs.Any(log => log.Contains("could not confirm", StringComparison.Ordinal)).Should().BeFalse();
+    }
+
+    [Test]
+    public async Task FailedRestoreWithStoppedRuntimeIntentNeitherStartsNorFaultsTheRuntime()
+    {
+        var started = new List<string?>();
+        var faulted = false;
+
+        var result = await V2rayRuntime.RecoverRuntimeAfterFailedRestoreAsync(
+            new RuntimeRestartIntent(false, "old"),
+            [],
+            (_, _) => faulted = true,
+            (profileId, _) =>
+            {
+                started.Add(profileId);
+                return Task.FromResult(OperationView.Ok(ApiMessageKeys.CoreStarted));
+            },
+            _ => { },
+            CancellationToken.None);
+
+        await (result is null).Should().BeTrue();
+        await faulted.Should().BeFalse();
+        await started.Count.Should().BeEqualTo(0);
+    }
+
+    [Test]
+    public async Task SuccessfulTrackedStartIsReportedWithoutAFailureLog()
+    {
+        var started = new List<string?>();
+        var logs = new List<string>();
+
+        var result = await V2rayRuntime.RecoverRuntimeAfterFailedRestoreAsync(
+            new RuntimeRestartIntent(true, "old"),
+            [],
+            (_, _) => throw new InvalidOperationException("the runtime must not be faulted when no tracked process remains"),
+            (profileId, _) =>
+            {
+                started.Add(profileId);
+                return Task.FromResult(OperationView.Ok(ApiMessageKeys.CoreStarted));
+            },
+            logs.Add,
+            CancellationToken.None);
+
+        await (result?.Success).Should().BeTrue();
+        await started.SequenceEqual(["old"]).Should().BeTrue();
+        await logs.Count.Should().BeEqualTo(0);
+    }
+}

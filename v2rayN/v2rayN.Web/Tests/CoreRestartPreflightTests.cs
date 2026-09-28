@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using ServiceLib.Enums;
 using ServiceLib.Handler.Builder;
 using ServiceLib.Models.CoreConfigs;
@@ -84,6 +86,36 @@ public class CoreRestartPreflightTests
         await coreRunning.Should().BeTrue();
         await result.Success.Should().BeTrue();
         await result.MessageKey.Should().BeEqualTo(ApiMessageKeys.CoreRestarted);
+    }
+
+    [Test]
+    public async Task UnrelatedListenerIsReportedUnavailableByTheNormalStartPreflightProbe()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        try
+        {
+            var target = new RuntimeListenerSnapshot("local", ["http", "socks"], "127.0.0.1", port);
+
+            // With no Core owned by Web, the probe must reject the port before launch.
+            var unavailableForUnrelatedOwner = await V2rayRuntime.IsProjectedListenerUnavailableAsync(
+                target,
+                runtimeOwned: [],
+                CancellationToken.None);
+            await unavailableForUnrelatedOwner.Should().BeTrue();
+
+            // The same listener is fine while Web still owns the tracked Core process.
+            var unavailableForOwnedListener = await V2rayRuntime.IsProjectedListenerUnavailableAsync(
+                target,
+                runtimeOwned: [target],
+                CancellationToken.None);
+            await unavailableForOwnedListener.Should().BeFalse();
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 
     private static async Task AssertRestartRejectedWithoutStoppingCore(

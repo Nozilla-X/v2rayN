@@ -160,15 +160,6 @@ public sealed partial class V2rayRuntime(
         }
     }
 
-    private async Task<bool> HasCoreListenerAsync(CancellationToken cancellationToken)
-    {
-        foreach (var listener in CurrentCoreRuntime.Listeners)
-        {
-            if (await IsListeningAsync(listener.Port, cancellationToken)) return true;
-        }
-        return false;
-    }
-
     private async Task MonitorCoreRuntimeAsync(CancellationToken cancellationToken)
     {
         try
@@ -1381,7 +1372,7 @@ public sealed partial class V2rayRuntime(
         }
     }
 
-    private static async Task<bool> IsProjectedListenerUnavailableAsync(
+    internal static async Task<bool> IsProjectedListenerUnavailableAsync(
         RuntimeListenerSnapshot target,
         IReadOnlyCollection<RuntimeListenerSnapshot> runtimeOwned,
         CancellationToken cancellationToken)
