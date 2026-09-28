@@ -294,7 +294,7 @@ public sealed partial class V2rayRuntime
         if (!deployment.CanInstall) throw new InvalidOperationException(deployment.InstallReasonKey ?? "Web update installation is unavailable.");
 
         var id = Guid.NewGuid().ToString("N");
-        var archivePath = Utils.GetTempPath($"web-update-{id}.tar.gz");
+        var archivePath = Utils.GetTempPath($"web-update-{id}.zip");
         var packageDirectory = Utils.GetTempPath($"web-update-stage-{id}");
         var executablePath = Environment.ProcessPath
             ?? throw new InvalidOperationException("The current Web executable path is unavailable.");

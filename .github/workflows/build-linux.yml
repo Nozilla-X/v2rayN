@@ -558,7 +558,7 @@ jobs:
     with:
       release_tag: "${{ case(inputs.release_tag != '', inputs.release_tag, github.ref_name) }}"
       artifact_name: web-release-packages
-      file_pattern: "v2rayN.Web*.tar.gz"
+      file_pattern: "v2rayN-linux-*-web*.zip"
     secrets: { GPG_PRIVATE_KEY: "${{ secrets.GPG_PRIVATE_KEY }}" }
 
   release-web-manifest:

@@ -45,7 +45,7 @@ public class WebUpdateReleaseSelectionTests
             "prerelease": false,
             "assets": [
               { "name": "web-update.json", "browser_download_url": "https://github.com/2dust/v2rayN/releases/download/7.25.3/web-update.json", "size": 512 },
-              { "name": "v2rayN.Web-app-linux-64.tar.gz", "browser_download_url": "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN.Web-app-linux-64.tar.gz", "size": 4096 }
+              { "name": "v2rayN-linux-64-web-update.zip", "browser_download_url": "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN-linux-64-web-update.zip", "size": 4096 }
             ]
           },
           {
@@ -69,7 +69,7 @@ public class WebUpdateReleaseSelectionTests
         await selected.Version.Should().BeEqualTo("7.25.3");
         await selected.IsPrerelease.Should().BeFalse();
         await selected.ManifestUrl.Should().BeEqualTo("https://github.com/2dust/v2rayN/releases/download/7.25.3/web-update.json");
-        await selected.Assets.ContainsKey("v2rayN.Web-app-linux-64.tar.gz").Should().BeTrue();
+        await selected.Assets.ContainsKey("v2rayN-linux-64-web-update.zip").Should().BeTrue();
 
         var withPrerelease = V2rayRuntime.ParseWebReleaseCandidates(ReleaseIndex, allowPrerelease: true);
         await withPrerelease.Count.Should().BeEqualTo(2);

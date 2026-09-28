@@ -5,7 +5,7 @@ namespace v2rayN.Web.Services;
 /// <summary>
 /// Describes the official v2rayN release channel used by the Web self-update.
 /// Official releases use the upstream release tag (for example <c>7.25.3</c>) and carry
-/// <c>web-update.json</c> plus the app-only archives as additional release assets.
+/// <c>web-update.json</c> plus the app-only ZIP archives as additional release assets.
 /// </summary>
 internal static partial class WebReleaseChannel
 {

@@ -1,4 +1,3 @@
-using System.Formats.Tar;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -90,24 +89,11 @@ internal static partial class WebUpdatePackageStager
     /// Maps a supported .NET runtime identifier to the upstream Linux release architecture suffix
     /// (<c>linux-x64</c> becomes <c>64</c> and <c>linux-arm64</c> stays <c>arm64</c>).
     /// </summary>
-    public static string? ArtifactArch(string? rid) => rid switch
-    {
-        "linux-x64" => "64",
-        "linux-arm64" => "arm64",
-        _ => null,
-    };
+    public static string? ArtifactArch(string? rid) => WebReleaseAssets.ArtifactArch(rid);
 
-    public static string? FullInstallAssetName(string? rid)
-    {
-        var arch = ArtifactArch(rid);
-        return arch is null ? null : $"v2rayN.Web-linux-{arch}.tar.gz";
-    }
+    public static string? FullInstallAssetName(string? rid) => WebReleaseAssets.FullAssetName(rid);
 
-    public static string? AppOnlyAssetName(string? rid)
-    {
-        var arch = ArtifactArch(rid);
-        return arch is null ? null : $"v2rayN.Web-app-linux-{arch}.tar.gz";
-    }
+    public static string? AppOnlyAssetName(string? rid) => WebReleaseAssets.UpdateAssetName(rid);
 
     public static async Task<WebUpdatePackageIdentity> VerifyAndExtractAsync(
         string archivePath,
@@ -138,31 +124,27 @@ internal static partial class WebUpdatePackageStager
         long expandedBytes = 0;
         var entryCount = 0;
         var extractedFiles = new HashSet<string>(StringComparer.Ordinal);
-        await using (var file = File.OpenRead(archivePath))
-        await using (var gzip = new GZipStream(file, CompressionMode.Decompress, leaveOpen: false))
-        using (var reader = new TarReader(gzip))
+        using (var zip = ZipFile.OpenRead(archivePath))
         {
-            TarEntry? entry;
-            while ((entry = reader.GetNextEntry(copyData: false)) is not null)
+            foreach (var entry in zip.Entries)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (++entryCount > MaximumEntries) throw new InvalidDataException("The Web package has too many archive entries.");
-                var relative = NormalizeEntryName(entry.Name);
+                if (++entryCount > MaximumEntries)
+                    throw new InvalidDataException("The Web package has too many archive entries.");
+                var relative = NormalizeEntryName(entry.FullName);
                 var target = Path.GetFullPath(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
                 if (!target.StartsWith(rootPrefix, StringComparison.Ordinal))
                     throw new InvalidDataException("The Web package contains a path outside its staging directory.");
                 if (!IsAllowedPath(relative))
                     throw new InvalidDataException($"The Web package contains an unexpected file: {relative}.");
 
-                if (entry.EntryType == TarEntryType.Directory)
+                var unixType = (entry.ExternalAttributes >> 16) & 0xF000;
+                if (unixType is not (0 or 0x4000 or 0x8000))
+                    throw new InvalidDataException("The Web package contains a link or special archive entry.");
+                if (unixType == 0x4000 || entry.FullName.EndsWith('/'))
                 {
                     Directory.CreateDirectory(target);
                     continue;
-                }
-                if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile)
-                    || entry.DataStream is null)
-                {
-                    throw new InvalidDataException("The Web package contains a link or special archive entry.");
                 }
                 if (!extractedFiles.Add(relative))
                     throw new InvalidDataException("The Web package contains duplicate file paths.");
@@ -170,8 +152,9 @@ internal static partial class WebUpdatePackageStager
                     throw new InvalidDataException("The expanded Web package exceeds the configured size limit.");
                 expandedBytes += entry.Length;
                 Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                await using var input = entry.Open();
                 await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, useAsync: true);
-                await CopyWithLimitAsync(entry.DataStream, output, entry.Length, cancellationToken);
+                await CopyWithLimitAsync(input, output, entry.Length, cancellationToken);
             }
         }
 

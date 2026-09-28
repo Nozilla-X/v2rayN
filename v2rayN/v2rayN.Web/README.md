@@ -63,15 +63,20 @@ A fresh output from `Scripts/publish-native.sh` is the Web application layer; Gi
 
 Web builds use the official upstream release tag as their version identity: tag `7.25.3` produces `webVersion = 7.25.3`, and there is no separate `-web.N` release line. `/api/status` reports `webVersion`, `gitCommit`, `webBuildDate`, and `runtimeIdentifier`; the binary also embeds the release repository (`2dust/v2rayN` for official builds, or the fork that produced a local build) and only trusts assets under that repository. Local development builds keep a `0.0.0-dev` identity.
 
-Official releases are produced by the normal release pipeline: `.github/workflows/build-all.yml` → `.github/workflows/build-linux.yml` → the reusable `.github/workflows/build-web.yml`. When a `release_tag` (for example `7.25.3`) is supplied, `build-web.yml` publishes the Web artifacts and `web-update.json` to the same GitHub Release through the existing `upload-sign.yml` GPG flow. Fork pushes, pull requests, and `build-web.yml` `workflow_dispatch` runs with a `release_tag` only build, test, package, and validate the assets as GitHub Actions artifacts; they do not create a GitHub Release and do not require upstream secrets. To exercise the package-only path on a fork (repository administrators can dispatch workflows that are not on the default branch):
+Official releases are produced by the normal release pipeline: `.github/workflows/build-all.yml` → `.github/workflows/build-linux.yml` → the reusable `.github/workflows/build-web.yml`. When a `release_tag` (for example `7.25.3`) is supplied, `build-web.yml` publishes the Web artifacts and `web-update.json` to the same GitHub Release through the existing `upload-sign.yml` GPG flow. Fork pushes, pull requests, and `build-web.yml` `workflow_dispatch` runs with a `release_tag` only build, test, package, and validate the assets as GitHub Actions artifacts; they do not create a GitHub Release and do not require upstream secrets. The fork can publish its own prerelease through the explicit `publish_release` switch, which only works for `Nozilla-X/v2rayN` on `workflow_dispatch`:
 
 ```bash
-gh workflow run build-web.yml --repo <owner>/v2rayN --ref web -f release_tag=7.25.3
+# Package-only validation.
+gh workflow run build-web.yml --repo Nozilla-X/v2rayN --ref web -f release_tag=7.25.3
+
+# Real fork prerelease. Existing tags and releases are never overwritten.
+gh workflow run build-web.yml --repo Nozilla-X/v2rayN --ref web \
+  -f release_tag=7.25.3 -f publish_release=true -f prerelease=true
 ```
 
-The resulting `web-release-packages` and `web-release-manifest` artifacts contain the exact release assets without publishing them.
+The resulting `web-release-packages` and `web-release-manifest` artifacts contain the exact release assets.
 
-Each v2rayN Release contains full fresh-install packages (`v2rayN.Web-linux-64.tar.gz`, `v2rayN.Web-linux-arm64.tar.gz`), app-only update packages (`v2rayN.Web-app-linux-64.tar.gz`, `v2rayN.Web-app-linux-arm64.tar.gz`), and `web-update.json` with the release version, commit, exact RID, asset size, and SHA-256; the manifest and packages are covered by the release signature files. The app-only archives contain just the Web executable, build identity, and `wwwroot`; they do not contain `bin/`, Core executables, GeoFiles, configuration, logs, `webData`, or `web-auth.json`.
+Each v2rayN Release contains full fresh-install packages (`v2rayN-linux-64-web.zip`, `v2rayN-linux-arm64-web.zip`), app-only update packages (`v2rayN-linux-64-web-update.zip`, `v2rayN-linux-arm64-web-update.zip`), and `web-update.json` with the release version, commit, exact RID, asset size, and SHA-256; official upstream releases also carry the release signature files. The app-only ZIP archives contain just the Web executable, build identity, and `wwwroot`; they do not contain `bin/`, Core executables, GeoFiles, configuration, logs, `webData`, or `web-auth.json`.
 
 Only a writable, native Linux single-file install can apply a Web update automatically. It downloads and verifies the HTTPS release manifest and app-only archive while the current Core is still available, validates archive paths/types, SHA-256, product identity, version, and RID, then hands off file replacement to a separate helper after the current Web host completes its ordered shutdown. The helper swaps only the executable/UI/build identity, waits for the instance lock to be released, verifies the new `/api/health` Web version and Core runtime intent, and restores the prior Web files if health or runtime recovery fails. `bin/`, user data, and configuration are never replaced. The update intent records only whether Core was running, its preferred profile ID, and the reason; a stopped Core remains stopped.
 

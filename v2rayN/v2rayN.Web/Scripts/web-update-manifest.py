@@ -23,11 +23,11 @@ import hashlib
 import json
 import re
 import sys
-import tarfile
+import zipfile
 from pathlib import Path
 
 PRODUCT = "v2rayN.Web"
-RID_ARCH = {"linux-x64": "64", "linux-arm64": "arm64"}
+ASSET_MAP_PATH = Path(__file__).resolve().parent.parent / "Assets" / "web-assets.json"
 BUILD_IDENTITY_NAME = "v2rayN.Web.build.json"
 APP_EXECUTABLE_NAME = "v2rayN.Web"
 APP_UI_INDEX = "wwwroot/index.html"
@@ -45,12 +45,36 @@ def fail(message: str) -> None:
     raise SystemExit(1)
 
 
+def load_assets() -> dict[str, dict[str, str]]:
+    """Read the RID-to-asset map shared with the packager and the embedded runtime map."""
+    try:
+        data = json.loads(ASSET_MAP_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"could not read {ASSET_MAP_PATH}: {exc}")
+    if not isinstance(data, dict) or not isinstance(data.get("assets"), list):
+        fail(f"{ASSET_MAP_PATH} is missing its assets list")
+    assets: dict[str, dict[str, str]] = {}
+    for entry in data["assets"]:
+        if not isinstance(entry, dict):
+            fail(f"{ASSET_MAP_PATH} contains a non-object asset entry")
+        values = (entry.get("rid"), entry.get("arch"), entry.get("full"), entry.get("update"))
+        if not all(isinstance(value, str) and value for value in values) or values[0] in assets:
+            fail(f"{ASSET_MAP_PATH} contains an invalid or duplicate asset entry")
+        assets[values[0]] = {"arch": values[1], "full": values[2], "update": values[3]}
+    if not assets:
+        fail(f"{ASSET_MAP_PATH} contains no assets")
+    return assets
+
+
+ASSETS = load_assets()
+
+
 def full_asset_name(rid: str) -> str:
-    return f"v2rayN.Web-linux-{RID_ARCH[rid]}.tar.gz"
+    return ASSETS[rid]["full"]
 
 
 def app_asset_name(rid: str) -> str:
-    return f"v2rayN.Web-app-linux-{RID_ARCH[rid]}.tar.gz"
+    return ASSETS[rid]["update"]
 
 
 def asset_url(repository: str, version: str, asset: str) -> str:
@@ -58,7 +82,7 @@ def asset_url(repository: str, version: str, asset: str) -> str:
 
 
 def require_release_files(dist: Path) -> None:
-    for rid in RID_ARCH:
+    for rid in ASSETS:
         for asset in (full_asset_name(rid), app_asset_name(rid)):
             path = dist / asset
             if not path.is_file() or path.stat().st_size == 0:
@@ -80,7 +104,7 @@ def app_member_allowed(path: str) -> bool:
 
 
 def verify_app_archive_identity(archive: Path, rid: str, version: str, commit: str, build_date: str) -> None:
-    """Cross-check the app-only archive layout and its embedded build identity.
+    """Cross-check the app-only ZIP layout and its embedded build identity.
 
     The archive must only carry the executable, its `v2rayN.Web.build.json` identity, and the
     `wwwroot/**` Web UI. The identity must match the release manifest exactly, mirroring the
@@ -92,29 +116,30 @@ def verify_app_archive_identity(archive: Path, rid: str, version: str, commit: s
     entry_count = 0
     expanded_bytes = 0
     try:
-        with tarfile.open(archive, "r:gz") as handle:
-            while (member := handle.next()) is not None:
-                entry_count += 1
-                if entry_count > MAX_ARCHIVE_ENTRIES:
-                    fail(f"app-only archive {archive_name} has more than {MAX_ARCHIVE_ENTRIES} entries")
-                expanded_bytes += member.size
-                if expanded_bytes > MAX_EXPANDED_ARCHIVE_BYTES:
-                    fail(f"app-only archive {archive_name} expands beyond the supported size")
-                path = normalize_member_path(archive_name, member.name)
-                if path in seen:
-                    fail(f"app-only archive {archive_name} contains a duplicate archive path: {path}")
-                seen.add(path)
-                if not app_member_allowed(path):
-                    fail(f"app-only archive {archive_name} contains an entry outside the app-only layout: {path}")
-                if member.isdir():
-                    continue
-                if not member.isreg():
-                    fail(f"app-only archive {archive_name} contains a link or special entry: {path}")
-                if path == BUILD_IDENTITY_NAME:
-                    data = handle.extractfile(member)
-                    identity_bytes = data.read() if data is not None else None
-    except (OSError, EOFError, tarfile.TarError) as exc:
+        handle = zipfile.ZipFile(archive)
+    except (OSError, zipfile.BadZipFile) as exc:
         fail(f"app-only archive {archive_name} could not be read: {exc}")
+    with handle:
+        for info in handle.infolist():
+            entry_count += 1
+            if entry_count > MAX_ARCHIVE_ENTRIES:
+                fail(f"app-only archive {archive_name} has more than {MAX_ARCHIVE_ENTRIES} entries")
+            path = normalize_member_path(archive_name, info.filename)
+            if path in seen:
+                fail(f"app-only archive {archive_name} contains a duplicate archive path: {path}")
+            seen.add(path)
+            if not app_member_allowed(path):
+                fail(f"app-only archive {archive_name} contains an entry outside the app-only layout: {path}")
+            unix_type = (info.external_attr >> 16) & 0xF000
+            if unix_type not in (0, 0x4000, 0x8000):
+                fail(f"app-only archive {archive_name} contains a link or special entry: {path}")
+            if unix_type == 0x4000 or info.filename.endswith("/"):
+                continue
+            expanded_bytes += info.file_size
+            if expanded_bytes > MAX_EXPANDED_ARCHIVE_BYTES:
+                fail(f"app-only archive {archive_name} expands beyond the supported size")
+            if path == BUILD_IDENTITY_NAME:
+                identity_bytes = handle.read(info)
 
     for required in (APP_EXECUTABLE_NAME, BUILD_IDENTITY_NAME, APP_UI_INDEX):
         if required not in seen:
@@ -165,7 +190,7 @@ def build_manifest(dist: Path, version: str, repository: str, commit: str, build
         "version": version,
         "commit": commit,
         "buildDate": build_date,
-        "packages": [package_entry(dist, repository, version, rid) for rid in RID_ARCH],
+        "packages": [package_entry(dist, repository, version, rid) for rid in ASSETS],
     }
 
 
@@ -187,14 +212,14 @@ def verify_manifest(manifest_path: Path, dist: Path, repository: str | None, ver
         fail(f"{manifest_path} has no build date")
 
     packages = manifest.get("packages")
-    if not isinstance(packages, list) or len(packages) != len(RID_ARCH):
-        fail(f"{manifest_path} must contain exactly {len(RID_ARCH)} packages")
+    if not isinstance(packages, list) or len(packages) != len(ASSETS):
+        fail(f"{manifest_path} must contain exactly {len(ASSETS)} packages")
     by_rid = {}
     for package in packages:
         if not isinstance(package, dict):
             fail(f"{manifest_path} contains a non-object package entry")
         rid = package.get("rid")
-        if rid not in RID_ARCH:
+        if rid not in ASSETS:
             fail(f"{manifest_path} contains an unsupported runtime identifier: {rid!r}")
         if rid in by_rid:
             fail(f"{manifest_path} contains duplicate runtime identifiers")
@@ -220,7 +245,7 @@ def verify_manifest(manifest_path: Path, dist: Path, repository: str | None, ver
         verify_app_archive_identity(path, rid, manifest_version, manifest["commit"], manifest["buildDate"])
         by_rid[rid] = package
 
-    for rid in RID_ARCH:
+    for rid in ASSETS:
         if rid not in by_rid:
             fail(f"{manifest_path} is missing runtime {rid}")
     require_release_files(dist)

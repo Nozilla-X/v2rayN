@@ -1,4 +1,3 @@
-using System.Formats.Tar;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
@@ -50,11 +49,11 @@ public class WebUpdatePackageStagerTests
     {
         var manifest = new WebUpdateManifest("v2rayN.Web", "7.25.3", "0123456789abcdef", "2026-09-28T00:00:00Z",
         [
-            new WebUpdatePackage("linux-x64", "v2rayN.Web-app-linux-64.tar.gz",
-                "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN.Web-app-linux-64.tar.gz",
+            new WebUpdatePackage("linux-x64", "v2rayN-linux-64-web-update.zip",
+                "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN-linux-64-web-update.zip",
                 new string('a', 64), 1234),
-            new WebUpdatePackage("linux-arm64", "v2rayN.Web-app-linux-arm64.tar.gz",
-                "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN.Web-app-linux-arm64.tar.gz",
+            new WebUpdatePackage("linux-arm64", "v2rayN-linux-arm64-web-update.zip",
+                "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN-linux-arm64-web-update.zip",
                 new string('b', 64), 2345),
         ]);
         var json = JsonSerializer.Serialize(manifest, new JsonSerializerOptions(JsonSerializerDefaults.Web));
@@ -84,10 +83,10 @@ public class WebUpdatePackageStagerTests
     }
 
     [Test]
-    public async Task AppOnlyTarPackageIsVerifiedAndExtractedForItsExactIdentity()
+    public async Task AppOnlyZipPackageIsVerifiedAndExtractedForItsExactIdentity()
     {
         using var directory = new TemporaryDirectory();
-        var archive = Path.Combine(directory.Path, "web-app.tar.gz");
+        var archive = Path.Combine(directory.Path, "web-app.zip");
         var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.3", "0123456789abcdef", "2026-09-28T01:00:00Z", "linux-x64");
         await WriteArchiveAsync(archive,
         [
@@ -112,7 +111,7 @@ public class WebUpdatePackageStagerTests
     {
         using var directory = new TemporaryDirectory();
         var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.4", "abcdef0123456789", "2026-09-28T02:00:00Z", "linux-x64");
-        var archive = Path.Combine(directory.Path, "good.tar.gz");
+        var archive = Path.Combine(directory.Path, "good.zip");
         await WriteArchiveAsync(archive,
         [
             ("v2rayN.Web", Encoding.UTF8.GetBytes("native executable")),
@@ -120,7 +119,7 @@ public class WebUpdatePackageStagerTests
             ("v2rayN.Web.build.json", JsonSerializer.SerializeToUtf8Bytes(identity, new JsonSerializerOptions(JsonSerializerDefaults.Web))),
         ]);
         var manifest = CreateManifest(archive, identity.Version, identity.Commit, "linux-x64", identity.BuildDate);
-        var damaged = Path.Combine(directory.Path, "damaged.tar.gz");
+        var damaged = Path.Combine(directory.Path, "damaged.zip");
         var bytes = await File.ReadAllBytesAsync(archive);
         bytes[^1] ^= 0x01;
         await File.WriteAllBytesAsync(damaged, bytes);
@@ -131,7 +130,7 @@ public class WebUpdatePackageStagerTests
             archive, Path.Combine(directory.Path, "wrong-rid"), manifest,
             manifest.Packages[0] with { Rid = "linux-arm64" }, CancellationToken.None));
 
-        var missingExecutableArchive = Path.Combine(directory.Path, "missing.tar.gz");
+        var missingExecutableArchive = Path.Combine(directory.Path, "missing.zip");
         await WriteArchiveAsync(missingExecutableArchive,
         [
             ("wwwroot/index.html", Encoding.UTF8.GetBytes("index")),
@@ -144,13 +143,15 @@ public class WebUpdatePackageStagerTests
     }
 
     [Test]
-    public async Task TarTraversalAndSymbolicLinksAreRejected()
+    public async Task ZipTraversalLinksDuplicatesAndUnexpectedEntriesAreRejected()
     {
         using var directory = new TemporaryDirectory();
         var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.5", "0123abcdef", "2026-09-28T03:00:00Z", "linux-x64");
+        var identityJson = JsonSerializer.SerializeToUtf8Bytes(identity, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
         foreach (var entryName in new[] { "../escape", "/absolute", "wwwroot/../escape" })
         {
-            var archive = Path.Combine(directory.Path, Guid.NewGuid().ToString("N") + ".tar.gz");
+            var archive = Path.Combine(directory.Path, Guid.NewGuid().ToString("N") + ".zip");
             await WriteArchiveAsync(archive, [(entryName, Encoding.UTF8.GetBytes("nope"))]);
             var manifest = CreateManifest(archive, identity.Version, identity.Commit, "linux-x64", identity.BuildDate);
             await ExpectInvalidDataAsync(() => WebUpdatePackageStager.VerifyAndExtractAsync(
@@ -158,29 +159,38 @@ public class WebUpdatePackageStagerTests
                 manifest.Packages[0], CancellationToken.None));
         }
 
-        var symlinkArchive = Path.Combine(directory.Path, "symlink.tar.gz");
-        await using (var file = File.Create(symlinkArchive))
-        await using (var gzip = new GZipStream(file, CompressionLevel.SmallestSize, leaveOpen: true))
-        using (var tar = new TarWriter(gzip, TarEntryFormat.Pax, leaveOpen: true))
-        {
-            var link = new PaxTarEntry(TarEntryType.SymbolicLink, "wwwroot/index.html") { LinkName = "../../outside" };
-            tar.WriteEntry(link);
-        }
+        var symlinkArchive = Path.Combine(directory.Path, "symlink.zip");
+        await WriteSymlinkAsync(symlinkArchive, "wwwroot/index.html", "../../outside");
         var symlinkManifest = CreateManifest(symlinkArchive, identity.Version, identity.Commit, "linux-x64", identity.BuildDate);
         await ExpectInvalidDataAsync(() => WebUpdatePackageStager.VerifyAndExtractAsync(
             symlinkArchive, Path.Combine(directory.Path, "symlink-stage"), symlinkManifest,
             symlinkManifest.Packages[0], CancellationToken.None));
 
-        var zipArchive = Path.Combine(directory.Path, "zip-traversal.zip");
-        using (var zip = ZipFile.Open(zipArchive, ZipArchiveMode.Create))
-        {
-            var entry = zip.CreateEntry("../../outside");
-            await using var content = entry.Open();
-            await content.WriteAsync(Encoding.UTF8.GetBytes("not a supported Web package"));
-        }
-        var zipManifest = CreateManifest(zipArchive, identity.Version, identity.Commit, "linux-x64", identity.BuildDate);
+        var duplicateArchive = Path.Combine(directory.Path, "duplicate.zip");
+        await WriteArchiveAsync(duplicateArchive,
+        [
+            ("v2rayN.Web", Encoding.UTF8.GetBytes("native executable")),
+            ("wwwroot/index.html", Encoding.UTF8.GetBytes("first")),
+            ("wwwroot/index.html", Encoding.UTF8.GetBytes("second")),
+            ("v2rayN.Web.build.json", identityJson),
+        ]);
+        var duplicateManifest = CreateManifest(duplicateArchive, identity.Version, identity.Commit, "linux-x64", identity.BuildDate);
         await ExpectInvalidDataAsync(() => WebUpdatePackageStager.VerifyAndExtractAsync(
-            zipArchive, Path.Combine(directory.Path, "zip-stage"), zipManifest, zipManifest.Packages[0], CancellationToken.None));
+            duplicateArchive, Path.Combine(directory.Path, "duplicate-stage"), duplicateManifest,
+            duplicateManifest.Packages[0], CancellationToken.None));
+
+        var unexpectedArchive = Path.Combine(directory.Path, "unexpected.zip");
+        await WriteArchiveAsync(unexpectedArchive,
+        [
+            ("v2rayN.Web", Encoding.UTF8.GetBytes("native executable")),
+            ("wwwroot/index.html", Encoding.UTF8.GetBytes("index")),
+            ("v2rayN.Web.build.json", identityJson),
+            ("bin/xray/xray", Encoding.UTF8.GetBytes("core binary")),
+        ]);
+        var unexpectedManifest = CreateManifest(unexpectedArchive, identity.Version, identity.Commit, "linux-x64", identity.BuildDate);
+        await ExpectInvalidDataAsync(() => WebUpdatePackageStager.VerifyAndExtractAsync(
+            unexpectedArchive, Path.Combine(directory.Path, "unexpected-stage"), unexpectedManifest,
+            unexpectedManifest.Packages[0], CancellationToken.None));
     }
 
     private static WebUpdateManifest CreateManifest(string archive, string version, string commit, string rid, string buildDate)
@@ -197,17 +207,22 @@ public class WebUpdatePackageStagerTests
 
     private static async Task WriteArchiveAsync(string path, IReadOnlyList<(string Name, byte[] Content)> files)
     {
-        await using var file = File.Create(path);
-        await using var gzip = new GZipStream(file, CompressionLevel.SmallestSize, leaveOpen: true);
-        using var tar = new TarWriter(gzip, TarEntryFormat.Pax, leaveOpen: true);
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
         foreach (var item in files)
         {
-            var entry = new PaxTarEntry(TarEntryType.RegularFile, item.Name)
-            {
-                DataStream = new MemoryStream(item.Content),
-            };
-            tar.WriteEntry(entry);
+            var entry = archive.CreateEntry(item.Name, CompressionLevel.SmallestSize);
+            await using var stream = entry.Open();
+            await stream.WriteAsync(item.Content);
         }
+    }
+
+    private static async Task WriteSymlinkAsync(string path, string name, string target)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+        var entry = archive.CreateEntry(name);
+        entry.ExternalAttributes = (0xA000 | 0x1FF) << 16;
+        await using var stream = entry.Open();
+        await stream.WriteAsync(Encoding.UTF8.GetBytes(target));
     }
 
     private static async Task ExpectInvalidDataAsync(Func<Task<WebUpdatePackageIdentity>> action)

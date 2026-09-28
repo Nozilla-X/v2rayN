@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Release packaging dry-run: validates the full-install/app-only package boundaries and the
+# Release packaging dry-run: validates the full-install/app-only ZIP boundaries and the
 # web-update.json manifest using small fixtures, without publishing anything.
 set -euo pipefail
 
 web_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+asset_tool="$web_root/Scripts/web-release-assets.py"
 temporary="$(mktemp -d)"
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM
 
@@ -49,13 +50,36 @@ for rid in linux-x64 linux-arm64; do
   bash "$web_root/Scripts/package-native.sh" "$rid" "$temporary/publish-$rid" "$temporary/dist"
 done
 
-for asset in \
-  v2rayN.Web-linux-64.tar.gz \
-  v2rayN.Web-linux-arm64.tar.gz \
-  v2rayN.Web-app-linux-64.tar.gz \
-  v2rayN.Web-app-linux-arm64.tar.gz; do
+full_x64="$(python3 "$asset_tool" get --rid linux-x64 --field full)"
+full_arm64="$(python3 "$asset_tool" get --rid linux-arm64 --field full)"
+update_x64="$(python3 "$asset_tool" get --rid linux-x64 --field update)"
+update_arm64="$(python3 "$asset_tool" get --rid linux-arm64 --field update)"
+
+for asset in "$full_x64" "$full_arm64" "$update_x64" "$update_arm64"; do
   test -s "$temporary/dist/$asset"
 done
+test "$full_x64" = "v2rayN-linux-64-web.zip"
+test "$full_arm64" = "v2rayN-linux-arm64-web.zip"
+test "$update_x64" = "v2rayN-linux-64-web-update.zip"
+test "$update_arm64" = "v2rayN-linux-arm64-web-update.zip"
+
+python3 - "$temporary/dist/$full_x64" "$temporary/dist/$update_x64" <<'PY'
+import sys
+import zipfile
+
+full, update = sys.argv[1:]
+with zipfile.ZipFile(full) as archive:
+    names = archive.namelist()
+for required in ("v2rayN.Web", "v2rayN.Web.build.json", "wwwroot/index.html", "bin/xray/xray"):
+    assert required in names, required
+with zipfile.ZipFile(update) as archive:
+    update_names = set(archive.namelist())
+assert update_names == {"v2rayN.Web", "v2rayN.Web.build.json", "wwwroot/index.html", "wwwroot/assets/app.js"}, update_names
+assert not any(name.startswith(("bin/", "guiConfigs/", "guiLogs/", "webData/")) for name in update_names), update_names
+process = __import__("subprocess").run(["unzip", "-l", update], capture_output=True, text=True)
+assert process.returncode == 0, process.stderr
+print("ZIP boundary assertions passed")
+PY
 
 python3 "$web_root/Scripts/web-update-manifest.py" write \
   --version 7.25.3 \
@@ -69,30 +93,32 @@ python3 "$web_root/Scripts/web-update-manifest.py" verify \
   --dist "$temporary/dist" \
   --repository 2dust/v2rayN
 
-python3 - "$temporary/dist/web-update.json" <<'PY'
+python3 - "$temporary/dist/web-update.json" "$update_x64" "$update_arm64" <<'PY'
 import hashlib
 import json
 import sys
 from pathlib import Path
 
 manifest_path = Path(sys.argv[1])
+asset_x64, asset_arm64 = sys.argv[2:]
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 assert manifest["product"] == "v2rayN.Web", manifest
 assert manifest["version"] == "7.25.3", manifest
 assert manifest["commit"] == "0123456789abcdef", manifest
 assert manifest["buildDate"] == "2026-09-28T00:00:00Z", manifest
 expected = {
-    "linux-x64": ("v2rayN.Web-app-linux-64.tar.gz", "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN.Web-app-linux-64.tar.gz"),
-    "linux-arm64": ("v2rayN.Web-app-linux-arm64.tar.gz", "https://github.com/2dust/v2rayN/releases/download/7.25.3/v2rayN.Web-app-linux-arm64.tar.gz"),
+    "linux-x64": asset_x64,
+    "linux-arm64": asset_arm64,
 }
 packages = {package["rid"]: package for package in manifest["packages"]}
 assert set(packages) == set(expected), packages
-for rid, (asset, url) in expected.items():
+for rid, asset in expected.items():
     package = packages[rid]
+    url = f"https://github.com/2dust/v2rayN/releases/download/7.25.3/{asset}"
+    assert asset.startswith("v2rayN-linux-") and asset.endswith("-web-update.zip"), asset
     assert package["asset"] == asset, package
     assert package["url"] == url, package
-    assert url.startswith("https://github.com/2dust/v2rayN/releases/download/7.25.3/"), package
-    assert "Nozilla-X" not in url and "web-v" not in url, package
+    assert "Nozilla-X" not in url and "web-v" not in url and "_web" not in url, package
     data = (manifest_path.parent / asset).read_bytes()
     assert package["sha256"] == hashlib.sha256(data).hexdigest(), package
     assert package["size"] == len(data), package
@@ -112,9 +138,10 @@ if python3 "$web_root/Scripts/web-update-manifest.py" write \
 fi
 test ! -e "$temporary/dev-update.json"
 
-# A tampered asset must fail verification.
+# A tampered asset must fail SHA-256 verification.
 cp -a "$temporary/dist" "$temporary/tampered"
-printf 'tampered' >> "$temporary/tampered/v2rayN.Web-app-linux-64.tar.gz"
+printf 'tampered' >> "$temporary/tampered/$update_x64"
+cp -a "$temporary/dist/web-update.json" "$temporary/tampered/web-update.json"
 if python3 "$web_root/Scripts/web-update-manifest.py" verify \
   --manifest "$temporary/tampered/web-update.json" \
   --dist "$temporary/tampered" \
@@ -123,33 +150,32 @@ if python3 "$web_root/Scripts/web-update-manifest.py" verify \
   exit 1
 fi
 
-# The embedded v2rayN.Web.build.json must match the manifest, and the app-only layout
-# boundary must reject forbidden files, links, duplicates, and path traversal. Each variant
-# regenerates the manifest from the tampered archive so SHA-256 and size stay self-consistent
-# and only the identity/layout cross-check can fail.
-python3 - "$temporary/dist" "$temporary/identity-tamper" <<'PY'
-import io
+# The embedded v2rayN.Web.build.json must match the manifest, and the app-only ZIP boundary
+# must reject forbidden files, links, duplicates, and path traversal. Each variant regenerates
+# the manifest from the tampered archive so SHA-256 and size stay self-consistent and only the
+# identity/layout cross-check can fail.
+python3 - "$temporary/dist" "$temporary/identity-tamper" "$update_x64" <<'PY'
 import json
 import shutil
 import sys
-import tarfile
-from copy import copy
+import warnings
+import zipfile
 from pathlib import Path
+
+warnings.filterwarnings("ignore", message="Duplicate name:.*")
 
 dist = Path(sys.argv[1])
 out_root = Path(sys.argv[2])
-source = dist / "v2rayN.Web-app-linux-64.tar.gz"
+source = dist / sys.argv[3]
 identity_name = "v2rayN.Web.build.json"
+fixed_time = (1980, 1, 1, 0, 0, 0)
 
-with tarfile.open(source, "r:gz") as archive:
-    base = [
-        (member, archive.extractfile(member).read() if member.isfile() else None)
-        for member in archive.getmembers()
-    ]
+with zipfile.ZipFile(source) as archive:
+    base = [(info, archive.read(info)) for info in archive.infolist()]
 
-identity = json.loads(next(data for member, data in base if member.name == identity_name))
-ui_index = next(data for member, data in base if member.name == "wwwroot/index.html")
-untouched = [path for path in dist.iterdir() if path.is_file() and path.name.endswith(".tar.gz") and path != source]
+identity = json.loads(next(data for info, data in base if info.filename == identity_name))
+ui_index = next(data for info, data in base if info.filename == "wwwroot/index.html")
+untouched = [path for path in dist.iterdir() if path.is_file() and path.name.endswith(".zip") and path != source]
 
 
 def write_variant(name, transform):
@@ -157,44 +183,38 @@ def write_variant(name, transform):
     target.mkdir(parents=True, exist_ok=True)
     for path in untouched:
         shutil.copy2(path, target / path.name)
-    with tarfile.open(target / source.name, "w:gz") as archive:
-        for member, data in transform(list(base)):
-            if data is not None and len(data) != member.size:
-                member = copy(member)
-                member.size = len(data)
-            archive.addfile(member, io.BytesIO(data) if data is not None else None)
+    with zipfile.ZipFile(target / source.name, "w", zipfile.ZIP_DEFLATED) as archive:
+        for info, data in transform(list(base)):
+            archive.writestr(info, data)
 
 
 def identity_transform(field=None, value=None, drop=False, invalid=False):
-    def transform(members):
+    def transform(entries):
         result = []
-        for member, data in members:
-            if member.name != identity_name:
-                result.append((member, data))
+        for info, data in entries:
+            if info.filename != identity_name:
+                result.append((info, data))
                 continue
             if drop:
                 continue
             if invalid:
-                result.append((member, b"{ not valid json"))
+                result.append((info, b"{ not valid json"))
                 continue
             changed = dict(identity)
             changed[field] = value
-            result.append((member, json.dumps(changed, separators=(",", ":")).encode("utf-8")))
+            result.append((info, json.dumps(changed, separators=(",", ":")).encode("utf-8")))
         return result
     return transform
 
 
-def appended(name, data, member_type=tarfile.REGTYPE, linkname=""):
-    def transform(members):
-        member = tarfile.TarInfo(name)
-        member.type = member_type
-        if member_type == tarfile.REGTYPE:
-            member.size = len(data)
-            member.mode = 0o755
-            return members + [(member, data)]
-        member.linkname = linkname
-        member.mode = 0o777
-        return members + [(member, None)]
+def appended(name, data, symlink=False):
+    def transform(entries):
+        info = zipfile.ZipInfo(name, date_time=fixed_time)
+        info.create_system = 3
+        file_type = 0o120000 if symlink else 0o100000
+        info.external_attr = (file_type | 0o755) << 16
+        info.compress_type = zipfile.ZIP_DEFLATED
+        return entries + [(info, data)]
     return transform
 
 
@@ -205,7 +225,7 @@ write_variant("rid", identity_transform(field="rid", value="linux-arm64"))
 write_variant("missing-identity", identity_transform(drop=True))
 write_variant("invalid-json", identity_transform(invalid=True))
 write_variant("embedded-bin", appended("bin/xray/xray", b"#!/bin/sh\nexit 0\n"))
-write_variant("symlink", appended("wwwroot/vendor.js", b"", tarfile.SYMTYPE, "/etc/passwd"))
+write_variant("symlink", appended("wwwroot/vendor.js", b"/etc/passwd", symlink=True))
 write_variant("duplicate", appended("wwwroot/index.html", ui_index))
 write_variant("traversal", appended("../outside.txt", b"nope"))
 print(f"prepared identity tamper variants in {out_root}")
@@ -225,7 +245,7 @@ for variant in \
     echo "Expected the $variant identity tamper to be rejected" >&2
     exit 1
   fi
-  if ! grep -q "app-only archive v2rayN.Web-app-linux-64.tar.gz" "$temporary/identity-tamper/$variant.log"; then
+  if ! grep -q "app-only archive $update_x64" "$temporary/identity-tamper/$variant.log"; then
     echo "The $variant identity tamper was rejected without naming the app-only archive" >&2
     cat "$temporary/identity-tamper/$variant.log" >&2
     exit 1

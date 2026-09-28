@@ -7,6 +7,14 @@ on:
         required: false
         type: string
         default: ''
+      publish_release:
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        required: false
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       release_tag:
@@ -14,6 +22,16 @@ on:
         required: false
         default: ''
         type: string
+      publish_release:
+        description: 'Create a real GitHub Release. Only allowed for Nozilla-X/v2rayN.'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: 'Mark the created fork release as a prerelease.'
+        required: false
+        default: true
+        type: boolean
   pull_request:
     branches:
       - master
@@ -177,7 +195,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: v2rayN.Web-${{ matrix.rid }}
-          path: dist/*.tar.gz
+          path: dist/*.zip
           if-no-files-found: error
 
   container:
@@ -262,7 +280,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: web-release-packages
-          path: release-assets/*.tar.gz
+          path: release-assets/*.zip
           if-no-files-found: error
 
       - name: Upload Web update manifest
@@ -271,3 +289,66 @@ jobs:
           name: web-release-manifest
           path: release-assets/web-update.json
           if-no-files-found: error
+
+  publish-release:
+    name: Publish fork GitHub Release
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'Nozilla-X/v2rayN' &&
+      inputs.publish_release == true &&
+      needs.identity.outputs.release == 'true'
+    needs:
+      - identity
+      - release-assets
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+      RELEASE_PRERELEASE: ${{ inputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download validated release assets
+        uses: actions/download-artifact@v7
+        with:
+          pattern: web-release-*
+          path: release
+          merge-multiple: true
+
+      - name: Re-verify the downloaded release assets
+        run: |
+          set -euo pipefail
+          python3 v2rayN/v2rayN.Web/Scripts/web-update-manifest.py verify \
+            --manifest release/web-update.json \
+            --dist release \
+            --repository "${{ github.repository }}"
+          ls -l release
+
+      - name: Refuse to overwrite an existing tag or release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refusing to overwrite it." >&2
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Tag $RELEASE_TAG already exists; refusing to reuse it." >&2
+            exit 1
+          fi
+
+      - name: Create the GitHub Release and upload the Web assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          arguments=(release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA")
+          if [ "$RELEASE_PRERELEASE" = "true" ]; then
+            arguments+=(--prerelease)
+          fi
+          gh "${arguments[@]}" release/*.zip release/web-update.json
