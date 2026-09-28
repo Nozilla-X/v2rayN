@@ -50,6 +50,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       release: ${{ steps.resolve.outputs.release }}
+      build_date: ${{ steps.resolve.outputs.build_date }}
     steps:
       - name: Resolve version from the official release tag
         id: resolve
@@ -58,11 +59,13 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
+          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           if [[ -z "${RELEASE_TAG}" ]]; then
             {
               echo "version=0.0.0-dev"
               echo "tag="
               echo "release=false"
+              echo "build_date=$build_date"
             } >> "$GITHUB_OUTPUT"
           else
             [[ "$RELEASE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
@@ -73,6 +76,7 @@ jobs:
               echo "version=$RELEASE_TAG"
               echo "tag=$RELEASE_TAG"
               echo "release=true"
+              echo "build_date=$build_date"
             } >> "$GITHUB_OUTPUT"
           fi
 
@@ -132,7 +136,7 @@ jobs:
       V2RAYN_WEB_VERSION: ${{ needs.identity.outputs.version }}
       V2RAYN_WEB_REPOSITORY: ${{ github.repository }}
       V2RAYN_WEB_COMMIT: ${{ github.sha }}
-      V2RAYN_WEB_BUILD_DATE: ${{ github.run_started_at }}
+      V2RAYN_WEB_BUILD_DATE: ${{ needs.identity.outputs.build_date }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -207,7 +211,7 @@ jobs:
             WEB_VERSION=${{ needs.identity.outputs.version }}
             WEB_REPOSITORY=${{ github.repository }}
             WEB_COMMIT=${{ github.sha }}
-            WEB_BUILD_DATE=${{ github.run_started_at }}
+            WEB_BUILD_DATE=${{ needs.identity.outputs.build_date }}
           push: false
 
   release-assets:
@@ -241,7 +245,7 @@ jobs:
             --version "$RELEASE_TAG" \
             --repository "${{ github.repository }}" \
             --commit "${{ github.sha }}" \
-            --build-date "${{ github.run_started_at }}" \
+            --build-date "${{ needs.identity.outputs.build_date }}" \
             --dist release-assets \
             --output release-assets/web-update.json
           python3 v2rayN/v2rayN.Web/Scripts/web-update-manifest.py verify \

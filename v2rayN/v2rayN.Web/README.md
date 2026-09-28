@@ -63,7 +63,13 @@ A fresh output from `Scripts/publish-native.sh` is the Web application layer; Gi
 
 Web builds use the official upstream release tag as their version identity: tag `7.25.3` produces `webVersion = 7.25.3`, and there is no separate `-web.N` release line. `/api/status` reports `webVersion`, `gitCommit`, `webBuildDate`, and `runtimeIdentifier`; the binary also embeds the release repository (`2dust/v2rayN` for official builds, or the fork that produced a local build) and only trusts assets under that repository. Local development builds keep a `0.0.0-dev` identity.
 
-Official releases are produced by the normal release pipeline: `.github/workflows/build-all.yml` → `.github/workflows/build-linux.yml` → the reusable `.github/workflows/build-web.yml`. When a `release_tag` (for example `7.25.3`) is supplied, `build-web.yml` publishes the Web artifacts and `web-update.json` to the same GitHub Release through the existing `upload-sign.yml` GPG flow. Fork pushes, pull requests, and `build-web.yml` `workflow_dispatch` runs with a `release_tag` only build, test, package, and validate the assets as GitHub Actions artifacts; they do not create a GitHub Release and do not require upstream secrets.
+Official releases are produced by the normal release pipeline: `.github/workflows/build-all.yml` → `.github/workflows/build-linux.yml` → the reusable `.github/workflows/build-web.yml`. When a `release_tag` (for example `7.25.3`) is supplied, `build-web.yml` publishes the Web artifacts and `web-update.json` to the same GitHub Release through the existing `upload-sign.yml` GPG flow. Fork pushes, pull requests, and `build-web.yml` `workflow_dispatch` runs with a `release_tag` only build, test, package, and validate the assets as GitHub Actions artifacts; they do not create a GitHub Release and do not require upstream secrets. To exercise the package-only path on a fork (repository administrators can dispatch workflows that are not on the default branch):
+
+```bash
+gh workflow run build-web.yml --repo <owner>/v2rayN --ref web -f release_tag=7.25.3
+```
+
+The resulting `web-release-packages` and `web-release-manifest` artifacts contain the exact release assets without publishing them.
 
 Each v2rayN Release contains full fresh-install packages (`v2rayN.Web-linux-64.tar.gz`, `v2rayN.Web-linux-arm64.tar.gz`), app-only update packages (`v2rayN.Web-app-linux-64.tar.gz`, `v2rayN.Web-app-linux-arm64.tar.gz`), and `web-update.json` with the release version, commit, exact RID, asset size, and SHA-256; the manifest and packages are covered by the release signature files. The app-only archives contain just the Web executable, build identity, and `wwwroot`; they do not contain `bin/`, Core executables, GeoFiles, configuration, logs, `webData`, or `web-auth.json`.
 
