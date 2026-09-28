@@ -53,5 +53,22 @@ public class WebSetupAccessPolicyTests
             IPAddress.Loopback,
             "localhost",
             WebSetupAccessPolicy.HasForwardedHeaders(headers)).Should().BeFalse();
+
+        var privateServer = IPAddress.Parse("192.168.1.20");
+        var privateClient = IPAddress.Parse("192.168.1.10");
+        await WebSetupAccessPolicy.IsAllowed(privateClient, "192.168.1.20", true, privateServer).Should().BeFalse();
+    }
+
+    [Test]
+    public async Task PublicAndProxyAddressSetupIsRejected()
+    {
+        await WebSetupAccessPolicy.IsAllowed(
+            IPAddress.Parse("203.0.113.12"), "203.0.113.10", false, IPAddress.Parse("203.0.113.10")).Should().BeFalse();
+        await WebSetupAccessPolicy.IsAllowed(
+            IPAddress.Parse("192.168.1.10"), "2001:db8::10", false, IPAddress.Parse("2001:db8::10")).Should().BeFalse();
+        await WebSetupAccessPolicy.IsAllowed(
+            IPAddress.Parse("192.168.1.10"), "192.168.1.20", false, IPAddress.Parse("203.0.113.10")).Should().BeFalse();
+        await WebSetupAccessPolicy.IsAllowed(
+            IPAddress.Parse("192.168.1.10"), "proxy.example", false, IPAddress.Parse("192.168.1.20")).Should().BeFalse();
     }
 }

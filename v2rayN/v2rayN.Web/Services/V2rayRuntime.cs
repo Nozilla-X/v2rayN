@@ -207,7 +207,7 @@ public sealed partial class V2rayRuntime(
         }
     }
 
-    public async Task InitializeAsync(CancellationToken cancellationToken)
+    public async Task InitializeAsync(CancellationToken cancellationToken, bool suppressCoreAutostart = false)
     {
         var restoreState = await LoadRestoreRuntimeStateAsync(cancellationToken);
         var updateStatePath = WebUpdateRuntimeStatePath;
@@ -285,26 +285,43 @@ public sealed partial class V2rayRuntime(
 
         if (startupRuntimeIntent is not null)
         {
-            await RuntimeRestartRecovery.RecoverAsync(
-                startupRuntimeIntent,
-                selectedProfileId,
-                defaultProfile?.IndexId,
-                async (profileId, _) => await AppManager.Instance.GetProfileItem(profileId) is not null,
-                StartCoreAsync,
-                message => AddLog(restoreState is not null ? "restore" : "update", message),
-                cancellationToken);
+            if (!RuntimeRestartRecovery.ShouldRecoverCore(startupRuntimeIntent, suppressCoreAutostart))
+            {
+                if (suppressCoreAutostart && startupRuntimeIntent.WasRunning)
+                {
+                    AddLog("core", "Core startup was suppressed until first-run Management Key setup is complete.");
+                }
+            }
+            else
+            {
+                await RuntimeRestartRecovery.RecoverAsync(
+                    startupRuntimeIntent,
+                    selectedProfileId,
+                    defaultProfile?.IndexId,
+                    async (profileId, _) => await AppManager.Instance.GetProfileItem(profileId) is not null,
+                    StartCoreAsync,
+                    message => AddLog(restoreState is not null ? "restore" : "update", message),
+                    cancellationToken);
+            }
             if (restoreState is not null)
             {
                 await CommitRestoreRuntimeStateAsync();
             }
         }
-        else if (RuntimeRestartRecovery.ShouldAutoStart(startupRuntimeIntent, _configuration.GetValue("V2RAYN_WEB_AUTOSTART", false)))
+        else if (RuntimeRestartRecovery.ShouldAutoStart(
+            startupRuntimeIntent,
+            _configuration.GetValue("V2RAYN_WEB_AUTOSTART", false),
+            suppressCoreAutostart))
         {
             var result = await StartCoreAsync(null, cancellationToken);
             if (!result.Success)
             {
                 AddLog("core", result.MessageKey);
             }
+        }
+        else if (suppressCoreAutostart)
+        {
+            AddLog("core", "Core autostart was suppressed until first-run Management Key setup is complete.");
         }
     }
 

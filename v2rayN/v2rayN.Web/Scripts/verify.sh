@@ -27,7 +27,9 @@ export NUGET_PACKAGES="${NUGET_PACKAGES:-$web_root/.packages/nuget}"
 export npm_config_cache="${npm_config_cache:-$web_root/.packages/npm-cache}"
 
 npm ci --prefix "$webui_root"
+npm run check:locales --prefix "$webui_root"
 npm run build --prefix "$webui_root"
+npm test --prefix "$webui_root"
 "$dotnet" test "$web_root/Tests/v2rayN.Web.Tests.csproj" --configuration Release
 "$dotnet" test "$upstream_root/ServiceLib.Tests/ServiceLib.Tests.csproj" --configuration Release
 "$dotnet" publish "$web_root/v2rayN.Web.csproj" \
@@ -41,5 +43,6 @@ npm run build --prefix "$webui_root"
 mkdir -p "$output_dir/wwwroot"
 cp -a "$webui_root/dist/." "$output_dir/wwwroot/"
 test -x "$output_dir/v2rayN.Web"
+bash "$web_root/Scripts/test-startup-security.sh" "$output_dir/v2rayN.Web"
 bash "$web_root/Scripts/test-release-packaging.sh"
 printf 'Web verification passed; native publish ready: %s\n' "$output_dir/v2rayN.Web"

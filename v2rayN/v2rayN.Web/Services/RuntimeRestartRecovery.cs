@@ -24,8 +24,11 @@ internal sealed record RuntimeRestartRecoveryResult(
 
 internal static class RuntimeRestartRecovery
 {
-    public static bool ShouldAutoStart(RuntimeRestartIntent? intent, bool configured) =>
-        intent is null && configured;
+    public static bool ShouldAutoStart(RuntimeRestartIntent? intent, bool configured, bool setupRequired = false) =>
+        !setupRequired && intent is null && configured;
+
+    public static bool ShouldRecoverCore(RuntimeRestartIntent? intent, bool setupRequired) =>
+        !setupRequired && intent?.WasRunning == true;
 
     public static async Task<RuntimeRestartRecoveryResult> RecoverAsync(
         RuntimeRestartIntent intent,

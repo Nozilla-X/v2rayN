@@ -27,6 +27,12 @@ public class RuntimeRestartRecoveryTests
         await (started.Count == 0).Should().BeTrue();
         await RuntimeRestartRecovery.ShouldAutoStart(new RuntimeRestartIntent(false, null), configured: true).Should().BeFalse();
         await RuntimeRestartRecovery.ShouldAutoStart(null, configured: true).Should().BeTrue();
+        await RuntimeRestartRecovery.ShouldAutoStart(null, configured: true, setupRequired: true).Should().BeFalse();
+        await RuntimeRestartRecovery.ShouldRecoverCore(new RuntimeRestartIntent(true, "selected"), setupRequired: true).Should().BeFalse();
+        await RuntimeRestartRecovery.ShouldRecoverCore(new RuntimeRestartIntent(true, "selected"), setupRequired: false).Should().BeTrue();
+        await RuntimeRestartRecovery.ShouldAutoStart(null, configured: true, setupRequired: true).Should().BeFalse();
+        await RuntimeRestartRecovery.ShouldRecoverCore(new RuntimeRestartIntent(true, "selected"), setupRequired: true).Should().BeFalse();
+        await RuntimeRestartRecovery.ShouldRecoverCore(new RuntimeRestartIntent(true, "selected"), setupRequired: false).Should().BeTrue();
     }
 
     [Test]

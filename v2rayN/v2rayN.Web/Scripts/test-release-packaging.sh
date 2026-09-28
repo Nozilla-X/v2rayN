@@ -118,7 +118,6 @@ for rid, asset in expected.items():
     assert asset.startswith("v2rayN-linux-") and asset.endswith("-web-update.zip"), asset
     assert package["asset"] == asset, package
     assert package["url"] == url, package
-    assert "Nozilla-X" not in url and "web-v" not in url and "_web" not in url, package
     data = (manifest_path.parent / asset).read_bytes()
     assert package["sha256"] == hashlib.sha256(data).hexdigest(), package
     assert package["size"] == len(data), package

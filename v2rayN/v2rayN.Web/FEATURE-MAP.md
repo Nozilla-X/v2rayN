@@ -48,46 +48,17 @@ REST responses use stable JSON field names and enum codes. Operation/error respo
 | Clash Proxies / Connections tabs | `ClashProxiesViewModel`, `ClashConnectionsViewModel`, `ClashApiManager` | Not exposed in the Web slice: those tabs are tied to the sing-box/Mihomo Clash API | No dead/placeholder tabs; can be added with a supported Core/API later |
 | Global hotkeys, tray icon/menu, window placement/theme/font, startup task, UWP/admin elevation, promotion, native dialogs/scanner | WPF/Avalonia Views and platform adapters | Not applicable to a headless Web process, or explicitly excluded by the no-desktop/no-privilege scope | No fake Web controls; browser-native import/download/copy replaces the relevant file/clipboard flows |
 
-## First Web workspace structure (low fidelity; not the current UI)
+## Intentionally unsupported desktop scope
 
-### Desktop browser
+These capabilities are deliberately outside the current headless frontend boundary and can be considered in a future contribution that does not require duplicating ServiceLib configuration or runtime behavior:
 
-```text
-┌─ v2rayN ───────────────────────────────────────────────────────────────────┐
-│ Servers | Subscriptions | Routing | DNS | Settings | Logs     Core: Xray   │
-│ Current profile: [name / address]    HTTP+SOCKS :10808   [Start][Stop]     │
-├───────────────────────────────────────────────────────────────────────────┤
-│ [All] [group A] [group B] [ + ]  [regex filter……] [TCPing] [Mixed Test]    │
-├───────────────────────────────────────────────────────────────────────────┤
-│ Type | ● Remarks | Address | Port | Network | TLS | Group | Delay | Speed  │
-│      |           |         |      |         |     |       |       |        │
-│ ...       multi-select; original context actions remain available          │
-├───────────────────────────────────────────────────────────────────────────┤
-│ Logs / Traffic / Core status (tabs or resizable pane; current main-window   │
-│ split behavior retained)                                                    │
-└───────────────────────────────────────────────────────────────────────────┘
-```
+- TUN configuration and runtime control.
+- Desktop system-proxy integration.
+- Clash Proxies and Clash Connections views.
+- Tray icon/menu, global hotkeys, window placement, and desktop startup integration.
+- Native file/scanner dialogs and other desktop-only integrations.
 
-The profile list stays above the fold and is the primary surface. Row activation, context actions, group selection, column sort, batch operations, and speed-test flows are retained. Settings follow the inbound/Core/General/Speedtest, Routing, DNS, and template groupings. System proxy remains desktop-specific. TUN is intentionally deferred from this initial Web frontend.
-
-### Mobile browser
-
-```text
-┌─ v2rayN ─────────────── Core running · mixed :10808 ┐
-│ Current: profile name · address                       │
-│ [Stop] [Restart]                                      │
-├───────────────────────────────────────────────────────┤
-│ [Search/filter…] [Group ▼] [Test ▼]                   │
-│ ● profile A          VMess · 42 ms         [Switch]   │
-│   address:port       group name                       │
-│ ● profile B          VLESS · —            [Switch]   │
-│ ...                                                   │
-├───────────────────────────────────────────────────────┤
-│ Profiles       Subs       Routing       More          │
-└───────────────────────────────────────────────────────┘
-```
-
-Desktop and mobile use the same REST/SSE state and commands. Mobile reorganizes the table into dense selectable rows and moves secondary operations into menus; it does not introduce a second state model.
+When an existing TUN configuration is detected, Web refuses to start the generated Core configuration without changing the saved setting. These exclusions are not placeholders or claims of full desktop parity.
 
 ## Internationalization contract
 

@@ -30,7 +30,7 @@ public class WebReleaseChannelTests
         try { _ = WebReleaseChannel.BuildReleaseIndexUrl("2dust/v2rayN/../../evil"); }
         catch (ArgumentException) { rejected = true; }
         await rejected.Should().BeTrue();
-        await WebReleaseChannel.IsValidRepository("Nozilla-X/v2rayN").Should().BeTrue();
+        await WebReleaseChannel.IsValidRepository("community-fork/v2rayN").Should().BeTrue();
         await WebReleaseChannel.IsValidRepository("not-a-repository").Should().BeFalse();
     }
 
@@ -43,8 +43,8 @@ public class WebReleaseChannelTests
         var trusted = $"https://github.com/{repository}/releases/download/{tag}/{asset}";
 
         await WebReleaseChannel.IsTrustedAssetUrl(trusted, repository, tag, asset).Should().BeTrue();
-        // The same asset in a fork or any other repository is not part of the official channel.
-        await WebReleaseChannel.IsTrustedAssetUrl(trusted.Replace(repository, "Nozilla-X/v2rayN", StringComparison.Ordinal),
+        // A build must not accept the same asset from another repository.
+        await WebReleaseChannel.IsTrustedAssetUrl(trusted.Replace(repository, "another-owner/v2rayN", StringComparison.Ordinal),
             repository, tag, asset).Should().BeFalse();
         await WebReleaseChannel.IsTrustedAssetUrl("http://github.com/2dust/v2rayN/releases/download/7.25.3/" + asset,
             repository, tag, asset).Should().BeFalse();

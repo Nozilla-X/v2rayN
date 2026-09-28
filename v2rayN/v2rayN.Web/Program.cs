@@ -21,11 +21,17 @@ internal static class Program
             return await NativeWebUpdateHelper.RunAsync(args[1]);
         }
 
-        PrepareDataScope();
-
         var environment = ReadEnvironment();
         var daemonEnvironment = LauncherEnvironment.IsDaemonEnvironment(environment);
         var containerEnvironment = IsContainerEnvironment();
+        var managementKey = environment.GetValueOrDefault(ManagementKeyEnvironmentVariable);
+        if (WebDeploymentSecurityPolicy.GetStartupError(daemonEnvironment, containerEnvironment, managementKey) is { } startupError)
+        {
+            Console.Error.WriteLine(startupError);
+            return 1;
+        }
+
+        PrepareDataScope();
         var launchOptions = WebLaunchOptions.Parse(
             args,
             OperatingSystem.IsLinux(),
@@ -169,7 +175,9 @@ internal static class Program
         builder.Services.AddSingleton<V2rayRuntime>();
         builder.Services.Configure<HostOptions>(options => options.ShutdownTimeout = RuntimeShutdownBudgets.HostShutdown);
         builder.Services.AddHostedService<V2rayHostedService>(services =>
-            new V2rayHostedService(services.GetRequiredService<V2rayRuntime>()));
+            new V2rayHostedService(
+                services.GetRequiredService<V2rayRuntime>(),
+                services.GetRequiredService<WebAuthService>()));
         builder.Services.AddSingleton(webAuth);
         builder.Services.AddSingleton<WebSessionService>();
         builder.Services.AddRateLimiter(WebAuthRateLimiting.Configure);
@@ -178,6 +186,7 @@ internal static class Program
 
         var app = builder.Build();
         var runtime = app.Services.GetRequiredService<V2rayRuntime>();
+        app.UseMiddleware<WebSecurityHeadersMiddleware>();
         app.UseMiddleware<WebAuthRequestBodyLimitMiddleware>();
         app.UseRouting();
         app.UseRateLimiter();

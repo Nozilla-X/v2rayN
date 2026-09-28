@@ -19,18 +19,7 @@ public static class WebApiEndpoints
     public static void MapWebApi(this WebApplication app)
     {
         app.MapGet("/api/health", (HttpContext context, V2rayRuntime runtime) =>
-        {
-            context.Response.Headers["X-v2rayn-web-instance-pid"] = Environment.ProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture);
-            context.Response.Headers["X-v2rayn-web-version"] = WebBuildIdentity.Current.Version;
-            context.Response.Headers["X-v2rayn-web-core-state"] = runtime.GetCoreRuntimeState();
-            context.Response.Headers["X-v2rayn-web-core-process-ids"] = string.Join(',', runtime.GetCoreProcessIds());
-            context.Response.Headers["X-v2rayn-web-core-profile-id"] = runtime.GetCoreRuntimeProfileId() ?? string.Empty;
-            if (ShutdownDiagnostics.CurrentStage is { Length: > 0 } stage)
-            {
-                context.Response.Headers["X-v2rayn-web-shutdown-stage"] = stage;
-            }
-            return ApiReplies.Ok(new { status = "ok" }, "common.health");
-        });
+            Results.Ok(WebHealthEndpoint.CreateResponse(context, runtime)));
         app.MapGet("/api/status", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetStatusAsync(), "status.loaded"));
         app.MapGet("/api/operations", async (V2rayRuntime runtime) => ApiReplies.Ok(await runtime.GetRunningOperationsAsync(), "operations.loaded"));
         app.MapGet("/api/logs", (int? limit, string? filter, V2rayRuntime runtime) =>

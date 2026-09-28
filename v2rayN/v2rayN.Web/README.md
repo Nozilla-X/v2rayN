@@ -1,178 +1,96 @@
-# v2rayN Headless Web frontend
+# v2rayN Web
 
-`v2rayN.Web` is an ASP.NET Core frontend for the existing `ServiceLib`. It runs without WPF, Avalonia, a desktop session, or system-proxy integration. **v2rayN.Web currently does not expose TUN. TUN is intentionally deferred from the initial headless Web frontend.** If a shared or restored configuration has TUN enabled, Web refuses to start that Core configuration without changing the saved setting; use the desktop frontend to disable TUN before starting Core from Web.
+`v2rayN.Web` is a headless ASP.NET Core frontend for v2rayN's existing `ServiceLib`. It runs on Linux without WPF, Avalonia, a desktop session, a Docker socket, or system-proxy integration. The Vue frontend lives in `WebUI/` and uses the Web backend for configuration, profile, subscription, routing, DNS, runtime, and backup operations.
 
-No existing ServiceLib, WPF, or Avalonia source files are modified. The Web frontend is self-contained under `v2rayN.Web` and uses ServiceLib through existing public APIs. Web owns Core process/listener tracking and GeoFiles update backup, validation, and rollback; Core launch/stop and GeoFiles download behavior remain delegated to ServiceLib.
+The intended use includes native Linux servers and NAS devices: start the service on the server, then manage it from another trusted computer at `http://<server-private-ip>:5080`. The frontend is intentionally independent of the desktop projects; no existing ServiceLib, WPF, or Avalonia source is modified.
 
-The Vue source is in `WebUI/`. The frontend uses TypeScript and `vue-i18n` locale JSON files, and calls the existing Backend/ServiceLib for profile and settings operations. Its primary workspace is a compact, high-density node table.
+## Network and first-run security
 
-## Native Linux binary
+The default Web bind remains **`http://0.0.0.0:5080`** so native NAS/headless installs are reachable from the LAN without first logging in over SSH to change the bind address. `0.0.0.0` listens on all available IPv4 interfaces. Review the host firewall and all network interfaces before deployment; global IPv6 routing or another wildcard IPv6 bind can also make a service publicly reachable, even when no IPv4 port-forward is configured.
 
-Build with Node.js/npm and the .NET 10 SDK. `Scripts/publish-native.sh` prefers the local, git-ignored `.NET/dotnet` SDK when present, and otherwise uses `dotnet` from `PATH`:
+Interactive native installs may start without `V2RAYN_WEB_API_KEY` and initialize from either loopback or a directly connected trusted private network. LAN setup is allowed only when both client and server addresses are private and the HTTP `Host` exactly matches the server's private IP. Public addresses, mismatched hosts, and requests carrying `Forwarded`, `X-Forwarded-*`, or `X-Real-IP` headers cannot initialize setup. Forwarding headers never grant setup access.
+
+> Interactive native installs support first-run setup from loopback or a directly connected trusted private network. On shared/untrusted networks or Internet-facing deployments, configure `V2RAYN_WEB_API_KEY` before starting the service.
+
+`0.0.0.0` means all available network interfaces. Do not expose port 5080 directly to the public Internet. Use firewall rules, a VPN, or an HTTPS reverse proxy for remote access. Protect IPv4 **and** IPv6 paths; do not assume the absence of IPv4 port forwarding makes a host private.
+
+Systemd/supervised and container deployments require a non-empty `V2RAYN_WEB_API_KEY`; otherwise startup is refused with an actionable error. They never fall back to remote first-run setup. Configure a unique key before starting these deployments. With an environment key set, first-run setup is disabled and that key is used for login.
+
+Before Management Key setup completes, the Web host and setup page can run, but Core autostart and runtime-recovery startup are temporarily suppressed—even if `V2RAYN_WEB_AUTOSTART=true` or a previous runtime intent requested a start. The saved autostart setting is not changed. After setup, Core can be started normally from the UI or by the existing configured behavior on a later service start.
+
+## Authentication model
+
+- The Management Key is exchanged only by `POST /api/auth/login`; it is not a REST or SSE bearer token and is never put in a URL or logged.
+- A key created through setup is stored as a PBKDF2-HMAC-SHA256 verifier with a random salt and 600,000 iterations. Environment-provided keys are not persisted.
+- Login returns a random 256-bit Session Token. REST APIs use `Authorization: Bearer <session-token>`; only its SHA-256 digest is retained in memory.
+- Sessions use a 7-day sliding idle lifetime and a 30-day absolute lifetime. Logout revokes a session; sessions and SSE tickets expire on restart.
+- EventSource receives a separate random, one-time ticket valid for 45 seconds. The ticket cannot authorize REST requests, and its stream closes when the owning session is revoked or expires.
+- Login and setup are rate-limited by direct remote IP. Forwarding headers are not used to calculate setup eligibility or the rate-limit identity.
+
+## Native Linux
+
+Download and extract the full-install asset for the server architecture, then run `./v2rayN.Web`. The interactive native launcher starts a detached backend and opens a browser when a desktop is available; `./v2rayN.Web --foreground --no-open` is suitable for a terminal or a process supervisor. Use `./v2rayN.Web --stop` for an instance started by the native background launcher. `V2RAYN_DATA_HOME=/path/to/data` selects a writable ServiceLib data directory.
+
+Native builds require Node.js/npm and the .NET 10 SDK. From this directory:
 
 ```bash
 bash Scripts/publish-native.sh linux-x64
-# or: bash Scripts/publish-native.sh linux-arm64
-```
-
-NuGet packages are restored into `v2rayN.Web/.packages/nuget`; npm packages stay in `WebUI/node_modules` and the npm cache defaults to `v2rayN.Web/.packages/npm-cache`. The local publish output is self-contained and includes the built `wwwroot` frontend. v2rayN.Web does not curate its own Core distribution. GitHub artifacts and container images bundle the complete architecture-matched official Linux `2dust/v2rayN-core-bin` payload, using the same source as the original v2rayN Linux ZIP releases:
-
-```bash
-cd publish/linux-x64
-./v2rayN.Web
-```
-
-To make a local native publish equivalent to the downloadable GitHub artifact, fetch the matching architecture's Core bundle into its `bin/` directory:
-
-```bash
-sh Scripts/fetch-core-bundle.sh linux-x64 publish/linux-x64/bin
-# or: sh Scripts/fetch-core-bundle.sh linux-arm64 publish/linux-arm64/bin
-```
-
-The current upstream bundle includes Xray, sing-box (including `libcronet.so`), Mihomo, geodata, and sing-box `.srs` rule sets. The fetch script checks critical assets as a sanity test, then copies the complete upstream `bin/` tree; those checks are not an allowlist, so additional upstream Cores/assets flow into artifacts automatically.
-
-On Linux, running the native binary directly starts a detached backend, waits for its health endpoint, and opens the WebUI when a desktop session is available. The launcher uses a per-data-directory OS lock, so a second launch opens the existing instance instead of starting another one. After launch, the shell no longer owns the backend: Ctrl+C does not stop it. Use `./v2rayN.Web --stop` to send SIGTERM to the matching instance after verifying its lock PID against `/api/health`; `--stop` is intended for this native background-launcher mode. Use `./v2rayN.Web --foreground` for development/debugging; after startup, Ctrl+C safely runs the normal graceful-shutdown path. `--background` explicitly selects launcher mode and `--no-open` keeps it from opening a browser.
-
-The repeatable verification entry point builds the locale-checked WebUI, runs both Web and ServiceLib tests, publishes a native `linux-x64` executable, and runs the release packaging dry-run (`Scripts/test-release-packaging.sh`):
-
-```bash
+# or linux-arm64
 bash Scripts/verify.sh
 ```
 
-The lower-level Web tests are also runnable independently with `dotnet test Tests/v2rayN.Web.Tests.csproj --configuration Release`. `Scripts/verify.sh` and `Scripts/publish-native.sh` set `NUGET_PACKAGES` themselves so repository-wide NuGet restore behavior remains unchanged.
+`Scripts/verify.sh` checks frontend locales, builds and tests the Vue frontend, runs Web and ServiceLib tests, publishes a native linux-x64 smoke build, and validates lightweight packaging/manifest fixtures. A local native publish contains the Web application; official install packages and containers add the complete architecture-matched upstream Linux Core bundle.
 
-When real backup files are available, run the end-to-end Desktop/Web restore regression in an isolated temporary data home (the source ZIPs are only read; a malicious Web-auth entry is added to a temporary copy):
+## systemd
 
-```bash
-DOTNET="$PWD/.NET/dotnet" python3 Scripts/test-backup-fixtures.py /path/to/Backup_Desktop.zip /path/to/Backup_Web.zip
+The example unit is `Deploy/Systemd/v2rayn-web.service`. It runs the Web executable in the foreground as an unprivileged service user, stores application data under `/var/lib/v2rayn-web`, and listens on all interfaces at port 5080 by default. The environment example intentionally leaves the key empty: fill it before starting the unit. Protect the environment file with mode `600`.
+
+Generate a key, for example, with `openssl rand -hex 32`, then set it in `/etc/v2rayn-web.env`:
+
+```ini
+V2RAYN_WEB_API_KEY=<unique-random-secret>
 ```
 
-The fixture test exercises real restart behavior, old `RoutingIndexId` migration, stale selected-subscription normalization, generated client config, SQLite CRUD for VMess/VLESS/subscription profiles, current-host auth isolation, no-change/stopped/running settings apply, occupied TCP/UDP listener preflight, Faulted-with-live-child recovery, Core restart rollback (including active routing rows), native self-restart, and actual Core child shutdown.
-
-Open `http://127.0.0.1:5080` locally, or use the server private IP from a trusted LAN/VPN. First Run setup or sign-in uses the Management Key (`V2RAYN_WEB_API_KEY` in environment-based deployments). The key is sent only in the login/setup JSON body, is never stored in browser storage, URLs, logs, or EventSource data, and a locally created key is stored only as a PBKDF2 verifier in `webData/web-auth.json` under the current Web host's ServiceLib startup directory. This host identity is separate from v2rayN configuration: normal backups omit it and restore ignores any archive copy. PBKDF2 is used only for setup and Management Key login; authenticated REST requests use the Session Token. Login exchanges the Management Key for a random 256-bit Session Token; only its SHA-256 digest is stored in memory by the Backend. Sessions slide after authenticated REST activity with a 7-day idle expiration and a 30-day absolute expiration. “Idle” means no authenticated REST request other than SSE-ticket issuance, not lack of human mouse/keyboard input; WebUI profile refresh counts as activity; status changes are synchronized through EventHub/SSE. To open EventSource, the WebUI sends an authenticated `POST /api/auth/sse-ticket`; this request does not renew the owning session. The Backend returns a random one-time ticket valid for 45 seconds and stores only its digest plus the owning session digest in memory. The EventSource URL contains that ticket, never the main Session Token. Consuming the ticket does not authenticate REST requests or renew the session; the stream is bound to session revoke/expiry, and SSE heartbeats do not renew it. Sessions and tickets are not persisted and become invalid after a Backend restart. Login attempts are rate-limited per remote IP. The mixed HTTP/SOCKS proxy listener follows the saved ServiceLib configuration (new installations keep v2rayN's `10808` default); Core autostart remains off until configured. ASP.NET Core handles `SIGINT` and `SIGTERM`; the Web runtime owns scheduling and performs ordered Core/profile/statistics/config/database cleanup under a 20-second overall shutdown budget. If operation drain or a cleanup step times out or fails, later cleanup is skipped to avoid racing active work or closing SQLite while it may still be in use. The example systemd unit allows 30 seconds for process shutdown and disables automatic SIGKILL escalation; if Core stop cannot be confirmed within the cleanup budget, the runtime records a fault and skips later cleanup; check the backend log and tracked Core PIDs/listeners before restarting.
-
-Use `sudo systemctl stop v2rayn-web.service` for the systemd deployment and `docker stop` / `podman stop` for containers; those foreground-managed deployments do not use `--stop`.
-
-Web-host `SIGINT`/`SIGTERM` shutdown is distinct from Core termination: Web calls ServiceLib's existing `CoreStop` API and confirms shutdown using its captured Core process identities.
-
-Subscription interval scheduling is implemented in `Services/V2rayRuntime.Scheduling.cs`; the Web host does not register ServiceLib's desktop `TaskManager`. The Web runtime's `RuntimeMutationGate` serializes its shared configuration and SQLite mutations.
-
-A fresh output from `Scripts/publish-native.sh` is the Web application layer; GitHub full-install artifacts and container images add the complete architecture-matched official Linux `v2rayN-core-bin` payload. The complete upstream `bin/` tree is placed beside the executable, as in the original Linux distribution. When `V2RAYN_DATA_HOME` is set, ServiceLib copies that bundled directory into the writable data home during initialization. The updater supports platform-compatible Xray, sing-box, Mihomo, GeoFiles, and the official **v2rayN Web** release channel published with the regular v2rayN GitHub Release; it never calls the upstream Desktop updater for Web packages. This does not add desktop-only Clash UI features. Runtime Core selection and startup continue to be resolved by ServiceLib's `CoreInfoManager` and `CoreManager`; Web does not implement Core distribution or selection rules.
-
-### v2rayN Web releases and self-update
-
-Web builds use the official upstream release tag as their version identity: tag `7.25.3` produces `webVersion = 7.25.3`, and there is no separate `-web.N` release line. `/api/status` reports `webVersion`, `gitCommit`, `webBuildDate`, and `runtimeIdentifier`; the binary also embeds the release repository (`2dust/v2rayN` for official builds, or the fork that produced a local build) and only trusts assets under that repository. Local development builds keep a `0.0.0-dev` identity.
-
-Official releases are produced by the normal release pipeline: `.github/workflows/build-all.yml` → `.github/workflows/build-linux.yml` → the reusable `.github/workflows/build-web.yml`. When a `release_tag` (for example `7.25.3`) is supplied, `build-web.yml` publishes the Web artifacts and `web-update.json` to the same GitHub Release through the existing `upload-sign.yml` GPG flow. Fork pushes, pull requests, and `build-web.yml` `workflow_dispatch` runs with a `release_tag` only build, test, package, and validate the assets as GitHub Actions artifacts; they do not create a GitHub Release and do not require upstream secrets. The fork can publish its own prerelease through the explicit `publish_release` switch, which only works for `Nozilla-X/v2rayN` on `workflow_dispatch`:
+Install/update the unit and start it only after configuring the key:
 
 ```bash
-# Package-only validation.
-gh workflow run build-web.yml --repo Nozilla-X/v2rayN --ref web -f release_tag=7.25.3
-
-# Real fork prerelease. Existing tags and releases are never overwritten.
-gh workflow run build-web.yml --repo Nozilla-X/v2rayN --ref web \
-  -f release_tag=7.25.3 -f publish_release=true -f prerelease=true
-```
-
-The resulting `web-release-packages` and `web-release-manifest` artifacts contain the exact release assets.
-
-Each v2rayN Release contains full fresh-install packages (`v2rayN-linux-64-web.zip`, `v2rayN-linux-arm64-web.zip`), app-only update packages (`v2rayN-linux-64-web-update.zip`, `v2rayN-linux-arm64-web-update.zip`), and `web-update.json` with the release version, commit, exact RID, asset size, and SHA-256; official upstream releases also carry the release signature files. The app-only ZIP archives contain just the Web executable, build identity, and `wwwroot`; they do not contain `bin/`, Core executables, GeoFiles, configuration, logs, `webData`, or `web-auth.json`.
-
-Only a writable, native Linux single-file install can apply a Web update automatically. It downloads and verifies the HTTPS release manifest and app-only archive while the current Core is still available, validates archive paths/types, SHA-256, product identity, version, and RID, then hands off file replacement to a separate helper after the current Web host completes its ordered shutdown. The helper swaps only the executable/UI/build identity, waits for the instance lock to be released, verifies the new `/api/health` Web version and Core runtime intent, and restores the prior Web files if health or runtime recovery fails. `bin/`, user data, and configuration are never replaced. The update intent records only whether Core was running, its preferred profile ID, and the reason; a stopped Core remains stopped.
-
-Systemd-managed installs (including the protected `/opt/v2rayn-web` example) and containers can check the Web channel but cannot self-install. For systemd, install the new full release as an administrator; for Docker/Podman, pull/build the new image and recreate the container. The UI reports these modes as check-only rather than claiming that an update was installed.
-
-For local native publishes, fetch and stage the complete bundle before enabling Core autostart:
-
-```bash
-sh Scripts/fetch-core-bundle.sh linux-x64 publish/linux-x64/bin
-```
-
-### Data and Core paths
-
-- By default, ServiceLib uses the executable directory when writable. Its normal `LocalApplicationData` fallback remains available when that directory is read-only.
-- Set `V2RAYN_DATA_HOME=/path/to/data` to use a shared XDG data home. ServiceLib stores v2rayN state under `$V2RAYN_DATA_HOME/v2rayN` (`guiConfigs`, `guiLogs`, `bin`, and related folders).
-- A self-contained single-file executable started from a read-only install directory needs `DOTNET_BUNDLE_EXTRACT_BASE_DIR` set to a writable path (the systemd and container examples use a subdirectory of the data home). A normal user-owned, writable native publish directory can run `./v2rayN.Web` directly.
-- A bundled `bin/` folder beside the executable is copied into the writable ServiceLib data directory when the XDG override is active. Xray can also be checked/updated through `GET /api/core/xray/check-update` and `POST /api/core/xray/update`.
-- The Core listener is controlled by the existing `Config.Inbound`; a new installation retains v2rayN's mixed HTTP/SOCKS port `10808`, loopback-only. Set `V2RAYN_WEB_PROXY_PORT` to explicitly override the saved/default port at startup, and `V2RAYN_WEB_PROXY_LISTEN_ALL=true` only when the listener should accept non-loopback clients. For an isolated local test alongside a v2rayN instance using 10808, set `V2RAYN_WEB_PROXY_PORT=1145` and use a separate `V2RAYN_DATA_HOME`.
-- The WebUI/API listens on `http://0.0.0.0:5080` by default. `ASPNETCORE_URLS` follows standard ASP.NET Core configuration for listen addresses and ports when a different bind is needed. `V2RAYN_WEB_AUTOSTART` controls starting the selected profile at process launch.
-
-For remote access, prefer a trusted LAN/VPN or place v2rayN.Web behind a TLS-enabled reverse proxy. Do not expose the plain HTTP management endpoint directly to the public Internet.
-
-`V2RAYN_WEB_API_KEY` is optional for native first-run setup and remains supported as the Management Key for systemd/container deployments. The Backend does not require any desktop components or Docker socket access.
-
-First-run key setup is accepted from IPv4/IPv6 loopback or a private-network client connecting directly to the server's private IP; forwarded headers and public addresses are rejected. Remote deployments should configure `V2RAYN_WEB_API_KEY` before starting the service and sign in with that Management Key.
-
-`POST /api/auth/login` exchanges a Management Key for a Session Token. REST requests use `Authorization: Bearer <session-token>`. Because the browser's native `EventSource` API cannot set an authorization header, the authenticated `POST /api/auth/sse-ticket` endpoint issues a random 45-second, one-time ticket for `/api/events?sse_ticket=...`. Only ticket and session digests are retained by the Backend; the ticket cannot authorize REST calls or renew its owning session, and the SSE stream closes on session revoke/expiry. Sessions and tickets are held in memory only; a Backend restart requires signing in again.
-
-Backup restore accepts archives up to 64 MiB compressed and 256 MiB expanded, with a 2,048-entry limit and path/symlink validation. Temporary files created for backup downloads are removed after the response completes.
-
-## Native systemd service
-
-The example unit is `Deploy/Systemd/v2rayn-web.service`. It runs the same published executable as a non-root service user, stores ServiceLib state in a single `StateDirectory`, and uses the normal ASP.NET Core shutdown path; the Web runtime calls the upstream CoreStop API and confirms that its tracked Core process identities have exited. Listener probes are not treated as proof of process ownership or as a stop-failure condition.
-
-Example installation (adapt the account and paths to the server):
-
-```bash
-sudo useradd --system --home-dir /var/lib/v2rayn-web --shell /usr/sbin/nologin v2rayn
-sudo install -d -o v2rayn -g v2rayn /opt/v2rayn-web
-sudo cp -a publish/linux-x64/. /opt/v2rayn-web/
 sudo install -m 600 Deploy/Systemd/v2rayn-web.env.example /etc/v2rayn-web.env
+sudoedit /etc/v2rayn-web.env
 sudo install -m 644 Deploy/Systemd/v2rayn-web.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now v2rayn-web.service
 ```
 
-Edit `/etc/v2rayn-web.env` to set a unique `V2RAYN_WEB_API_KEY` Management Key. The unit uses `V2RAYN_DATA_HOME=/var/lib/v2rayn-web`, `ASPNETCORE_URLS=http://0.0.0.0:5080`, `--foreground`, and `Restart=always` lets a validated backup restore restart the service after the API requests shutdown; `SendSIGKILL=no` avoids silently escalating a failed Core stop. `--stop` refuses systemd-owned instances—use `systemctl stop v2rayn-web.service` instead.
+For a reverse proxy on the same host, optionally set `ASPNETCORE_URLS=http://127.0.0.1:5080` in the unit and terminate TLS at the proxy. Otherwise restrict port 5080 to trusted LAN/VPN clients with firewall rules. Use `systemctl stop v2rayn-web.service` to stop a systemd-managed instance.
 
-### Public server deployment
+## Docker / Podman
 
-For an Internet-facing server, configure the Management Key before the first start so no remote first-run setup is needed. Generate a strong key with `openssl rand -hex 32` and place it in `/etc/v2rayn-web.env`:
-
-```ini
-V2RAYN_WEB_API_KEY=<generated-secret>
-```
-
-Keep this file readable only by root (`chmod 600`). Bind the app to loopback by changing the systemd unit's `ASPNETCORE_URLS` to `http://127.0.0.1:5080`, then reload and restart the service:
+The Compose example requires `V2RAYN_WEB_API_KEY` and refuses to interpolate an empty value:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl restart v2rayn-web.service
-```
-
-Terminate HTTPS at a reverse proxy on the same server. For example, Caddy can automatically obtain and renew a certificate:
-
-```caddy
-web.example.com {
-    reverse_proxy 127.0.0.1:5080
-}
-```
-
-Open only the proxy's public ports (normally TCP 80/443) in the firewall; keep TCP 5080 private. Sign in to v2rayN Web using the configured `V2RAYN_WEB_API_KEY`. The first-run setup endpoint remains limited to loopback or direct private-network access and rejects public/reverse-proxy setup requests.
-
-Check service logs with:
-
-```bash
-journalctl -u v2rayn-web.service -f
-```
-
-Application/Core messages go to stdout/stderr for journald and are also retained in the ServiceLib log path when file logging is enabled.
-
-## Optional Docker / rootless Podman
-
-The container is a packaging option for the same self-contained publish output. Its entrypoint explicitly runs `v2rayN.Web --foreground`. It does not require additional network-device access or Linux capabilities. From the repository root:
-
-```bash
-export V2RAYN_WEB_API_KEY='<strong-secret>'
+export V2RAYN_WEB_API_KEY="$(openssl rand -hex 32)"
 docker compose -f v2rayN/v2rayN.Web/compose.yaml up -d --build
-# Rootless Podman:
-podman compose -f v2rayN/v2rayN.Web/compose.yaml up -d --build
+# or: podman compose -f v2rayN/v2rayN.Web/compose.yaml up -d --build
 ```
 
-The Compose example binds Web/API `5080` and proxy `10808` to host loopback by default and stores ServiceLib state in a named `/data` volume. Set `V2RAYN_WEB_PORT` or `V2RAYN_PROXY_PORT` to change published/container ports; for local testing beside a v2rayN instance on 10808, set `V2RAYN_PROXY_PORT=1145`. Both listeners are loopback-only from the host by default. No runtime Docker/Podman API or socket is used by the app.
+The container process listens on `0.0.0.0:5080`; the example publishes the Web port on host loopback by default. For trusted-LAN access, change the host-side port mapping deliberately and keep the Management Key configured. The proxy listener and Web port can be adjusted through the Compose environment settings. The image does not require extra Linux capabilities or access to the container engine socket.
 
-The Containerfile downloads and embeds the complete matching official Linux Core bundle at build time. The Node/.NET build stages run on the builder architecture and publish for `RID`; the final runtime image follows the target platform. The Compose file intentionally does not mount a host `core-bin` over `/app/bin`, which would hide the bundled files. The default is `linux-x64`; on an ARM64 host use `V2RAYN_BUILD_RID=linux-arm64 docker compose -f v2rayN/v2rayN.Web/compose.yaml up -d --build`, or pass `--build-arg RID=linux-arm64` with `--platform linux/arm64` to Buildx.
+The default build target is linux-x64. For ARM64, set `V2RAYN_BUILD_RID=linux-arm64` and build for `linux/arm64`. The Containerfile downloads and embeds the complete architecture-matched upstream Core bundle.
 
-## API and feature map
+## Release assets and self-update
 
-See [`FEATURE-MAP.md`](FEATURE-MAP.md) for the original WPF/Avalonia feature → ServiceLib → Backend API → Web page mapping, including the intentionally deferred TUN scope and the desktop-only system-proxy exclusion.
+Official Web packages are attached to the same version tag and GitHub Release as v2rayN:
+
+- `v2rayN-linux-64-web.zip` and `v2rayN-linux-arm64-web.zip` — full fresh installs.
+- `v2rayN-linux-64-web-update.zip` and `v2rayN-linux-arm64-web-update.zip` — app-only updates.
+- `web-update.json` — version, build identity, RID, asset sizes, and SHA-256 digests.
+
+The existing Linux release workflow builds and validates the Web artifacts, then the official signing/upload workflow adds them to that release. Asset naming follows the existing Linux release convention; there is no separate Web version/tag stream. The embedded build repository is used for self-update isolation: a build only trusts the release assets belonging to the repository that produced it.
+
+Writable native Linux installs can apply a verified Web update transactionally. Systemd deployments are check-only and require an administrator to install the next package; containers are check-only and require a new image/container. App-only archives never replace Core binaries, user data, or the Management Key verifier.
+
+## Intentionally unsupported
+
+The Web frontend does not expose desktop-only system proxy controls, tray icons, global hotkeys, window integration, or native scanner/file dialogs. TUN, Clash Proxies, and Clash Connections are intentionally deferred; Web does not modify ServiceLib to approximate those desktop features. If a saved configuration enables TUN, Web refuses to start the generated Core configuration and leaves the saved setting unchanged. Browser-native file/clipboard capabilities are used where applicable.
+
+See [`FEATURE-MAP.md`](FEATURE-MAP.md) for the detailed WPF/Avalonia → ServiceLib → Web API → frontend mapping and current feature boundaries.
