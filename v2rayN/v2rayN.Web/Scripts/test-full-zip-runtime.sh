@@ -32,6 +32,18 @@ unzip -q "$archive" -d "$install_dir"
 executable="$install_dir/v2rayN.Web"
 test -x "$executable"
 test -s "$install_dir/wwwroot/index.html"
+expected_version="$(python3 - "$archive" <<'PY'
+import json
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1]) as package:
+    identity = json.loads(package.read("v2rayN.Web.build.json"))
+assert identity["product"] == "v2rayN.Web", identity
+assert identity["rid"] == "linux-x64", identity
+print(identity["version"])
+PY
+)"
 
 port="$(python3 - <<'PY'
 import socket
@@ -80,7 +92,7 @@ if [[ "$healthy" != true ]]; then
   exit 1
 fi
 grep -Fiq 'X-v2rayn-web-instance-pid:' "$temporary/health.headers"
-grep -Fiq 'X-v2rayn-web-version: 7.25.3' "$temporary/health.headers"
+grep -Fiq "X-v2rayn-web-version: $expected_version" "$temporary/health.headers"
 grep -Fiq 'X-v2rayn-web-core-state: stopped' "$temporary/health.headers"
 grep -Fiq 'X-v2rayn-web-core-process-ids:' "$temporary/health.headers"
 
