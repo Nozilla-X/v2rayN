@@ -5,6 +5,11 @@ The manifest is published next to the official v2rayN Release assets. Every URL 
 official release tag in the repository that produced the assets, so the Web self-update never
 depends on a fork-specific release channel.
 
+Verification also opens each app-only archive and cross-checks its embedded
+`v2rayN.Web.build.json` against the manifest, and enforces the app-only layout boundary
+(executable, build identity, and `wwwroot/**` only, with no links, duplicates, or path
+escapes). The Web runtime enforces the same contract before installing an update.
+
 Usage:
   web-update-manifest.py write --version 7.25.3 --repository 2dust/v2rayN --commit <sha> \
       --build-date 2026-09-28T00:00:00Z --dist dist --output dist/web-update.json
@@ -18,10 +23,16 @@ import hashlib
 import json
 import re
 import sys
+import tarfile
 from pathlib import Path
 
 PRODUCT = "v2rayN.Web"
 RID_ARCH = {"linux-x64": "64", "linux-arm64": "arm64"}
+BUILD_IDENTITY_NAME = "v2rayN.Web.build.json"
+APP_EXECUTABLE_NAME = "v2rayN.Web"
+APP_UI_INDEX = "wwwroot/index.html"
+MAX_ARCHIVE_ENTRIES = 10000
+MAX_EXPANDED_ARCHIVE_BYTES = 1024 * 1024 * 1024
 VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$")
 OFFICIAL_URL_RE = re.compile(
@@ -52,6 +63,79 @@ def require_release_files(dist: Path) -> None:
             path = dist / asset
             if not path.is_file() or path.stat().st_size == 0:
                 fail(f"release asset is missing or empty: {path}")
+
+
+def normalize_member_path(archive_name: str, member_name: str) -> str:
+    """Normalize an archive entry exactly like the Web runtime package stager does."""
+    if not member_name or member_name.startswith("/") or "\\" in member_name or "\0" in member_name:
+        fail(f"app-only archive {archive_name} contains an invalid archive path: {member_name!r}")
+    segments = [segment for segment in member_name.split("/") if segment]
+    if not segments or any(segment in (".", "..") or ":" in segment for segment in segments):
+        fail(f"app-only archive {archive_name} contains an invalid archive path: {member_name!r}")
+    return "/".join(segments)
+
+
+def app_member_allowed(path: str) -> bool:
+    return path in (APP_EXECUTABLE_NAME, BUILD_IDENTITY_NAME, "wwwroot") or path.startswith("wwwroot/")
+
+
+def verify_app_archive_identity(archive: Path, rid: str, version: str, commit: str, build_date: str) -> None:
+    """Cross-check the app-only archive layout and its embedded build identity.
+
+    The archive must only carry the executable, its `v2rayN.Web.build.json` identity, and the
+    `wwwroot/**` Web UI. The identity must match the release manifest exactly, mirroring the
+    checks the Web runtime performs before installing a self-update package.
+    """
+    archive_name = archive.name
+    seen: set[str] = set()
+    identity_bytes: bytes | None = None
+    entry_count = 0
+    expanded_bytes = 0
+    try:
+        with tarfile.open(archive, "r:gz") as handle:
+            while (member := handle.next()) is not None:
+                entry_count += 1
+                if entry_count > MAX_ARCHIVE_ENTRIES:
+                    fail(f"app-only archive {archive_name} has more than {MAX_ARCHIVE_ENTRIES} entries")
+                expanded_bytes += member.size
+                if expanded_bytes > MAX_EXPANDED_ARCHIVE_BYTES:
+                    fail(f"app-only archive {archive_name} expands beyond the supported size")
+                path = normalize_member_path(archive_name, member.name)
+                if path in seen:
+                    fail(f"app-only archive {archive_name} contains a duplicate archive path: {path}")
+                seen.add(path)
+                if not app_member_allowed(path):
+                    fail(f"app-only archive {archive_name} contains an entry outside the app-only layout: {path}")
+                if member.isdir():
+                    continue
+                if not member.isreg():
+                    fail(f"app-only archive {archive_name} contains a link or special entry: {path}")
+                if path == BUILD_IDENTITY_NAME:
+                    data = handle.extractfile(member)
+                    identity_bytes = data.read() if data is not None else None
+    except (OSError, EOFError, tarfile.TarError) as exc:
+        fail(f"app-only archive {archive_name} could not be read: {exc}")
+
+    for required in (APP_EXECUTABLE_NAME, BUILD_IDENTITY_NAME, APP_UI_INDEX):
+        if required not in seen:
+            fail(f"app-only archive {archive_name} is missing {required}")
+    if identity_bytes is None:
+        fail(f"app-only archive {archive_name} has an unreadable {BUILD_IDENTITY_NAME}")
+    try:
+        identity = json.loads(identity_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        fail(f"app-only archive {archive_name} has an invalid {BUILD_IDENTITY_NAME}: {exc}")
+    if not isinstance(identity, dict):
+        fail(f"app-only archive {archive_name} has an invalid {BUILD_IDENTITY_NAME}: expected a JSON object")
+
+    expected = {"product": PRODUCT, "version": version, "commit": commit, "buildDate": build_date, "rid": rid}
+    for field, value in expected.items():
+        actual = identity.get(field)
+        if actual != value:
+            fail(
+                f"app-only archive {archive_name} identity mismatch for {field}: "
+                f"{actual!r} does not match the manifest value {value!r}"
+            )
 
 
 def package_entry(dist: Path, repository: str, version: str, rid: str) -> dict:
@@ -133,6 +217,7 @@ def verify_manifest(manifest_path: Path, dist: Path, repository: str | None, ver
             fail(f"asset URL is not an official release URL for this tag: {url}")
         if repository is not None and not url.startswith(f"https://github.com/{repository}/"):
             fail(f"asset URL does not use repository {repository}: {url}")
+        verify_app_archive_identity(path, rid, manifest_version, manifest["commit"], manifest["buildDate"])
         by_rid[rid] = package
 
     for rid in RID_ARCH:

@@ -26,6 +26,8 @@ on:
       - 'v2rayN/Directory.Packages.props'
       - 'global.json'
       - '.github/workflows/build-web.yml'
+      - '.github/workflows/build-linux.yml'
+      - '.github/workflows/upload-sign.yml'
   push:
     branches:
       - web
@@ -38,6 +40,8 @@ on:
       - 'v2rayN/Directory.Packages.props'
       - 'global.json'
       - '.github/workflows/build-web.yml'
+      - '.github/workflows/build-linux.yml'
+      - '.github/workflows/upload-sign.yml'
 
 permissions:
   contents: read
