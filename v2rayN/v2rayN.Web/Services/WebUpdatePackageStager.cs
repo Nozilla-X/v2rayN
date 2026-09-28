@@ -135,6 +135,8 @@ internal static partial class WebUpdatePackageStager
                 var target = Path.GetFullPath(Path.Combine(root, relative.Replace('/', Path.DirectorySeparatorChar)));
                 if (!target.StartsWith(rootPrefix, StringComparison.Ordinal))
                     throw new InvalidDataException("The Web package contains a path outside its staging directory.");
+                if (IsEnvironmentConfigurationPath(relative))
+                    throw new InvalidDataException("The Web package must not contain .env or .env.example files.");
                 if (!IsAllowedPath(relative))
                     throw new InvalidDataException($"The Web package contains an unexpected file: {relative}.");
 
@@ -202,6 +204,9 @@ internal static partial class WebUpdatePackageStager
     private static bool IsAllowedPath(string path) =>
         path is ExecutableName or "v2rayN.Web.build.json" or "wwwroot"
         || path.StartsWith("wwwroot/", StringComparison.Ordinal);
+
+    private static bool IsEnvironmentConfigurationPath(string path) =>
+        path.Split('/').Any(segment => segment is ".env" or ".env.example");
 
     private static async Task CopyWithLimitAsync(Stream input, Stream output, long expectedLength, CancellationToken cancellationToken)
     {

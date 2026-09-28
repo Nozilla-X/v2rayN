@@ -27,11 +27,12 @@ trap cleanup EXIT HUP INT TERM
 
 install_dir="$temporary/install"
 data_home="$temporary/data"
-mkdir -p "$install_dir" "$data_home" "$temporary/dotnet-bundle"
+mkdir -p "$install_dir" "$data_home" "$temporary/dotnet-bundle" "$temporary/other-working-directory"
 unzip -q "$archive" -d "$install_dir"
 executable="$install_dir/v2rayN.Web"
 test -x "$executable"
 test -s "$install_dir/wwwroot/index.html"
+test -s "$install_dir/.env.example"
 expected_version="$(python3 - "$archive" <<'PY'
 import json
 import sys
@@ -54,13 +55,36 @@ with socket.socket() as sock:
 PY
 )"
 management_key="web-zip-smoke-$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-export V2RAYN_DATA_HOME="$data_home"
-export V2RAYN_WEB_API_KEY="$management_key"
-export V2RAYN_WEB_AUTOSTART=false
-export ASPNETCORE_URLS="http://127.0.0.1:$port"
-export DOTNET_BUNDLE_EXTRACT_BASE_DIR="$temporary/dotnet-bundle"
+cp "$install_dir/.env.example" "$install_dir/.env"
+python3 - "$install_dir/.env" "$management_key" "$port" <<'PY'
+import sys
+from pathlib import Path
 
-"$executable" --foreground --no-open >"$temporary/web.log" 2>&1 &
+path, key, port = sys.argv[1:]
+content = Path(path).read_text(encoding="utf-8")
+replacements = {
+    "V2RAYN_WEB_API_KEY=": f"V2RAYN_WEB_API_KEY={key}",
+    "ASPNETCORE_URLS=http://0.0.0.0:5080": f"ASPNETCORE_URLS=http://127.0.0.1:{port}",
+    "V2RAYN_WEB_AUTOSTART=true": "V2RAYN_WEB_AUTOSTART=false",
+}
+for original, replacement in replacements.items():
+    assert content.count(original) == 1, original
+    content = content.replace(original, replacement, 1)
+Path(path).write_text(content, encoding="utf-8")
+PY
+chmod 600 "$install_dir/.env"
+
+(
+  cd "$temporary/other-working-directory"
+  exec env \
+    -u V2RAYN_WEB_API_KEY \
+    -u V2RAYN_WEB_AUTOSTART \
+    -u ASPNETCORE_URLS \
+    -u ASPNETCORE_HTTP_PORTS \
+    V2RAYN_DATA_HOME="$data_home" \
+    DOTNET_BUNDLE_EXTRACT_BASE_DIR="$temporary/dotnet-bundle" \
+    "$executable" --foreground --no-open
+) >"$temporary/web.log" 2>&1 &
 web_pid=$!
 health_url="http://127.0.0.1:$port/api/health"
 healthy=false

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-executable="${1:?Usage: test-startup-security.sh <native-v2rayN.Web-executable>}"
-executable="$(realpath "$executable")"
-test -x "$executable"
+source_executable="${1:?Usage: test-startup-security.sh <native-v2rayN.Web-executable>}"
+source_executable="$(realpath "$source_executable")"
+test -x "$source_executable"
 command -v curl >/dev/null
 command -v python3 >/dev/null
 
@@ -23,6 +23,19 @@ cleanup() {
   rm -rf "$temporary"
 }
 trap cleanup EXIT HUP INT TERM
+
+# Run from an isolated copy so a developer's executable-directory .env is not read or copied
+# into the test; individual cases create controlled configuration files beside this apphost.
+runtime_directory="$temporary/runtime"
+source_directory="$(dirname "$source_executable")"
+mkdir -p "$runtime_directory" "$temporary/other-working-directory"
+for item in "$source_directory"/* "$source_directory"/.[!.]* "$source_directory"/..?*; do
+  [[ -e "$item" || -L "$item" ]] || continue
+  [[ "${item##*/}" == ".env" ]] && continue
+  cp -a -- "$item" "$runtime_directory/"
+done
+executable="$runtime_directory/v2rayN.Web"
+test -x "$executable"
 
 new_port() {
   python3 - <<'PY'
@@ -44,12 +57,18 @@ assert_rejected_without_key() {
   esac
 
   set +e
-  env -u V2RAYN_WEB_API_KEY \
-    -u INVOCATION_ID -u JOURNAL_STREAM -u NOTIFY_SOCKET \
-    -u DOTNET_RUNNING_IN_CONTAINER -u container \
-    "${markers[@]}" V2RAYN_DATA_HOME="$data_home" \
-    "$executable" --foreground >"$output" 2>&1
-  status=$?
+  if (
+    cd "$temporary/other-working-directory"
+    exec env -u V2RAYN_WEB_API_KEY \
+      -u INVOCATION_ID -u JOURNAL_STREAM -u NOTIFY_SOCKET \
+      -u DOTNET_RUNNING_IN_CONTAINER -u container \
+      "${markers[@]}" V2RAYN_DATA_HOME="$data_home" \
+      "$executable" --foreground --no-open
+  ) >"$output" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
   set -e
 
   [[ "$status" -eq 1 ]] || { cat "$output" >&2; echo "$deployment did not fail closed (exit $status)." >&2; exit 1; }
@@ -117,20 +136,43 @@ stop_instance() {
 assert_rejected_without_key systemd
 assert_rejected_without_key container
 
+assert_malformed_configuration_fails() {
+  local output="$temporary/malformed-env.log" status
+  printf 'V2RAYN_WEB_API_KEY=must-not-be-echoed"\n' > "$runtime_directory/.env"
+  if (
+    cd "$temporary/other-working-directory"
+    exec env -u V2RAYN_WEB_API_KEY -u INVOCATION_ID -u JOURNAL_STREAM -u NOTIFY_SOCKET \
+      -u DOTNET_RUNNING_IN_CONTAINER -u container "$executable" --foreground --no-open
+  ) >"$output" 2>&1; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f "$runtime_directory/.env"
+  [[ "$status" -eq 1 ]] || { cat "$output" >&2; echo "Malformed .env did not fail startup (exit $status)." >&2; exit 1; }
+  grep -Fq 'Invalid v2rayN.Web environment configuration:' "$output"
+  ! grep -Fq 'must-not-be-echoed' "$output"
+}
+
+assert_malformed_configuration_fails
+
 # Native interactive first run remains available without SSH or a preconfigured key.
 native_port="$(new_port)"
 native_data="$temporary/native-data"
 native_log="$temporary/native-first-run.log"
 native_url="http://127.0.0.1:$native_port"
 native_key="first-run-$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
-env -u V2RAYN_WEB_API_KEY \
-  -u INVOCATION_ID -u JOURNAL_STREAM -u NOTIFY_SOCKET \
-  -u DOTNET_RUNNING_IN_CONTAINER -u container \
-  V2RAYN_DATA_HOME="$native_data" \
-  V2RAYN_WEB_AUTOSTART=true \
-  ASPNETCORE_URLS="$native_url" \
-  DOTNET_BUNDLE_EXTRACT_BASE_DIR="$temporary/native-bundle" \
-  "$executable" --foreground --no-open >"$native_log" 2>&1 &
+(
+  cd "$temporary/other-working-directory"
+  exec env -u V2RAYN_WEB_API_KEY \
+    -u INVOCATION_ID -u JOURNAL_STREAM -u NOTIFY_SOCKET \
+    -u DOTNET_RUNNING_IN_CONTAINER -u container \
+    V2RAYN_DATA_HOME="$native_data" \
+    V2RAYN_WEB_AUTOSTART=true \
+    ASPNETCORE_URLS="$native_url" \
+    DOTNET_BUNDLE_EXTRACT_BASE_DIR="$temporary/native-bundle" \
+    "$executable" --foreground --no-open
+) >"$native_log" 2>&1 &
 web_pid=$!
 wait_for_health "$native_url" "$native_log"
 
@@ -198,7 +240,122 @@ start_managed_with_key() {
   stop_instance "$output"
 }
 
+start_managed_with_dotenv_key() {
+  local deployment="$1" port="$2" data_home="$temporary/$1-dotenv-data" output="$temporary/$1-dotenv-key.log" url="http://127.0.0.1:$2"
+  local key="dotenv-managed-key-$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+  local markers=()
+  case "$deployment" in
+    systemd) markers=(INVOCATION_ID=startup-security-dotenv-test) ;;
+    container) markers=(DOTNET_RUNNING_IN_CONTAINER=true) ;;
+  esac
+
+  printf 'V2RAYN_WEB_API_KEY=%s\nASPNETCORE_URLS=%s\nV2RAYN_WEB_AUTOSTART=false\n' \
+    "$key" "$url" > "$runtime_directory/.env"
+  chmod 600 "$runtime_directory/.env"
+  (
+    cd "$temporary/other-working-directory"
+    exec env -u V2RAYN_WEB_API_KEY \
+      -u V2RAYN_WEB_AUTOSTART -u ASPNETCORE_URLS -u ASPNETCORE_HTTP_PORTS \
+      -u INVOCATION_ID -u JOURNAL_STREAM -u NOTIFY_SOCKET \
+      -u DOTNET_RUNNING_IN_CONTAINER -u container \
+      "${markers[@]}" V2RAYN_DATA_HOME="$data_home" \
+      DOTNET_BUNDLE_EXTRACT_BASE_DIR="$temporary/$deployment-dotenv-bundle" \
+      "$executable" --foreground --no-open
+  ) >"$output" 2>&1 &
+  web_pid=$!
+  wait_for_health "$url" "$output"
+
+  python3 -c 'import json,sys; print(json.dumps({"key":sys.argv[1]}))' "$key" >"$temporary/$deployment-dotenv-login-request.json"
+  curl --silent --show-error --fail -H 'Content-Type: application/json' \
+    --data-binary "@$temporary/$deployment-dotenv-login-request.json" \
+    "$url/api/auth/login" >"$temporary/$deployment-dotenv-login.json"
+  local session_token
+  session_token="$(python3 - "$temporary/$deployment-dotenv-login.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    response = json.load(handle)
+assert response["success"] is True, response
+print(response["data"]["token"])
+PY
+)"
+  curl --silent --show-error --fail -H "Authorization: Bearer $session_token" \
+    "$url/api/status" >"$temporary/$deployment-dotenv-status.json"
+  python3 - "$temporary/$deployment-dotenv-status.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    response = json.load(handle)
+status = response["data"]
+assert response["success"] is True, response
+assert status["coreRunning"] is False, status
+assert status["runtimeState"] == "stopped", status
+assert not status["coreProcessIds"], status
+PY
+  stop_instance "$output"
+  rm -f "$runtime_directory/.env"
+}
+
+start_managed_with_process_environment_precedence() {
+  local port="$1" dotenv_port="$(new_port)" data_home="$temporary/systemd-precedence-data"
+  local output="$temporary/systemd-precedence.log" url="http://127.0.0.1:$1"
+  local dotenv_key="dotenv-shadowed-key-$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+  local process_key="process-priority-key-$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+
+  printf 'V2RAYN_WEB_API_KEY=%s\nASPNETCORE_URLS=http://127.0.0.1:%s\nV2RAYN_WEB_AUTOSTART=true\n' \
+    "$dotenv_key" "$dotenv_port" > "$runtime_directory/.env"
+  (
+    cd "$temporary/other-working-directory"
+    exec env -u INVOCATION_ID -u JOURNAL_STREAM -u NOTIFY_SOCKET \
+      -u DOTNET_RUNNING_IN_CONTAINER -u container \
+      INVOCATION_ID=startup-security-priority-test \
+      V2RAYN_WEB_API_KEY="$process_key" \
+      V2RAYN_WEB_AUTOSTART=false ASPNETCORE_URLS="$url" \
+      V2RAYN_DATA_HOME="$data_home" \
+      DOTNET_BUNDLE_EXTRACT_BASE_DIR="$temporary/systemd-priority-bundle" \
+      "$executable" --foreground --no-open
+  ) >"$output" 2>&1 &
+  web_pid=$!
+  wait_for_health "$url" "$output"
+
+  python3 -c 'import json,sys; print(json.dumps({"key":sys.argv[1]}))' "$process_key" >"$temporary/systemd-priority-login-request.json"
+  curl --silent --show-error --fail -H 'Content-Type: application/json' \
+    --data-binary "@$temporary/systemd-priority-login-request.json" \
+    "$url/api/auth/login" >"$temporary/systemd-priority-login.json"
+  local session_token
+  session_token="$(python3 - "$temporary/systemd-priority-login.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    response = json.load(handle)
+assert response["success"] is True, response
+print(response["data"]["token"])
+PY
+)"
+  curl --silent --show-error --fail -H "Authorization: Bearer $session_token" \
+    "$url/api/status" >"$temporary/systemd-priority-status.json"
+  python3 - "$temporary/systemd-priority-status.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    response = json.load(handle)
+status = response["data"]
+assert response["success"] is True, response
+assert status["coreRunning"] is False, status
+assert status["runtimeState"] == "stopped", status
+PY
+  stop_instance "$output"
+  rm -f "$runtime_directory/.env"
+}
+
+start_managed_with_dotenv_key systemd "$(new_port)"
+start_managed_with_dotenv_key container "$(new_port)"
+start_managed_with_process_environment_precedence "$(new_port)"
 start_managed_with_key systemd "$(new_port)"
 start_managed_with_key container "$(new_port)"
 
-echo "Startup security tests passed (native first-run/Core suppression, managed no-key fail-closed, configured systemd/container startup)."
+echo "Startup security tests passed (native first-run, malformed .env rejection, managed no-key fail-closed, systemd/container keys from .env or process environment)."

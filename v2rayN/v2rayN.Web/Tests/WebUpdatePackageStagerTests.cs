@@ -149,7 +149,11 @@ public class WebUpdatePackageStagerTests
         var identity = new WebUpdatePackageIdentity("v2rayN.Web", "7.25.5", "0123abcdef", "2026-09-28T03:00:00Z", "linux-x64");
         var identityJson = JsonSerializer.SerializeToUtf8Bytes(identity, new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
-        foreach (var entryName in new[] { "../escape", "/absolute", "wwwroot/../escape" })
+        foreach (var entryName in new[]
+        {
+            "../escape", "/absolute", "wwwroot/../escape",
+            ".env", ".env.example", "wwwroot/.env", "wwwroot/.env.example",
+        })
         {
             var archive = Path.Combine(directory.Path, Guid.NewGuid().ToString("N") + ".zip");
             await WriteArchiveAsync(archive, [(entryName, Encoding.UTF8.GetBytes("nope"))]);

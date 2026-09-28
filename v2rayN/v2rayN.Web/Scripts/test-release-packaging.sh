@@ -16,6 +16,10 @@ make_publish_fixture() {
   chmod 755 "$publish/v2rayN.Web"
   printf '<html>v2rayN Web</html>\n' > "$publish/wwwroot/index.html"
   printf '{}\n' > "$publish/wwwroot/assets/app.js"
+  # Simulate accidental local environment files in the publish tree. Only the reviewed
+  # repository template may be copied into a full install ZIP.
+  printf 'V2RAYN_WEB_API_KEY=fixture-secret\n' > "$publish/.env"
+  printf 'unreviewed template\n' > "$publish/.env.example"
   for executable in bin/xray/xray bin/sing_box/sing-box bin/mihomo/mihomo; do
     printf '#!/bin/sh\nexit 0\n' > "$publish/$executable"
     chmod 755 "$publish/$executable"
@@ -63,21 +67,34 @@ test "$full_arm64" = "v2rayN-linux-arm64-web.zip"
 test "$update_x64" = "v2rayN-linux-64-web-update.zip"
 test "$update_arm64" = "v2rayN-linux-arm64-web-update.zip"
 
-python3 - "$temporary/dist/$full_x64" "$temporary/dist/$update_x64" <<'PY'
+python3 - "$temporary/dist/$full_x64" "$temporary/dist/$update_x64" "$web_root/.env.example" <<'PY'
+from pathlib import Path
 import sys
 import zipfile
 
-full, update = sys.argv[1:]
+full, update, env_example_source = sys.argv[1:]
 with zipfile.ZipFile(full) as archive:
     names = archive.namelist()
-for required in ("v2rayN.Web", "v2rayN.Web.build.json", "wwwroot/index.html", "bin/xray/xray"):
+    env_example_data = archive.read(".env.example")
+for required in ("v2rayN.Web", "v2rayN.Web.build.json", ".env.example", "wwwroot/index.html", "bin/xray/xray"):
     assert required in names, required
+assert names.count(".env.example") == 1, names
+assert env_example_data == Path(env_example_source).read_bytes()
+assert not any(".env" in name.split("/") for name in names), names
+assert not any(".env.example" in name.split("/") and name != ".env.example" for name in names), names
 with zipfile.ZipFile(update) as archive:
     update_names = set(archive.namelist())
 assert update_names == {"v2rayN.Web", "v2rayN.Web.build.json", "wwwroot/index.html", "wwwroot/assets/app.js"}, update_names
+assert not any(segment in (".env", ".env.example") for name in update_names for segment in name.split("/")), update_names
 assert not any(name.startswith(("bin/", "guiConfigs/", "guiLogs/", "webData/")) for name in update_names), update_names
 process = __import__("subprocess").run(["unzip", "-l", update], capture_output=True, text=True)
 assert process.returncode == 0, process.stderr
+
+web_root = Path(env_example_source).parent
+web_ignore = (web_root / ".gitignore").read_text(encoding="utf-8").splitlines()
+container_ignore = (web_root / "Containerfile.dockerignore").read_text(encoding="utf-8").splitlines()
+assert ".env" in web_ignore, web_ignore
+assert ".env" in container_ignore and "**/.env" in container_ignore, container_ignore
 print("ZIP boundary assertions passed")
 PY
 

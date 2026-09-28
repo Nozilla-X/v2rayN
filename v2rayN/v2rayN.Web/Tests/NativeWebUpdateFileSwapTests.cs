@@ -16,6 +16,8 @@ public class NativeWebUpdateFileSwapTests
         await (await File.ReadAllTextAsync(Path.Combine(plan.InstallDirectory, "wwwroot", "index.html"))).Should().BeEqualTo("new-ui");
         await (await File.ReadAllTextAsync(Path.Combine(plan.InstallDirectory, "bin", "xray", "xray"))).Should().BeEqualTo("updated-core");
         await (await File.ReadAllTextAsync(Path.Combine(plan.InstallDirectory, "guiConfigs", "guiNConfig.json"))).Should().BeEqualTo("user-config");
+        await (await File.ReadAllTextAsync(Path.Combine(plan.InstallDirectory, ".env"))).Should().BeEqualTo("V2RAYN_WEB_API_KEY=private-test-key\n");
+        await File.Exists(Path.Combine(plan.BackupDirectory, ".env")).Should().BeFalse();
     }
 
     [Test]
@@ -38,6 +40,8 @@ public class NativeWebUpdateFileSwapTests
         await (await File.ReadAllTextAsync(Path.Combine(plan.InstallDirectory, "v2rayN.Web"))).Should().BeEqualTo("old-web");
         await (await File.ReadAllTextAsync(Path.Combine(plan.InstallDirectory, "wwwroot", "index.html"))).Should().BeEqualTo("old-ui");
         await (await File.ReadAllTextAsync(Path.Combine(plan.InstallDirectory, "bin", "xray", "xray"))).Should().BeEqualTo("updated-core");
+        await (await File.ReadAllTextAsync(Path.Combine(plan.InstallDirectory, ".env"))).Should().BeEqualTo("V2RAYN_WEB_API_KEY=private-test-key\n");
+        await File.Exists(Path.Combine(plan.BackupDirectory, ".env")).Should().BeFalse();
     }
 
     private static async Task<NativeWebUpdatePlan> CreatePlanAsync(string root, bool includeNewIdentity)
@@ -55,6 +59,7 @@ public class NativeWebUpdateFileSwapTests
         await File.WriteAllTextAsync(Path.Combine(install, "wwwroot", "index.html"), "old-ui");
         await File.WriteAllTextAsync(Path.Combine(install, "bin", "xray", "xray"), "updated-core");
         await File.WriteAllTextAsync(Path.Combine(install, "guiConfigs", "guiNConfig.json"), "user-config");
+        await File.WriteAllTextAsync(Path.Combine(install, ".env"), "V2RAYN_WEB_API_KEY=private-test-key\n");
         await File.WriteAllTextAsync(Path.Combine(candidate, "v2rayN.Web"), "new-web");
         await File.WriteAllTextAsync(Path.Combine(candidate, "wwwroot", "index.html"), "new-ui");
         if (includeNewIdentity)

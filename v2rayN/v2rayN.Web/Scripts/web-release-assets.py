@@ -31,6 +31,7 @@ EXECUTABLE_NAME = "v2rayN.Web"
 BUILD_IDENTITY_NAME = "v2rayN.Web.build.json"
 UI_ROOT = "wwwroot"
 UI_INDEX = "wwwroot/index.html"
+ENVIRONMENT_FILE_NAMES = frozenset((".env", ".env.example"))
 REQUIRED_FILES = (
     EXECUTABLE_NAME,
     BUILD_IDENTITY_NAME,
@@ -125,7 +126,16 @@ def write_symlink(handle: zipfile.ZipFile, target: str, arcname: str) -> None:
 
 
 def create_full_zip(publish: Path, output: Path) -> None:
-    entries = collect_tree(publish)
+    env_example = SCRIPT_DIR.parent / ".env.example"
+    if env_example.is_symlink() or not env_example.is_file():
+        fail(f"full package is missing the source environment example: {env_example}")
+
+    # Only the reviewed template is shipped. A local .env (or another copied template) is
+    # never taken from the publish tree, even if a build tool happened to copy it there.
+    entries = [
+        entry for entry in collect_tree(publish)
+        if not any(segment in ENVIRONMENT_FILE_NAMES for segment in entry[0].split("/"))
+    ]
     names = {relative for relative, _, _ in entries}
     for required in REQUIRED_FILES:
         if required not in names:
@@ -139,6 +149,7 @@ def create_full_zip(publish: Path, output: Path) -> None:
                 write_symlink(handle, os.readlink(path), relative)
             else:
                 write_file(handle, path, relative, stat.S_IMODE(path.stat().st_mode))
+        write_file(handle, env_example, ".env.example", 0o644)
 
 
 def create_update_zip(publish: Path, output: Path) -> None:
@@ -173,6 +184,8 @@ def verify_update_zip(path: Path) -> None:
             if (info.external_attr >> 16) & 0xF000 not in (0, 0x4000, 0x8000):
                 fail(f"app-only package {path.name} contains a link or special entry: {info.filename}")
             name = normalize_entry(info.filename)
+            if any(segment in ENVIRONMENT_FILE_NAMES for segment in name.split("/")):
+                fail(f"app-only package {path.name} must not contain environment files: {name}")
             if name in seen:
                 fail(f"app-only package {path.name} contains a duplicate archive path: {name}")
             seen.add(name)

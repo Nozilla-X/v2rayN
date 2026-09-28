@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using ServiceLib;
 using ServiceLib.Common;
 using v2rayN.Web.Api;
+using v2rayN.Web.Configuration;
 using v2rayN.Web.Contracts;
 using v2rayN.Web.Launcher;
 using v2rayN.Web.Security;
@@ -16,6 +17,16 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        try
+        {
+            NativeEnvironmentFile.LoadFromExecutableDirectory(AppContext.BaseDirectory);
+        }
+        catch (NativeEnvironmentConfigurationException exception)
+        {
+            Console.Error.WriteLine($"Invalid v2rayN.Web environment configuration: {exception.Message}");
+            return 1;
+        }
+
         if (args.Length == 2 && args[0] == "--apply-web-update")
         {
             return await NativeWebUpdateHelper.RunAsync(args[1]);

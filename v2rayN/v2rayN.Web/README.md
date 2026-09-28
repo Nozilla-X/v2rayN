@@ -29,7 +29,21 @@ Before Management Key setup completes, the Web host and setup page can run, but 
 
 ## Native Linux
 
-Download and extract the full-install asset for the server architecture, then run `./v2rayN.Web`. The interactive native launcher starts a detached backend and opens a browser when a desktop is available; `./v2rayN.Web --foreground --no-open` is suitable for a terminal or a process supervisor. Use `./v2rayN.Web --stop` for an instance started by the native background launcher. `V2RAYN_DATA_HOME=/path/to/data` selects a writable ServiceLib data directory.
+Quick start with the full-install ZIP:
+
+```bash
+mkdir -p v2rayn-web
+unzip -q v2rayN-linux-64-web.zip -d v2rayn-web
+cd v2rayn-web
+cp .env.example .env
+nano .env
+chmod 600 .env
+./v2rayN.Web
+```
+
+Use `v2rayN-linux-arm64-web.zip` on ARM64. The executable loads optional `.env` configuration from the directory containing `v2rayN.Web`, not from the current working directory. Real process environment variables (including OS, systemd, and container-provided values) override values from `.env`; `.env` only fills variables that are not already present. The file is plain key/value configuration and is never executed as a shell script.
+
+`.env` is optional for interactive native installs. If no Management Key is configured, trusted-LAN first-run setup remains available. The interactive native launcher starts a detached backend and opens a browser when a desktop is available; `./v2rayN.Web --foreground --no-open` is suitable for a terminal or a process supervisor. Use `./v2rayN.Web --stop` for an instance started by the native background launcher. `V2RAYN_DATA_HOME=/path/to/data` selects a writable ServiceLib data directory. The default listener remains `http://0.0.0.0:5080` for NAS/headless access; protect it with firewall rules and do not expose it directly to the public Internet.
 
 Native builds require Node.js/npm and the .NET 10 SDK. From this directory:
 
@@ -43,7 +57,7 @@ bash Scripts/verify.sh
 
 ## systemd
 
-The example unit is `Deploy/Systemd/v2rayn-web.service`. It runs the Web executable in the foreground as an unprivileged service user, stores application data under `/var/lib/v2rayn-web`, and listens on all interfaces at port 5080 by default. The environment example intentionally leaves the key empty: fill it before starting the unit. Protect the environment file with mode `600`.
+The example unit is `Deploy/Systemd/v2rayn-web.service`. It runs the Web executable in the foreground as an unprivileged service user, stores application data under `/var/lib/v2rayn-web`, and listens on all interfaces at port 5080 by default. For systemd, continue to configure the key in `/etc/v2rayn-web.env` through the unit's `EnvironmentFile=`; this OS-provided environment takes precedence over an executable-directory `.env`. The environment example intentionally leaves the key empty: fill it before starting the unit. Protect the environment file with mode `600`. A non-empty key in the executable-directory `.env` is also accepted, but managed startup still fails closed if no key is available from either source.
 
 Generate a key, for example, with `openssl rand -hex 32`, then set it in `/etc/v2rayn-web.env`:
 
