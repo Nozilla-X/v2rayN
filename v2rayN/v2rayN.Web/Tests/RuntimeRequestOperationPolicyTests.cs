@@ -24,6 +24,9 @@ public class RuntimeRequestOperationPolicyTests
     [Arguments("POST", "/api/subscriptions/example/update")]
     [Arguments("POST", "/api/backup/restore")]
     [Arguments("POST", "/api/backup/webdav/restore")]
+    [Arguments("POST", "/api/settings/regional-presets/Default")]
+    [Arguments("POST", "/api/settings/regional-presets/Russia")]
+    [Arguments("POST", "/api/settings/regional-presets/Iran")]
     public async Task LongRunningRequestStartsItsOwnBackgroundLease(string method, string path)
     {
         await RuntimeRequestOperationPolicy.Classify(method, path)
