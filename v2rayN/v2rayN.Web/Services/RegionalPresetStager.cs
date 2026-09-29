@@ -9,6 +9,15 @@ using ServiceLib.Models.Entities;
 
 namespace v2rayN.Web.Services;
 
+internal sealed record RegionalRoutingPlan(
+    string? TemplateVersion,
+    IReadOnlyList<RoutingItem> Items,
+    string? DefaultRemarks = null,
+    IReadOnlyList<string>? RemoveItemIds = null,
+    string? ExistingDefaultItemId = null,
+    bool ClearLegacyRoutingIndex = false,
+    bool IsBuiltinFallback = false);
+
 internal sealed record RegionalPresetStage(
     EPresetType Preset,
     string GeoSourceUrl,
@@ -16,8 +25,7 @@ internal sealed record RegionalPresetStage(
     string RouteRulesTemplateSourceUrl,
     SimpleDNSItem SimpleDnsItem,
     IReadOnlyList<DNSItem> DnsItems,
-    string? RoutingTemplateVersion,
-    IReadOnlyList<RoutingItem> RoutingItems);
+    RegionalRoutingPlan Routing);
 
 internal sealed class RegionalPresetStager(
     Func<string, IWebProxy?, CancellationToken, Task<string?>> download,
@@ -31,7 +39,8 @@ internal sealed class RegionalPresetStager(
         IReadOnlyList<DNSItem> existingDnsItems,
         IReadOnlyList<RoutingItem> existingRoutingItems,
         IWebProxy? proxy,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? legacyRoutingIndexId = null)
     {
         if (preset == EPresetType.Default)
         {
@@ -42,8 +51,7 @@ internal sealed class RegionalPresetStager(
                 string.Empty,
                 ConfigHandler.InitBuiltinSimpleDNS(),
                 [CreateDefaultDns(ECoreType.Xray, "V2ray"), CreateDefaultDns(ECoreType.sing_box, "sing-box")],
-                null,
-                []);
+                new(null, []));
         }
 
         var sourceIndex = preset switch
@@ -62,19 +70,27 @@ internal sealed class RegionalPresetStager(
         var xrayTask = StageDnsProfileAsync(ECoreType.Xray, xrayItem, dnsBaseUrl + "v2ray.json", proxy, cancellationToken);
         var singboxTask = StageDnsProfileAsync(ECoreType.sing_box, singboxItem, dnsBaseUrl + "sing_box.json", proxy, cancellationToken);
         var simpleDnsTask = StageSimpleDnsAsync(dnsBaseUrl + "simple_dns.json", proxy, cancellationToken);
-        var routingTask = StageRoutingAsync(routeTemplateUrl, existingRoutingItems, proxy, cancellationToken);
+        var routingTask = StageRoutingAsync(routeTemplateUrl, existingRoutingItems, legacyRoutingIndexId, proxy, cancellationToken);
         await Task.WhenAll(xrayTask, singboxTask, simpleDnsTask, routingTask);
 
-        var routing = await routingTask;
+        var xrayDns = await xrayTask;
+        var singboxDns = await singboxTask;
+        var simpleDns = await simpleDnsTask;
+        if (simpleDns.UsedFallback)
+        {
+            // Desktop enables both Core-specific DNS profiles when simple_dns.json is unavailable.
+            xrayDns.Enabled = true;
+            singboxDns.Enabled = true;
+        }
+
         return new(
             preset,
             Global.GeoFilesSources[sourceIndex],
             Global.SingboxRulesetSources[sourceIndex],
             routeTemplateUrl,
-            await simpleDnsTask,
-            [await xrayTask, await singboxTask],
-            routing.Version,
-            routing.Items);
+            simpleDns.Item,
+            [xrayDns, singboxDns],
+            await routingTask);
     }
 
     private async Task<DNSItem> StageDnsProfileAsync(
@@ -84,102 +100,194 @@ internal sealed class RegionalPresetStager(
         IWebProxy? proxy,
         CancellationToken cancellationToken)
     {
-        var content = await DownloadRequiredAsync(url, proxy, cancellationToken);
-        var template = JsonUtils.Deserialize<DNSItem>(content)
-            ?? throw new InvalidDataException($"The {coreType} DNS template is invalid.");
+        var content = await TryDownloadAsync(url, proxy, cancellationToken);
+        var template = content is null ? null : JsonUtils.Deserialize<DNSItem>(content);
+        if (template is null)
+        {
+            // ConfigHandler.GetExternalDNSItem returns the current DNS item when the
+            // template cannot be downloaded or parsed.
+            return CloneDnsItem(existing);
+        }
 
         var normalDnsTask = string.IsNullOrWhiteSpace(template.NormalDNS)
-            ? Task.CompletedTask
-            : DownloadNormalDnsAsync();
+            ? Task.FromResult<string?>(null)
+            : TryDownloadAsync(template.NormalDNS, proxy, cancellationToken);
         var tunDnsTask = string.IsNullOrWhiteSpace(template.TunDNS)
-            ? Task.CompletedTask
-            : DownloadTunDnsAsync();
+            ? Task.FromResult<string?>(null)
+            : TryDownloadAsync(template.TunDNS, proxy, cancellationToken);
         await Task.WhenAll(normalDnsTask, tunDnsTask);
+
+        // Desktop keeps a successfully downloaded template even when its referenced
+        // NormalDNS/TunDNS resource fails; TryDownloadString then leaves that field empty.
+        if (!string.IsNullOrWhiteSpace(template.NormalDNS))
+        {
+            template.NormalDNS = await normalDnsTask ?? string.Empty;
+        }
+        if (!string.IsNullOrWhiteSpace(template.TunDNS))
+        {
+            template.TunDNS = await tunDnsTask ?? string.Empty;
+        }
 
         template.Id = existing.Id;
         template.Remarks = existing.Remarks;
         template.Enabled = existing.Enabled;
         template.CoreType = coreType;
         return template;
-
-        async Task DownloadNormalDnsAsync()
-        {
-            template.NormalDNS = await DownloadRequiredAsync(template.NormalDNS!, proxy, cancellationToken);
-        }
-
-        async Task DownloadTunDnsAsync()
-        {
-            template.TunDNS = await DownloadRequiredAsync(template.TunDNS!, proxy, cancellationToken);
-        }
     }
 
-    private async Task<SimpleDNSItem> StageSimpleDnsAsync(string url, IWebProxy? proxy, CancellationToken cancellationToken)
-    {
-        var content = await DownloadRequiredAsync(url, proxy, cancellationToken);
-        return JsonUtils.Deserialize<SimpleDNSItem>(content)
-            ?? throw new InvalidDataException("The Simple DNS template is invalid.");
-    }
-
-    private async Task<(string Version, IReadOnlyList<RoutingItem> Items)> StageRoutingAsync(
+    private async Task<(SimpleDNSItem Item, bool UsedFallback)> StageSimpleDnsAsync(
         string url,
-        IReadOnlyList<RoutingItem> existingItems,
         IWebProxy? proxy,
         CancellationToken cancellationToken)
     {
-        var content = await DownloadRequiredAsync(url, proxy, cancellationToken);
-        var template = JsonUtils.Deserialize<RoutingTemplate>(content)
-            ?? throw new InvalidDataException("The routing template is invalid.");
-        if (string.IsNullOrWhiteSpace(template.Version) || template.RoutingItems is null)
+        var content = await TryDownloadAsync(url, proxy, cancellationToken);
+        var template = content is null ? null : JsonUtils.Deserialize<SimpleDNSItem>(content);
+        return template is null
+            ? (ConfigHandler.InitBuiltinSimpleDNS(), true)
+            : (template, false);
+    }
+
+    private async Task<RegionalRoutingPlan> StageRoutingAsync(
+        string url,
+        IReadOnlyList<RoutingItem> existingItems,
+        string? legacyRoutingIndexId,
+        IWebProxy? proxy,
+        CancellationToken cancellationToken)
+    {
+        var content = await TryDownloadAsync(url, proxy, cancellationToken);
+        var template = content is null ? null : JsonUtils.Deserialize<RoutingTemplate>(content);
+        if (template is null || string.IsNullOrWhiteSpace(template.Version) || template.RoutingItems is null)
         {
-            throw new InvalidDataException("The routing template is incomplete.");
+            return StageBuiltinRouting(existingItems, legacyRoutingIndexId);
         }
 
         if (existingItems.Any(item => item.Remarks?.StartsWith(template.Version, StringComparison.Ordinal) == true))
         {
-            return (template.Version, []);
+            // Importing an already-present template version must not change the active route.
+            return new(template.Version, []);
         }
 
         var stagedTasks = template.RoutingItems
-            .Select((sourceItem, index) => StageRoutingItemAsync(
-                sourceItem,
-                template.Version,
-                existingItems.Count + index + 1,
-                proxy,
-                cancellationToken))
+            .Select(sourceItem => StageRoutingItemAsync(sourceItem, template.Version, proxy, cancellationToken))
             .ToArray();
-        var stagedItems = await Task.WhenAll(stagedTasks);
-        return (template.Version, stagedItems.Where(item => item is not null).Cast<RoutingItem>().ToArray());
+        var stagedResults = await Task.WhenAll(stagedTasks);
+        var stagedItems = stagedResults.Where(item => item is not null).Cast<RoutingItem>().ToArray();
+        for (var index = 0; index < stagedItems.Length; index++)
+        {
+            stagedItems[index].Sort = existingItems.Count + index + 1;
+        }
+
+        return new(template.Version, stagedItems, stagedItems.FirstOrDefault()?.Remarks);
     }
 
     private async Task<RoutingItem?> StageRoutingItemAsync(
-        RoutingItem sourceItem,
+        RoutingItem? sourceItem,
         string templateVersion,
-        int sort,
         IWebProxy? proxy,
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (string.IsNullOrWhiteSpace(sourceItem.Url) && string.IsNullOrWhiteSpace(sourceItem.RuleSet))
+        if (sourceItem is null || (string.IsNullOrWhiteSpace(sourceItem.Url) && string.IsNullOrWhiteSpace(sourceItem.RuleSet)))
         {
             return null;
         }
 
         var rulesContent = !string.IsNullOrWhiteSpace(sourceItem.RuleSet)
             ? sourceItem.RuleSet
-            : await DownloadRequiredAsync(sourceItem.Url, proxy, cancellationToken);
-        var rules = JsonUtils.Deserialize<List<RulesItem>>(rulesContent)
-            ?? throw new InvalidDataException($"The routing rules for '{sourceItem.Remarks}' are invalid.");
-        var item = JsonUtils.DeepCopy(sourceItem)
-            ?? throw new InvalidDataException("A routing template item could not be copied.");
+            : await TryDownloadAsync(sourceItem.Url, proxy, cancellationToken);
+        var rules = rulesContent is null ? null : JsonUtils.Deserialize<List<RulesItem>>(rulesContent);
+        if (rules is null)
+        {
+            // Desktop skips an entry whose URL returns no content. Invalid rule JSON is
+            // likewise not a usable AddBatchRoutingRules payload, so skip only that entry.
+            return null;
+        }
+
+        var item = JsonUtils.DeepCopy(sourceItem);
+        if (item is null)
+        {
+            return null;
+        }
         item.Id = string.Empty;
         item.Remarks = $"{templateVersion}-{item.Remarks}";
         item.Enabled = true;
-        item.Sort = sort;
         item.Url = string.Empty;
         item.IsActive = false;
         item.RuleNum = rules.Count;
         item.RuleSet = JsonUtils.Serialize(rules, false);
         return item;
+    }
+
+    private static RegionalRoutingPlan StageBuiltinRouting(
+        IReadOnlyList<RoutingItem> existingItems,
+        string? legacyRoutingIndexId)
+    {
+        // Match InitBuiltinRouting's one-time locked-profile removal and migration of
+        // RoutingIndexId, while keeping all database writes in the later apply phase.
+        var lockedItem = existingItems.FirstOrDefault(item => item.Locked);
+        var items = lockedItem is null
+            ? existingItems.ToList()
+            : existingItems.Where(item => item.Id != lockedItem.Id).ToList();
+        var removeIds = lockedItem is null || string.IsNullOrEmpty(lockedItem.Id)
+            ? Array.Empty<string>()
+            : [lockedItem.Id];
+        var clearLegacyIndex = !string.IsNullOrWhiteSpace(legacyRoutingIndexId);
+
+        if (items.Count > 0)
+        {
+            var migrationTarget = clearLegacyIndex
+                ? items.FirstOrDefault(item => item.Id == legacyRoutingIndexId)
+                : null;
+            return new(
+                null,
+                [],
+                RemoveItemIds: removeIds,
+                ExistingDefaultItemId: migrationTarget is { IsActive: false } ? migrationTarget.Id : null,
+                ClearLegacyRoutingIndex: clearLegacyIndex,
+                IsBuiltinFallback: true);
+        }
+
+        var defaults = new[]
+        {
+            (Name: "绕过大陆(Whitelist)", Resource: "white"),
+            (Name: "黑名单(Blacklist)", Resource: "black"),
+            (Name: "全局(Global)", Resource: "global"),
+        };
+        var builtins = defaults.Select((entry, index) =>
+        {
+            var rulesContent = EmbedUtils.GetEmbedText(Global.CustomRoutingFileName + entry.Resource);
+            var rules = JsonUtils.Deserialize<List<RulesItem>>(rulesContent)
+                ?? throw new InvalidDataException($"The built-in routing rules '{entry.Resource}' are invalid.");
+            return new RoutingItem
+            {
+                Remarks = $"V4-{entry.Name}",
+                Url = string.Empty,
+                RuleNum = rules.Count,
+                RuleSet = JsonUtils.Serialize(rules, false),
+                Enabled = true,
+                Sort = index + 1,
+            };
+        }).ToArray();
+
+        return new(
+            null,
+            builtins,
+            builtins[0].Remarks,
+            removeIds,
+            ClearLegacyRoutingIndex: clearLegacyIndex,
+            IsBuiltinFallback: true);
+    }
+
+    private async Task<string?> TryDownloadAsync(string url, IWebProxy? proxy, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await DownloadRequiredAsync(url, proxy, cancellationToken);
+        }
+        catch (Exception exception) when (IsFallbackFailure(exception, cancellationToken))
+        {
+            return null;
+        }
     }
 
     private async Task<string> DownloadRequiredAsync(string url, IWebProxy? proxy, CancellationToken cancellationToken)
@@ -197,9 +305,17 @@ internal sealed class RegionalPresetStager(
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException($"The download exceeded {_timeout.TotalSeconds:0} seconds: {url}");
+            throw new TimeoutException($"The download exceeded {_timeout.TotalSeconds:0.###} seconds: {url}");
         }
     }
+
+    private static bool IsFallbackFailure(Exception exception, CancellationToken cancellationToken) =>
+        !cancellationToken.IsCancellationRequested
+        && exception is not OperationCanceledException
+        && exception is TimeoutException or HttpRequestException or WebException or IOException or InvalidDataException;
+
+    private static DNSItem CloneDnsItem(DNSItem item) =>
+        JsonUtils.DeepCopy(item) ?? throw new InvalidOperationException("A DNS profile could not be copied for regional preset staging.");
 
     private static DNSItem CreateDefaultDns(ECoreType coreType, string remarks) => new()
     {

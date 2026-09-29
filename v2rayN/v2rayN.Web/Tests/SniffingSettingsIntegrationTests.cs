@@ -14,6 +14,7 @@ using v2rayN.Web.Services;
 
 namespace v2rayN.Web.Tests;
 
+[NotInParallel]
 public class SniffingSettingsIntegrationTests
 {
     [Test]
@@ -22,11 +23,7 @@ public class SniffingSettingsIntegrationTests
         var config = CreateConfig();
         BindAppManagerConfig(config);
         var input = CreateInboundInput(sniffingEnabled: true, destOverride: []);
-        config.Inbound[0].DestOverride = V2rayRuntime.NormalizeDestOverride(
-            config.Inbound[0].SniffingEnabled,
-            input.SniffingEnabled,
-            input.DestOverride).ToList();
-        config.Inbound[0].SniffingEnabled = input.SniffingEnabled;
+        V2rayRuntime.ApplyInboundSettings(config.Inbound[0], input);
 
         var generated = Generate(ECoreType.Xray, config);
         var sniffing = generated["inbounds"]![0]!["sniffing"]!;
@@ -48,11 +45,7 @@ public class SniffingSettingsIntegrationTests
         var config = CreateConfig();
         BindAppManagerConfig(config);
         var input = CreateInboundInput(sniffingEnabled: true, destOverride: []);
-        config.Inbound[0].DestOverride = V2rayRuntime.NormalizeDestOverride(
-            config.Inbound[0].SniffingEnabled,
-            input.SniffingEnabled,
-            input.DestOverride).ToList();
-        config.Inbound[0].SniffingEnabled = input.SniffingEnabled;
+        V2rayRuntime.ApplyInboundSettings(config.Inbound[0], input);
 
         var generated = Generate(ECoreType.sing_box, config);
         var routeRules = generated["route"]!["rules"]!.AsArray();
@@ -66,10 +59,7 @@ public class SniffingSettingsIntegrationTests
     {
         var config = CreateConfig();
         var input = CreateInboundInput(sniffingEnabled: true, destOverride: ["tls"]);
-        var normalized = V2rayRuntime.NormalizeDestOverride(
-            config.Inbound[0].SniffingEnabled,
-            input.SniffingEnabled,
-            input.DestOverride);
+        var normalized = V2rayRuntime.NormalizeDestOverride(input.SniffingEnabled, input.DestOverride);
         await normalized.SequenceEqual(new[] { "tls" }).Should().BeTrue();
 
         var coreChanged = config.Inbound[0].SniffingEnabled != input.SniffingEnabled
@@ -88,6 +78,52 @@ public class SniffingSettingsIntegrationTests
         await coreChanged.Should().BeTrue();
         await execution.Action.Should().BeEqualTo(CoreSettingsApplyAction.Restart);
         await restartCount.Should().BeEqualTo(1);
+    }
+
+    [Test]
+    public async Task EmptyDestOverrideNormalizationIsIdempotentAcrossRepeatedStaleSettingsSaves()
+    {
+        var config = CreateConfig();
+        BindAppManagerConfig(config);
+        var stalePayload = CreateInboundInput(sniffingEnabled: true, destOverride: []);
+        var runtime = new V2rayRuntime(null!, null!, null!, null!, null!);
+
+        // First save flips sniffing on, and the Web-owned inbound apply path supplies
+        // ServiceLib's defaults even though the submitted protocols remain empty.
+        V2rayRuntime.ApplyInboundSettings(config.Inbound[0], stalePayload);
+        var afterFirstSave = await runtime.GetSettingsAsync();
+        await afterFirstSave.Inbound.SniffingEnabled.Should().BeTrue();
+        await afterFirstSave.Inbound.DestOverride.SequenceEqual(new[] { "http", "tls" }).Should().BeTrue();
+
+        // The browser still submits its stale empty array. A subsequent save must not
+        // erase the canonical backend defaults just because sniffing was already enabled.
+        V2rayRuntime.ApplyInboundSettings(config.Inbound[0], stalePayload);
+        var afterSecondSave = await runtime.GetSettingsAsync();
+        await afterSecondSave.Inbound.SniffingEnabled.Should().BeTrue();
+        await afterSecondSave.Inbound.DestOverride.SequenceEqual(new[] { "http", "tls" }).Should().BeTrue();
+
+        var generated = Generate(ECoreType.Xray, config);
+        var sniffing = generated["inbounds"]![0]!["sniffing"]!;
+        await sniffing["enabled"]!.GetValue<bool>().Should().BeTrue();
+        await sniffing["destOverride"]![0]!.GetValue<string>().Should().BeEqualTo("http");
+        await sniffing["destOverride"]![1]!.GetValue<string>().Should().BeEqualTo("tls");
+    }
+
+    [Test]
+    public async Task DestOverrideNormalizationPreservesExplicitAndDisabledValues()
+    {
+        var defaults = new InItem().DestOverride?.ToArray() ?? [];
+        var falseToTrue = V2rayRuntime.NormalizeDestOverride(true, []);
+        var trueToTrue = V2rayRuntime.NormalizeDestOverride(true, []);
+        var explicitProtocols = V2rayRuntime.NormalizeDestOverride(true, ["tls"]);
+        var disabledEmpty = V2rayRuntime.NormalizeDestOverride(false, []);
+        var disabledExisting = V2rayRuntime.NormalizeDestOverride(false, ["http", "tls"]);
+
+        await falseToTrue.SequenceEqual(defaults).Should().BeTrue();
+        await trueToTrue.SequenceEqual(defaults).Should().BeTrue();
+        await explicitProtocols.SequenceEqual(new[] { "tls" }).Should().BeTrue();
+        await disabledEmpty.Length.Should().BeEqualTo(0);
+        await disabledExisting.SequenceEqual(new[] { "http", "tls" }).Should().BeTrue();
     }
 
     private static InboundSettingsInput CreateInboundInput(bool sniffingEnabled, string[] destOverride) => new(

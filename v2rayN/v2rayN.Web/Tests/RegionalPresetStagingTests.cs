@@ -3,6 +3,7 @@ using System.Net;
 using ServiceLib;
 using ServiceLib.Common;
 using ServiceLib.Enums;
+using ServiceLib.Handler;
 using ServiceLib.Models.Configs;
 using ServiceLib.Models.Dto;
 using ServiceLib.Models.Entities;
@@ -10,6 +11,7 @@ using v2rayN.Web.Services;
 
 namespace v2rayN.Web.Tests;
 
+[NotInParallel]
 public class RegionalPresetStagingTests
 {
     [Test]
@@ -40,9 +42,9 @@ public class RegionalPresetStagingTests
         await (staged.DnsItems[0].NormalDNS == "xray-normal-content" && staged.DnsItems[0].TunDNS == "xray-tun-content").Should().BeTrue();
         await (staged.DnsItems[1].Id == "singbox-id" && !staged.DnsItems[1].Enabled && staged.DnsItems[1].Remarks == "my sing-box DNS").Should().BeTrue();
         await staged.SimpleDnsItem.RemoteDNS.Should().BeEqualTo("https://dns.example.test/remote");
-        await staged.RoutingTemplateVersion.Should().BeEqualTo("R1");
-        await staged.RoutingItems.Count.Should().BeEqualTo(1);
-        await staged.RoutingItems[0].Remarks.Should().BeEqualTo("R1-Region rules");
+        await staged.Routing.TemplateVersion.Should().BeEqualTo("R1");
+        await staged.Routing.Items.Count.Should().BeEqualTo(1);
+        await staged.Routing.Items[0].Remarks.Should().BeEqualTo("R1-Region rules");
         await existingDns[0].NormalDNS.Should().BeEqualTo("existing-xray-data");
         await requestedUrls.Count.Should().BeEqualTo(7);
     }
@@ -63,11 +65,11 @@ public class RegionalPresetStagingTests
         await staged.DnsItems.Count.Should().BeEqualTo(2);
         await staged.DnsItems.All(item => !item.Enabled).Should().BeTrue();
         await staged.GeoSourceUrl.Should().BeEqualTo(string.Empty);
-        await staged.RoutingItems.Count.Should().BeEqualTo(0);
+        await staged.Routing.Items.Count.Should().BeEqualTo(0);
     }
 
     [Test]
-    public async Task SlowFailingPresetLeavesConfigAndDatabasesUntouchedAndDoesNotHoldReadOrMutationGates()
+    public async Task SlowFailingPresetStagesDesktopFallbacksOutsideCoreAndMutationGates()
     {
         var downloadStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var failDownload = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -80,6 +82,7 @@ public class RegionalPresetStagingTests
         var dnsRows = new List<string> { "original dns" };
         var routingRows = new List<string> { "original routing" };
         var applyCalled = false;
+        RegionalPresetStage? capturedStage = null;
         var stager = new RegionalPresetStager(async (_, _, token) =>
         {
             downloadStarted.TrySetResult();
@@ -88,12 +91,10 @@ public class RegionalPresetStagingTests
         }, TimeSpan.FromSeconds(2));
         var workflow = RegionalPresetWorkflow.RunAsync(
             token => stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [], null, token),
-            _ =>
+            stage =>
             {
                 applyCalled = true;
-                config.ConstItem.GeoSourceUrl = "modified";
-                dnsRows[0] = "modified";
-                routingRows[0] = "modified";
+                capturedStage = stage;
                 return Task.FromResult(true);
             },
             CancellationToken.None);
@@ -107,18 +108,13 @@ public class RegionalPresetStagingTests
         mutationGate.Release();
 
         failDownload.TrySetResult();
-        var failed = false;
-        try
-        {
-            await workflow;
-        }
-        catch (IOException)
-        {
-            failed = true;
-        }
-
-        await failed.Should().BeTrue();
-        await applyCalled.Should().BeFalse();
+        await workflow;
+        await applyCalled.Should().BeTrue();
+        await capturedStage.Should().NotBeNull();
+        await capturedStage!.DnsItems[0].NormalDNS.Should().BeEqualTo("existing-xray-data");
+        await capturedStage.SimpleDnsItem.RemoteDNS.Should().BeEqualTo(ConfigHandler.InitBuiltinSimpleDNS().RemoteDNS);
+        await capturedStage.Routing.IsBuiltinFallback.Should().BeTrue();
+        await capturedStage.Routing.Items.Count.Should().BeEqualTo(3);
         await config.ConstItem.GeoSourceUrl.Should().BeEqualTo("original-geo-source");
         await dnsRows.SequenceEqual(new[] { "original dns" }).Should().BeTrue();
         await routingRows.SequenceEqual(new[] { "original routing" }).Should().BeTrue();
@@ -230,5 +226,160 @@ public class RegionalPresetStagingTests
             [xrayTunUrl] = "xray-tun-content",
             [singboxNormalUrl] = "singbox-normal-content",
         };
+    }
+
+    [Test]
+    public async Task FailedOrInvalidCoreDnsTemplatePreservesExistingDnsProfile()
+    {
+        var existingDns = CreateDnsRows();
+        var responses = CreateRegionalResponses();
+        var dnsBase = Global.DNSTemplateSources[1];
+        responses[dnsBase + "v2ray.json"] = null;
+        responses[dnsBase + "sing_box.json"] = "not-json";
+        var stager = new RegionalPresetStager((url, _, _) => Task.FromResult(responses.GetValueOrDefault(url)));
+
+        var staged = await stager.StageAsync(EPresetType.Russia, existingDns, [], null, CancellationToken.None);
+
+        await (staged.DnsItems[0].Id == existingDns[0].Id
+            && staged.DnsItems[0].Remarks == existingDns[0].Remarks
+            && staged.DnsItems[0].Enabled == existingDns[0].Enabled
+            && staged.DnsItems[0].NormalDNS == existingDns[0].NormalDNS).Should().BeTrue();
+        await (staged.DnsItems[1].Id == existingDns[1].Id
+            && staged.DnsItems[1].Enabled == existingDns[1].Enabled
+            && staged.DnsItems[1].NormalDNS == existingDns[1].NormalDNS).Should().BeTrue();
+        await existingDns[0].NormalDNS.Should().BeEqualTo("existing-xray-data");
+    }
+
+    [Test]
+    public async Task DownloadedDnsTemplateWithFailedExternalResourceKeepsTemplateAndLeavesFailedFieldEmpty()
+    {
+        var responses = CreateRegionalResponses();
+        responses["https://assets.example.test/xray-normal"] = null;
+        var stager = new RegionalPresetStager((url, _, _) => Task.FromResult(responses.GetValueOrDefault(url)));
+
+        var staged = await stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [], null, CancellationToken.None);
+
+        await staged.DnsItems[0].NormalDNS.Should().BeEqualTo(string.Empty);
+        await staged.DnsItems[0].TunDNS.Should().BeEqualTo("xray-tun-content");
+        await staged.DnsItems[0].Enabled.Should().BeTrue();
+    }
+
+    [Test]
+    public async Task FailedSimpleDnsUsesDesktopBuiltinAndEnablesBothCoreDnsProfiles()
+    {
+        var responses = CreateRegionalResponses();
+        responses[Global.DNSTemplateSources[1] + "simple_dns.json"] = null;
+        var stager = new RegionalPresetStager((url, _, _) => Task.FromResult(responses.GetValueOrDefault(url)));
+
+        var staged = await stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [], null, CancellationToken.None);
+
+        var builtin = ConfigHandler.InitBuiltinSimpleDNS();
+        await staged.SimpleDnsItem.RemoteDNS.Should().BeEqualTo(builtin.RemoteDNS);
+        await staged.SimpleDnsItem.DirectDNS.Should().BeEqualTo(builtin.DirectDNS);
+        await staged.DnsItems.All(item => item.Enabled).Should().BeTrue();
+    }
+
+    [Test]
+    public async Task InvalidRoutingTemplateStagesBuiltinFallbackAndMakesFirstBuiltinDefaultWhenNoRoutesExist()
+    {
+        var responses = CreateRegionalResponses();
+        responses[Global.RoutingRulesSources[1]] = "not-json";
+        var stager = new RegionalPresetStager((url, _, _) => Task.FromResult(responses.GetValueOrDefault(url)));
+
+        var staged = await stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [], null, CancellationToken.None);
+
+        await staged.Routing.IsBuiltinFallback.Should().BeTrue();
+        await staged.Routing.Items.Count.Should().BeEqualTo(3);
+        await staged.Routing.Items[0].Remarks.Should().BeEqualTo("V4-绕过大陆(Whitelist)");
+        await staged.Routing.DefaultRemarks.Should().BeEqualTo(staged.Routing.Items[0].Remarks);
+        await staged.Routing.Items.All(item => item.RuleNum > 0).Should().BeTrue();
+        await staged.Routing.ExistingDefaultItemId.Should().BeNull();
+    }
+
+    [Test]
+    public async Task RoutingTemplateFallbackPreservesExistingActiveRouteLikeDesktopBuiltinInitialization()
+    {
+        var responses = CreateRegionalResponses();
+        responses[Global.RoutingRulesSources[1]] = null;
+        var active = new RoutingItem { Id = "active", Remarks = "user route", IsActive = true };
+        var stager = new RegionalPresetStager((url, _, _) => Task.FromResult(responses.GetValueOrDefault(url)));
+
+        var staged = await stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [active], null, CancellationToken.None);
+
+        await staged.Routing.IsBuiltinFallback.Should().BeTrue();
+        await staged.Routing.Items.Count.Should().BeEqualTo(0);
+        await staged.Routing.DefaultRemarks.Should().BeNull();
+        await staged.Routing.ExistingDefaultItemId.Should().BeNull();
+    }
+
+    [Test]
+    public async Task NewRegionalTemplatePlanActivatesFirstNewRouteEvenWhenAnotherRouteIsActive()
+    {
+        var responses = CreateRegionalResponses();
+        var active = new RoutingItem { Id = "existing", Remarks = "user route", IsActive = true };
+        var stager = new RegionalPresetStager((url, _, _) => Task.FromResult(responses.GetValueOrDefault(url)));
+
+        var staged = await stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [active], null, CancellationToken.None);
+
+        await staged.Routing.Items.Count.Should().BeEqualTo(1);
+        await staged.Routing.DefaultRemarks.Should().BeEqualTo("R1-Region rules");
+        await active.IsActive.Should().BeTrue();
+    }
+
+    [Test]
+    public async Task ImportedRoutingTemplateVersionStagesNoDuplicateAndNoDefaultSwitch()
+    {
+        var responses = CreateRegionalResponses();
+        var active = new RoutingItem { Id = "imported", Remarks = "R1-previous route", IsActive = true };
+        var stager = new RegionalPresetStager((url, _, _) => Task.FromResult(responses.GetValueOrDefault(url)));
+
+        var staged = await stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [active], null, CancellationToken.None);
+
+        await staged.Routing.TemplateVersion.Should().BeEqualTo("R1");
+        await staged.Routing.Items.Count.Should().BeEqualTo(0);
+        await staged.Routing.DefaultRemarks.Should().BeNull();
+        await active.IsActive.Should().BeTrue();
+    }
+
+    [Test]
+    public async Task SingleRoutingRuleDownloadFailureSkipsOnlyThatEntryAndActivatesFirstStagedRule()
+    {
+        var responses = CreateRegionalResponses();
+        var template = new RoutingTemplate
+        {
+            Version = "R2",
+            RoutingItems =
+            [
+                new RoutingItem { Remarks = "unavailable", Url = "https://rules.example.test/missing" },
+                new RoutingItem { Remarks = "available", Url = "https://rules.example.test/available" },
+            ],
+        };
+        responses[Global.RoutingRulesSources[1]] = JsonUtils.Serialize(template, false);
+        responses["https://rules.example.test/missing"] = null;
+        responses["https://rules.example.test/available"] = JsonUtils.Serialize(new List<RulesItem> { new() { Remarks = "ok" } }, false);
+        var stager = new RegionalPresetStager((url, _, _) => Task.FromResult(responses.GetValueOrDefault(url)));
+
+        var staged = await stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [], null, CancellationToken.None);
+
+        await staged.Routing.Items.Count.Should().BeEqualTo(1);
+        await staged.Routing.Items[0].Remarks.Should().BeEqualTo("R2-available");
+        await staged.Routing.DefaultRemarks.Should().BeEqualTo("R2-available");
+    }
+
+    [Test]
+    public async Task PerDownloadTimeoutUsesDesktopFallbackInsteadOfFailingPreset()
+    {
+        var stager = new RegionalPresetStager(async (_, _, token) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return null;
+        }, TimeSpan.FromMilliseconds(20));
+
+        var staged = await stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [], null, CancellationToken.None);
+
+        await staged.DnsItems[0].NormalDNS.Should().BeEqualTo("existing-xray-data");
+        await staged.SimpleDnsItem.RemoteDNS.Should().BeEqualTo(ConfigHandler.InitBuiltinSimpleDNS().RemoteDNS);
+        await staged.Routing.IsBuiltinFallback.Should().BeTrue();
+        await staged.Routing.Items.Count.Should().BeEqualTo(3);
     }
 }

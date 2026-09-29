@@ -141,21 +141,7 @@ public sealed partial class V2rayRuntime
         {
             await _mutations.RunAsync(async () =>
             {
-                var targetInbound = Config.Inbound[0];
-                var destOverride = NormalizeDestOverride(
-                    targetInbound.SniffingEnabled,
-                    inbound.SniffingEnabled,
-                    inbound.DestOverride);
-                targetInbound.LocalPort = inbound.LocalPort;
-                targetInbound.SecondLocalPortEnabled = inbound.SecondLocalPortEnabled;
-                targetInbound.UdpEnabled = inbound.UdpEnabled;
-                targetInbound.SniffingEnabled = inbound.SniffingEnabled;
-                targetInbound.DestOverride = destOverride.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                targetInbound.RouteOnly = inbound.RouteOnly;
-                targetInbound.AllowLANConn = inbound.AllowLANConn;
-                targetInbound.NewPort4LAN = inbound.AllowLANConn && inbound.NewPort4LAN;
-                targetInbound.User = inbound.User?.Trim() ?? string.Empty;
-                targetInbound.Pass = inbound.Pass?.Trim() ?? string.Empty;
+                ApplyInboundSettings(Config.Inbound[0], inbound);
 
                 ApplyCoreSettingsToConfig(core);
                 Config.GuiItem.EnableStatistics = application.EnableStatistics;
@@ -245,18 +231,7 @@ public sealed partial class V2rayRuntime
         var fingerprint = GetCoreConfigurationFingerprint();
         await _mutations.RunAsync(async () =>
         {
-            var inbound = Config.Inbound[0];
-            var destOverride = NormalizeDestOverride(inbound.SniffingEnabled, input.SniffingEnabled, input.DestOverride);
-            inbound.LocalPort = input.LocalPort;
-            inbound.SecondLocalPortEnabled = input.SecondLocalPortEnabled;
-            inbound.UdpEnabled = input.UdpEnabled;
-            inbound.SniffingEnabled = input.SniffingEnabled;
-            inbound.DestOverride = destOverride.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            inbound.RouteOnly = input.RouteOnly;
-            inbound.AllowLANConn = input.AllowLANConn;
-            inbound.NewPort4LAN = input.AllowLANConn && input.NewPort4LAN;
-            inbound.User = input.User?.Trim() ?? string.Empty;
-            inbound.Pass = input.Pass?.Trim() ?? string.Empty;
+            ApplyInboundSettings(Config.Inbound[0], input);
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
 
@@ -921,7 +896,13 @@ public sealed partial class V2rayRuntime
             });
 
             return await RegionalPresetWorkflow.RunAsync(
-                token => stager.StageAsync(preset, existingDnsItems, existingRoutingItems, proxy, token),
+                token => stager.StageAsync(
+                    preset,
+                    existingDnsItems,
+                    existingRoutingItems,
+                    proxy,
+                    token,
+                    Config.RoutingBasicItem.RoutingIndexId),
                 ApplyStagedRegionalPresetAsync,
                 cancellationToken);
         }
@@ -981,13 +962,28 @@ public sealed partial class V2rayRuntime
                     }
                 }
 
+                foreach (var itemId in stage.Routing.RemoveItemIds ?? [])
+                {
+                    var item = await AppManager.Instance.GetRoutingItem(itemId);
+                    if (item is not null)
+                    {
+                        await ConfigHandler.RemoveRoutingItem(item);
+                    }
+                }
+
+                if (stage.Routing.ClearLegacyRoutingIndex)
+                {
+                    Config.RoutingBasicItem.RoutingIndexId = string.Empty;
+                }
+
                 var currentRoutes = await AppManager.Instance.RoutingItems() ?? [];
-                var hasVersion = stage.RoutingTemplateVersion is { Length: > 0 } version
+                var hasVersion = stage.Routing.TemplateVersion is { Length: > 0 } version
                     && currentRoutes.Any(item => item.Remarks?.StartsWith(version, StringComparison.Ordinal) == true);
-                if (!hasVersion)
+                var builtinFallbackAlreadyInitialized = stage.Routing.IsBuiltinFallback && currentRoutes.Count > 0;
+                if (!hasVersion && !builtinFallbackAlreadyInitialized)
                 {
                     var nextSort = currentRoutes.Count;
-                    foreach (var item in stage.RoutingItems)
+                    foreach (var item in stage.Routing.Items)
                     {
                         item.Sort = ++nextSort;
                         if (await ConfigHandler.AddBatchRoutingRules(item, item.RuleSet ?? "[]") != 0)
@@ -996,14 +992,22 @@ public sealed partial class V2rayRuntime
                         }
                     }
 
-                    if (stage.RoutingItems.Count > 0 && !currentRoutes.Any(item => item.IsActive))
+                    var defaultItem = stage.Routing.DefaultRemarks is { } remarks
+                        ? stage.Routing.Items.FirstOrDefault(item => item.Remarks == remarks)
+                        : null;
+                    if (defaultItem is not null && await ConfigHandler.SetDefaultRouting(Config, defaultItem) != 0)
                     {
-                        var firstAdded = (await AppManager.Instance.RoutingItems() ?? [])
-                            .FirstOrDefault(item => item.Remarks == stage.RoutingItems[0].Remarks);
-                        if (firstAdded is not null && await ConfigHandler.SetDefaultRouting(Config, firstAdded) != 0)
-                        {
-                            throw new IOException("The first regional routing profile could not be activated.");
-                        }
+                        throw new IOException("The first staged routing profile could not be activated.");
+                    }
+                }
+
+                if (stage.Routing.ExistingDefaultItemId is { } existingDefaultId)
+                {
+                    var existingDefault = currentRoutes.FirstOrDefault(item => item.Id == existingDefaultId);
+                    if (existingDefault is not null && !existingDefault.IsActive
+                        && await ConfigHandler.SetDefaultRouting(Config, existingDefault) != 0)
+                    {
+                        throw new IOException("The migrated default routing profile could not be activated.");
                     }
                 }
             }
@@ -1057,12 +1061,27 @@ public sealed partial class V2rayRuntime
     internal static bool ShouldShowIpInfoColumn(string? ipApiUrl, bool hideColumnIpInfo) =>
         !string.IsNullOrEmpty(ipApiUrl) && !hideColumnIpInfo;
 
-    internal static string[] NormalizeDestOverride(bool wasSniffingEnabled, bool willEnableSniffing, IEnumerable<string>? destOverride)
+    internal static void ApplyInboundSettings(InItem target, InboundSettingsInput input)
+    {
+        var destOverride = NormalizeDestOverride(input.SniffingEnabled, input.DestOverride);
+        target.LocalPort = input.LocalPort;
+        target.SecondLocalPortEnabled = input.SecondLocalPortEnabled;
+        target.UdpEnabled = input.UdpEnabled;
+        target.SniffingEnabled = input.SniffingEnabled;
+        target.DestOverride = destOverride.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        target.RouteOnly = input.RouteOnly;
+        target.AllowLANConn = input.AllowLANConn;
+        target.NewPort4LAN = input.AllowLANConn && input.NewPort4LAN;
+        target.User = input.User?.Trim() ?? string.Empty;
+        target.Pass = input.Pass?.Trim() ?? string.Empty;
+    }
+
+    internal static string[] NormalizeDestOverride(bool willEnableSniffing, IEnumerable<string>? destOverride)
     {
         var protocols = destOverride?.ToArray() ?? [];
-        if (!wasSniffingEnabled && willEnableSniffing && protocols.Length == 0)
+        if (willEnableSniffing && protocols.Length == 0)
         {
-            // The public InItem defaults are the same defaults Desktop uses for a fresh profile.
+            // Use ServiceLib's defaults so Web stays aligned when upstream changes them.
             return new InItem().DestOverride?.ToArray() ?? [];
         }
 
