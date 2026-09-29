@@ -20,6 +20,7 @@ public sealed partial class V2rayRuntime
     private const string GeoFilesUpdateTarget = "GeoFiles";
     private const string WebUpdateTarget = "v2rayN.Web";
     private readonly object _updateTaskGate = new();
+    private readonly GeoFilesUpdateGate _geoUpdateGate = new();
     private readonly ConcurrentDictionary<ECoreType, Task> _coreUpdateTasks = new();
     private readonly ConcurrentDictionary<string, CoreUpdateProgressView> _updateProgress = new(StringComparer.Ordinal);
     private Task? _geoUpdateTask;
@@ -1128,37 +1129,48 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private async Task ApplyGeoFilesUpdateAsync(bool useProxy, CancellationToken cancellationToken)
+    private async Task ApplyGeoFilesUpdateAsync(
+        bool useProxy,
+        CancellationToken cancellationToken,
+        bool publishProgress = true,
+        Func<Func<Task>, CancellationToken, Task>? beforeCommit = null)
     {
-        var completion = new GeoFilesUpdateCompletion();
-        var updater = new UpdateService(Config, (success, message) =>
+        await _geoUpdateGate.RunAsync(async () =>
         {
-            AddLog("update", message);
-            completion.Report(success, message, IsGeoDownloadProgressMessage(message));
-            _events.Publish("geo-update-progress", new
+            var completion = new GeoFilesUpdateCompletion();
+            var updater = new UpdateService(Config, (success, message) =>
             {
-                success,
-                code = success ? "ok" : "geo_update_progress",
-                messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
-                rawLog = message,
+                AddLog("update", message);
+                completion.Report(success, message, IsGeoDownloadProgressMessage(message));
+                if (publishProgress)
+                {
+                    _events.Publish("geo-update-progress", new
+                    {
+                        success,
+                        code = success ? "ok" : "geo_update_progress",
+                        messageKey = success ? ApiMessageKeys.CommonCompleted : ApiMessageKeys.GeoUpdateProgress,
+                        rawLog = message,
+                    });
+                }
+                return Task.CompletedTask;
             });
-            return Task.CompletedTask;
-        });
 
-        var requiredFiles = GetRequiredGeoFiles();
-        var managedFiles = await GetManagedGeoFilesAsync();
-        await GeoFilesUpdateTransaction.ApplyAsync(
-            managedFiles,
-            requiredFiles,
-            async token =>
-            {
-                // Keep download selection, URLs, and installation behavior in the upstream
-                // public API. Its legacy callback reports progress/errors separately from its
-                // final success notification, so reject non-progress failures before commit.
-                await updater.UpdateGeoFileAll(useProxy, token);
-                completion.EnsureSuccessful();
-            },
-            cancellationToken);
+            var requiredFiles = GetRequiredGeoFiles();
+            var managedFiles = await GetManagedGeoFilesAsync();
+            await GeoFilesUpdateTransaction.ApplyAsync(
+                managedFiles,
+                requiredFiles,
+                async token =>
+                {
+                    // Keep download selection, URLs, and installation behavior in the upstream
+                    // public API. Its legacy callback reports progress/errors separately from its
+                    // final success notification, so reject non-progress failures before commit.
+                    await updater.UpdateGeoFileAll(useProxy, token);
+                    completion.EnsureSuccessful();
+                },
+                cancellationToken,
+                beforeCommit);
+        }, cancellationToken);
     }
 
     private async Task<string[]> GetManagedGeoFilesAsync()

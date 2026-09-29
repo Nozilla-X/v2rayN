@@ -125,6 +125,77 @@ public class GeoFilesUpdateTransactionTests
     }
 
     [Test]
+    public async Task BeforeCommitFailureRestoresGeoFilesAfterCoreRestartFailure()
+    {
+        using var directory = new TemporaryDirectory();
+        var target = Path.Combine(directory.Path, "geoip.dat");
+        await File.WriteAllTextAsync(target, "old-geoip");
+        var coreCompletionCalled = false;
+        var coreSawRestoredGeo = false;
+        var failed = false;
+
+        try
+        {
+            await GeoFilesUpdateTransaction.ApplyAsync(
+                [target],
+                [target],
+                token => File.WriteAllTextAsync(target, "new-geoip", token),
+                CancellationToken.None,
+                async (rollbackGeoFiles, _) =>
+                {
+                    await rollbackGeoFiles();
+                    coreCompletionCalled = true;
+                    coreSawRestoredGeo = await File.ReadAllTextAsync(target) == "old-geoip";
+                    throw new IOException("simulated Core restart failure");
+                });
+        }
+        catch (IOException exception) when (exception.Message.Contains("simulated Core restart failure", StringComparison.Ordinal))
+        {
+            failed = true;
+        }
+
+        await failed.Should().BeTrue();
+        await coreCompletionCalled.Should().BeTrue();
+        await coreSawRestoredGeo.Should().BeTrue();
+        await (await File.ReadAllTextAsync(target)).Should().BeEqualTo("old-geoip");
+    }
+
+    [Test]
+    public async Task ManualBatchAndRegionalPresetGeoFilesWorkShareOneTransactionGate()
+    {
+        var gate = new GeoFilesUpdateGate();
+        var active = 0;
+        var maximumActive = 0;
+        var entrants = new System.Collections.Concurrent.ConcurrentBag<string>();
+
+        await Task.WhenAll(new[] { "manual", "batch", "regional-preset" }.Select(name => gate.RunAsync(async () =>
+        {
+            var nowActive = Interlocked.Increment(ref active);
+            UpdateMaximum(ref maximumActive, nowActive);
+            entrants.Add(name);
+            await Task.Delay(20);
+            Interlocked.Decrement(ref active);
+        }, CancellationToken.None)));
+
+        await maximumActive.Should().BeEqualTo(1);
+        await entrants.OrderBy(item => item, StringComparer.Ordinal)
+            .SequenceEqual(new[] { "batch", "manual", "regional-preset" })
+            .Should().BeTrue();
+    }
+
+    private static void UpdateMaximum(ref int maximum, int value)
+    {
+        while (true)
+        {
+            var current = Volatile.Read(ref maximum);
+            if (current >= value || Interlocked.CompareExchange(ref maximum, value, current) == current)
+            {
+                return;
+            }
+        }
+    }
+
+    [Test]
     public async Task FailedUpdateRemovesNewMmdbAndSrsTargetsButLeavesUnmanagedFilesAlone()
     {
         using var directory = new TemporaryDirectory();

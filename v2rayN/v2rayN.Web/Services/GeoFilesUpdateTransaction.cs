@@ -10,7 +10,8 @@ internal static class GeoFilesUpdateTransaction
         IEnumerable<string> managedFiles,
         IEnumerable<string> requiredFiles,
         Func<CancellationToken, Task> update,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<Func<Task>, CancellationToken, Task>? beforeCommit = null)
     {
         var required = requiredFiles
             .Select(Path.GetFullPath)
@@ -26,6 +27,30 @@ internal static class GeoFilesUpdateTransaction
         var transactionCompleted = false;
         var rollbackCompleted = false;
         var updateStarted = false;
+
+        Task RollBackFilesAsync()
+        {
+            if (rollbackCompleted) return Task.CompletedTask;
+
+            var originallyExisting = backups.Keys.ToHashSet(PathComparer);
+            foreach (var target in originalTargets)
+            {
+                if (!originallyExisting.Contains(target) && (File.Exists(target) || IsSymbolicLink(target)))
+                {
+                    File.Delete(target);
+                }
+            }
+
+            foreach (var (target, backup) in backups)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                if (IsSymbolicLink(target)) File.Delete(target);
+                File.Copy(backup.BackupPath, target, overwrite: true);
+                File.SetLastWriteTimeUtc(target, backup.LastWriteTimeUtc);
+            }
+            rollbackCompleted = true;
+            return Task.CompletedTask;
+        }
 
         try
         {
@@ -61,35 +86,21 @@ internal static class GeoFilesUpdateTransaction
                         throw new IOException($"GeoFiles update did not produce a non-empty {Path.GetFileName(requiredFile)}.");
                     }
                 }
+                if (beforeCommit is not null) await beforeCommit(RollBackFilesAsync, cancellationToken);
                 transactionCompleted = true;
             }
             catch (Exception updateException)
             {
-                try
+                if (!rollbackCompleted)
                 {
-                    var originallyExisting = backups.Keys.ToHashSet(PathComparer);
-                    foreach (var target in originalTargets)
+                    try
                     {
-                        if (!originallyExisting.Contains(target) && (File.Exists(target) || IsSymbolicLink(target)))
-                        {
-                            File.Delete(target);
-                        }
+                        await RollBackFilesAsync();
                     }
-
-                    foreach (var (target, backup) in backups)
+                    catch (Exception rollbackException)
                     {
-                        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                        if (IsSymbolicLink(target)) File.Delete(target);
-                        File.Copy(backup.BackupPath, target, overwrite: true);
-                        File.SetLastWriteTimeUtc(target, backup.LastWriteTimeUtc);
+                        throw new GeoFilesUpdateRollbackException(backupRoot, updateException, rollbackException);
                     }
-                    rollbackCompleted = true;
-                }
-                catch (Exception rollbackException)
-                {
-                    throw new IOException(
-                        $"GeoFiles update failed and rollback is incomplete; the backup set was retained at {backupRoot}.",
-                        new AggregateException(updateException, rollbackException));
                 }
 
                 throw;
@@ -126,4 +137,15 @@ internal static class GeoFilesUpdateTransaction
     }
 
     private sealed record GeoFileBackup(string BackupPath, DateTime LastWriteTimeUtc);
+}
+
+internal sealed class GeoFilesUpdateRollbackException(
+    string backupRoot,
+    Exception updateException,
+    Exception rollbackException)
+    : IOException(
+        $"GeoFiles update failed and rollback is incomplete; the backup set was retained at {backupRoot}.",
+        new AggregateException(updateException, rollbackException))
+{
+    public string BackupRoot { get; } = backupRoot;
 }

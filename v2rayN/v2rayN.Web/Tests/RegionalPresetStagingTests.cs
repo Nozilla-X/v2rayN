@@ -91,7 +91,7 @@ public class RegionalPresetStagingTests
         }, TimeSpan.FromSeconds(2));
         var workflow = RegionalPresetWorkflow.RunAsync(
             token => stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [], null, token),
-            stage =>
+            (stage, _) =>
             {
                 applyCalled = true;
                 capturedStage = stage;
@@ -134,7 +134,7 @@ public class RegionalPresetStagingTests
         });
         var workflow = RegionalPresetWorkflow.RunAsync(
             token => stager.StageAsync(EPresetType.Russia, CreateDnsRows(), [], null, token),
-            _ =>
+            (_, _) =>
             {
                 applyCalled = true;
                 return Task.FromResult(true);
@@ -191,15 +191,295 @@ public class RegionalPresetStagingTests
         await routingRows.SequenceEqual(new[] { "routing-before" }).Should().BeTrue();
     }
 
+    [Test]
+    public async Task DefaultRussiaAndIranApplySourcesBeforeGeoUpdateAndCoreCompletion()
+    {
+        foreach (var (preset, sourceIndex) in new[]
+                 {
+                     (EPresetType.Default, -1),
+                     (EPresetType.Russia, 1),
+                     (EPresetType.Iran, 2),
+                 })
+        {
+            var responses = sourceIndex < 0 ? new Dictionary<string, string?>() : CreateRegionalResponses(sourceIndex);
+            var stager = new RegionalPresetStager((url, _, _) => Task.FromResult(responses.GetValueOrDefault(url)));
+            var stage = await stager.StageAsync(
+                preset,
+                sourceIndex < 0 ? [] : CreateDnsRows(),
+                [],
+                null,
+                CancellationToken.None);
+            var currentGeoSource = "old-geo-source";
+            var currentSrsSource = "old-srs-source";
+            var updaterGeoSource = string.Empty;
+            var updaterSrsSource = string.Empty;
+            var order = new List<string>();
+
+            await RegionalPresetApplyWorkflow.RunAsync(
+                applyConfiguration: _ =>
+                {
+                    currentGeoSource = stage.GeoSourceUrl;
+                    currentSrsSource = stage.SrsSourceUrl;
+                    order.Add("config/db apply");
+                    return Task.CompletedTask;
+                },
+                updateGeoFilesTransaction: async (beforeCommit, token) =>
+                {
+                    order.Add("GeoFiles update started");
+                    updaterGeoSource = currentGeoSource;
+                    updaterSrsSource = currentSrsSource;
+                    await Task.Yield();
+                    order.Add("GeoFiles update completed");
+                    await beforeCommit(() => Task.CompletedTask, token);
+                },
+                completeCoreApply: (_, _) =>
+                {
+                    order.Add("Core restart");
+                    return Task.CompletedTask;
+                },
+                rollbackConfigurationAndRuntime: () => Task.CompletedTask,
+                CancellationToken.None);
+
+            await updaterGeoSource.Should().BeEqualTo(sourceIndex < 0 ? string.Empty : Global.GeoFilesSources[sourceIndex]);
+            await updaterSrsSource.Should().BeEqualTo(sourceIndex < 0 ? string.Empty : Global.SingboxRulesetSources[sourceIndex]);
+            await order.SequenceEqual(new[]
+            {
+                "config/db apply", "GeoFiles update started", "GeoFiles update completed", "Core restart",
+            }).Should().BeTrue();
+        }
+    }
+
+    [Test]
+    public async Task RunningCoreRestartsOnceAfterGeoUpdateAndStoppedCoreStaysStopped()
+    {
+        foreach (var initialState in new[] { CoreRuntimeState.Running, CoreRuntimeState.Stopped })
+        {
+            var geoUpdates = 0;
+            var restarts = 0;
+            var action = CoreSettingsApplyAction.SaveOnly;
+
+            await RegionalPresetApplyWorkflow.RunAsync(
+                _ => Task.CompletedTask,
+                async (beforeCommit, token) =>
+                {
+                    geoUpdates++;
+                    await beforeCommit(() => Task.CompletedTask, token);
+                },
+                (_, _) =>
+                {
+                    action = CoreSettingsApplyPolicy.Decide(
+                        initialState,
+                        hasActiveChild: initialState == CoreRuntimeState.Running,
+                        changed: true);
+                    if (action == CoreSettingsApplyAction.Restart)
+                    {
+                        restarts++;
+                    }
+                    return Task.CompletedTask;
+                },
+                rollbackConfigurationAndRuntime: () => Task.CompletedTask,
+                CancellationToken.None);
+
+            await geoUpdates.Should().BeEqualTo(1);
+            await restarts.Should().BeEqualTo(initialState == CoreRuntimeState.Running ? 1 : 0);
+            await action.Should().BeEqualTo(initialState == CoreRuntimeState.Running
+                ? CoreSettingsApplyAction.Restart
+                : CoreSettingsApplyAction.SaveOnly);
+        }
+    }
+
+    [Test]
+    public async Task GeoFilesFailureRollsBackPresetStateAndSkipsCoreCompletion()
+    {
+        using var directory = new TemporaryDirectory();
+        var geoip = Path.Combine(directory.Path, "geoip.dat");
+        var geosite = Path.Combine(directory.Path, "geosite.dat");
+        var newSrs = Path.Combine(directory.Path, "geosite-region.srs");
+        await File.WriteAllTextAsync(geoip, "old-geoip");
+        await File.WriteAllTextAsync(geosite, "old-geosite");
+        var configSource = "old-source";
+        var dns = "old-dns";
+        var routing = "old-routing";
+        var restartCalled = false;
+        var rollbackCalled = false;
+        var failed = false;
+
+        try
+        {
+            await RegionalPresetApplyWorkflow.RunAsync(
+                _ =>
+                {
+                    configSource = "new-source";
+                    dns = "new-dns";
+                    routing = "new-routing";
+                    return Task.CompletedTask;
+                },
+                (beforeCommit, token) => GeoFilesUpdateTransaction.ApplyAsync(
+                    [geoip, geosite, newSrs],
+                    [geoip, geosite],
+                    async _ =>
+                    {
+                        await File.WriteAllTextAsync(geoip, "partial-geoip");
+                        await File.WriteAllTextAsync(geosite, "partial-geosite");
+                        await File.WriteAllTextAsync(newSrs, "partial-srs");
+                        throw new IOException("simulated GeoFiles failure");
+                    },
+                    token,
+                    beforeCommit),
+                (_, _) =>
+                {
+                    restartCalled = true;
+                    return Task.CompletedTask;
+                },
+                rollbackConfigurationAndRuntime: () =>
+                {
+                    configSource = "old-source";
+                    dns = "old-dns";
+                    routing = "old-routing";
+                    rollbackCalled = true;
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None);
+        }
+        catch (IOException exception) when (exception.Message.Contains("simulated GeoFiles failure", StringComparison.Ordinal))
+        {
+            failed = true;
+        }
+
+        await failed.Should().BeTrue();
+        await configSource.Should().BeEqualTo("old-source");
+        await dns.Should().BeEqualTo("old-dns");
+        await routing.Should().BeEqualTo("old-routing");
+        await (await File.ReadAllTextAsync(geoip)).Should().BeEqualTo("old-geoip");
+        await (await File.ReadAllTextAsync(geosite)).Should().BeEqualTo("old-geosite");
+        await File.Exists(newSrs).Should().BeFalse();
+        await rollbackCalled.Should().BeTrue();
+        await restartCalled.Should().BeFalse();
+    }
+
+    [Test]
+    public async Task GeoDownloadCancellationRollsBackPresetStateAndFilesWithoutCoreRestart()
+    {
+        using var directory = new TemporaryDirectory();
+        using var cancellation = new CancellationTokenSource();
+        var geoip = Path.Combine(directory.Path, "geoip.dat");
+        var geosite = Path.Combine(directory.Path, "geosite.dat");
+        await File.WriteAllTextAsync(geoip, "old-geoip");
+        await File.WriteAllTextAsync(geosite, "old-geosite");
+        var configSource = "old-source";
+        var rollbackCalled = false;
+        var restartCalled = false;
+        var canceled = false;
+
+        try
+        {
+            await RegionalPresetApplyWorkflow.RunAsync(
+                _ =>
+                {
+                    configSource = "new-source";
+                    return Task.CompletedTask;
+                },
+                (beforeCommit, token) => GeoFilesUpdateTransaction.ApplyAsync(
+                    [geoip, geosite],
+                    [geoip, geosite],
+                    async updateToken =>
+                    {
+                        await File.WriteAllTextAsync(geoip, "partial-geoip", updateToken);
+                        await File.WriteAllTextAsync(geosite, "partial-geosite", updateToken);
+                        cancellation.Cancel();
+                        updateToken.ThrowIfCancellationRequested();
+                    },
+                    token,
+                    beforeCommit),
+                (_, _) =>
+                {
+                    restartCalled = true;
+                    return Task.CompletedTask;
+                },
+                rollbackConfigurationAndRuntime: () =>
+                {
+                    configSource = "old-source";
+                    rollbackCalled = true;
+                    return Task.CompletedTask;
+                },
+                cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            canceled = true;
+        }
+
+        await canceled.Should().BeTrue();
+        await configSource.Should().BeEqualTo("old-source");
+        await (await File.ReadAllTextAsync(geoip)).Should().BeEqualTo("old-geoip");
+        await (await File.ReadAllTextAsync(geosite)).Should().BeEqualTo("old-geosite");
+        await rollbackCalled.Should().BeTrue();
+        await restartCalled.Should().BeFalse();
+    }
+
+    [Test]
+    public async Task CoreRestartFailureRestoresPresetStateAndGeoFilesBeforeReturning()
+    {
+        using var directory = new TemporaryDirectory();
+        var geoFile = Path.Combine(directory.Path, "geoip.dat");
+        await File.WriteAllTextAsync(geoFile, "old-geoip");
+        var configSource = "old-source";
+        var runtimeState = CoreRuntimeState.Running;
+        var restartAttempts = 0;
+        var settingsRollbackCalled = false;
+        var failed = false;
+
+        try
+        {
+            await RegionalPresetApplyWorkflow.RunAsync(
+                _ =>
+                {
+                    configSource = "new-source";
+                    return Task.CompletedTask;
+                },
+                (beforeCommit, token) => GeoFilesUpdateTransaction.ApplyAsync(
+                    [geoFile],
+                    [geoFile],
+                    updateToken => File.WriteAllTextAsync(geoFile, "new-geoip", updateToken),
+                    token,
+                    beforeCommit),
+                async (rollbackGeoFiles, _) =>
+                {
+                    restartAttempts++;
+                    await rollbackGeoFiles();
+                    configSource = "old-source";
+                    runtimeState = CoreRuntimeState.Running;
+                    throw new RegionalPresetCoreApplyFailedException();
+                },
+                rollbackConfigurationAndRuntime: () =>
+                {
+                    settingsRollbackCalled = true;
+                    return Task.CompletedTask;
+                },
+                CancellationToken.None);
+        }
+        catch (RegionalPresetCoreApplyFailedException)
+        {
+            failed = true;
+        }
+
+        await failed.Should().BeTrue();
+        await configSource.Should().BeEqualTo("old-source");
+        await runtimeState.Should().BeEqualTo(CoreRuntimeState.Running);
+        await restartAttempts.Should().BeEqualTo(1);
+        await settingsRollbackCalled.Should().BeFalse();
+        await (await File.ReadAllTextAsync(geoFile)).Should().BeEqualTo("old-geoip");
+    }
+
     private static List<DNSItem> CreateDnsRows() =>
     [
         new() { Id = "xray-id", CoreType = ECoreType.Xray, Remarks = "my Xray DNS", Enabled = true, NormalDNS = "existing-xray-data" },
         new() { Id = "singbox-id", CoreType = ECoreType.sing_box, Remarks = "my sing-box DNS", Enabled = false, NormalDNS = "existing-singbox-data" },
     ];
 
-    private static Dictionary<string, string?> CreateRegionalResponses()
+    private static Dictionary<string, string?> CreateRegionalResponses(int sourceIndex = 1)
     {
-        var dnsBase = Global.DNSTemplateSources[1];
+        var dnsBase = Global.DNSTemplateSources[sourceIndex];
         var xrayNormalUrl = "https://assets.example.test/xray-normal";
         var xrayTunUrl = "https://assets.example.test/xray-tun";
         var singboxNormalUrl = "https://assets.example.test/singbox-normal";
@@ -221,11 +501,24 @@ public class RegionalPresetStagingTests
             [dnsBase + "v2ray.json"] = JsonUtils.Serialize(new DNSItem { NormalDNS = xrayNormalUrl, TunDNS = xrayTunUrl }, false),
             [dnsBase + "sing_box.json"] = JsonUtils.Serialize(new DNSItem { NormalDNS = singboxNormalUrl }, false),
             [dnsBase + "simple_dns.json"] = JsonUtils.Serialize(new SimpleDNSItem { RemoteDNS = "https://dns.example.test/remote" }, false),
-            [Global.RoutingRulesSources[1]] = JsonUtils.Serialize(template, false),
+            [Global.RoutingRulesSources[sourceIndex]] = JsonUtils.Serialize(template, false),
             [xrayNormalUrl] = "xray-normal-content",
             [xrayTunUrl] = "xray-tun-content",
             [singboxNormalUrl] = "singbox-normal-content",
         };
+    }
+
+    private sealed class TemporaryDirectory : IDisposable
+    {
+        public TemporaryDirectory()
+        {
+            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"v2rayn-web-regional-preset-test-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(Path);
+        }
+
+        public string Path { get; }
+
+        public void Dispose() => Directory.Delete(Path, recursive: true);
     }
 
     [Test]

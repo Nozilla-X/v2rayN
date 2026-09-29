@@ -329,14 +329,81 @@ internal static class RegionalPresetWorkflow
 {
     public static async Task<TResult> RunAsync<TStage, TResult>(
         Func<CancellationToken, Task<TStage>> stage,
-        Func<TStage, Task<TResult>> apply,
+        Func<TStage, CancellationToken, Task<TResult>> apply,
         CancellationToken cancellationToken)
     {
-        var staged = await stage(cancellationToken);
+        TStage staged;
+        try
+        {
+            staged = await stage(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new RegionalPresetStagingException(exception);
+        }
         cancellationToken.ThrowIfCancellationRequested();
-        return await apply(staged);
+        return await apply(staged, cancellationToken);
     }
 }
+
+internal sealed class RegionalPresetStagingException(Exception innerException)
+    : Exception("Regional preset staging failed.", innerException) { }
+
+internal static class RegionalPresetApplyWorkflow
+{
+    public static async Task RunAsync(
+        Func<CancellationToken, Task> applyConfiguration,
+        Func<Func<Func<Task>, CancellationToken, Task>, CancellationToken, Task> updateGeoFilesTransaction,
+        Func<Func<Task>, CancellationToken, Task> completeCoreApply,
+        Func<Task> rollbackConfigurationAndRuntime,
+        CancellationToken cancellationToken)
+    {
+        var configurationApplied = false;
+        try
+        {
+            await applyConfiguration(cancellationToken);
+            configurationApplied = true;
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await updateGeoFilesTransaction(async (rollbackGeoFiles, transactionToken) =>
+            {
+                transactionToken.ThrowIfCancellationRequested();
+                await completeCoreApply(rollbackGeoFiles, transactionToken);
+            }, cancellationToken);
+        }
+        catch (RegionalPresetCoreApplyFailedException)
+        {
+            // CoreSettingsApply already restored its snapshot/runtime. The enclosing GeoFiles
+            // transaction restores files before this exception is observed by its caller.
+            throw;
+        }
+        catch (Exception applyException)
+        {
+            if (configurationApplied)
+            {
+                try
+                {
+                    await rollbackConfigurationAndRuntime();
+                }
+                catch (Exception rollbackException)
+                {
+                    throw new RegionalPresetApplyRollbackException(applyException, rollbackException);
+                }
+            }
+            throw;
+        }
+    }
+}
+
+internal sealed class RegionalPresetCoreApplyFailedException : Exception { }
+
+internal sealed class RegionalPresetApplyRollbackException(Exception applyException, Exception rollbackException)
+    : Exception("The regional preset failed and its configuration/runtime rollback also failed.",
+        new AggregateException(applyException, rollbackException)) { }
 
 internal sealed record RegionalPresetApplyResult(bool Success, bool RollbackSucceeded, Exception? Error);
 

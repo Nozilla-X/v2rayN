@@ -910,9 +910,14 @@ public sealed partial class V2rayRuntime
         {
             throw;
         }
+        catch (RegionalPresetStagingException exception)
+        {
+            AddLog("settings", $"Regional preset staging failed ({preset}); no settings were changed: {exception.InnerException}");
+            return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
+        }
         catch (Exception exception)
         {
-            AddLog("settings", $"Regional preset staging failed ({preset}); no settings were changed: {exception}");
+            AddLog("settings", $"Regional preset workflow failed ({preset}): {exception}");
             return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
         }
         finally
@@ -921,109 +926,220 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private async Task<OperationView> ApplyStagedRegionalPresetAsync(RegionalPresetStage stage)
+    private async Task<OperationView> ApplyStagedRegionalPresetAsync(
+        RegionalPresetStage stage,
+        CancellationToken cancellationToken)
     {
-        await using var applyContext = await BeginCoreSettingsApplyAsync();
+        await using var maintenance = await _operations.EnterExclusiveAsync(
+            cancellationToken,
+            allowReadOnlyObservations: true);
+        var operationToken = maintenance.Token;
+        await using var applyContext = await BeginCoreSettingsApplyAsync(operationToken);
         if (applyContext.Failure is { } applyFailure) return applyFailure;
 
-        var applyResult = await RegionalPresetTransaction.RunAsync(
-            () => _mutations.RunAsync(async () =>
+        RegionalPresetApplyResult? applyResult = null;
+        OperationView? coreApplyResult = null;
+        CoreSettingsRollbackResult? presetRollback = null;
+        try
         {
-            Config.ConstItem.GeoSourceUrl = stage.GeoSourceUrl;
-            Config.ConstItem.SrsSourceUrl = stage.SrsSourceUrl;
-            Config.ConstItem.RouteRulesTemplateSourceUrl = stage.RouteRulesTemplateSourceUrl;
-            Config.SimpleDNSItem = stage.SimpleDnsItem;
-
-            if (stage.Preset == EPresetType.Default)
-            {
-                await SQLiteHelper.Instance.DeleteAllAsync<DNSItem>();
-                foreach (var item in stage.DnsItems)
+            await RegionalPresetApplyWorkflow.RunAsync(
+                applyConfiguration: async token =>
                 {
-                    if (await ConfigHandler.SaveDNSItems(Config, item) != 0)
-                    {
-                        throw new IOException($"The {item.CoreType} DNS profile could not be saved.");
-                    }
-                }
-
-                // Default routing uses embedded data only; this call performs no network I/O
-                // because the route template source was cleared in the staged plan.
-                if (await ConfigHandler.InitRouting(Config, false) != 0)
-                {
-                    throw new IOException("The built-in routing profiles could not be initialized.");
-                }
-            }
-            else
-            {
-                foreach (var item in stage.DnsItems)
-                {
-                    if (await ConfigHandler.SaveDNSItems(Config, item) != 0)
-                    {
-                        throw new IOException($"The {item.CoreType} DNS profile could not be saved.");
-                    }
-                }
-
-                foreach (var itemId in stage.Routing.RemoveItemIds ?? [])
-                {
-                    var item = await AppManager.Instance.GetRoutingItem(itemId);
-                    if (item is not null)
-                    {
-                        await ConfigHandler.RemoveRoutingItem(item);
-                    }
-                }
-
-                if (stage.Routing.ClearLegacyRoutingIndex)
-                {
-                    Config.RoutingBasicItem.RoutingIndexId = string.Empty;
-                }
-
-                var currentRoutes = await AppManager.Instance.RoutingItems() ?? [];
-                var hasVersion = stage.Routing.TemplateVersion is { Length: > 0 } version
-                    && currentRoutes.Any(item => item.Remarks?.StartsWith(version, StringComparison.Ordinal) == true);
-                var builtinFallbackAlreadyInitialized = stage.Routing.IsBuiltinFallback && currentRoutes.Count > 0;
-                if (!hasVersion && !builtinFallbackAlreadyInitialized)
-                {
-                    var nextSort = currentRoutes.Count;
-                    foreach (var item in stage.Routing.Items)
-                    {
-                        item.Sort = ++nextSort;
-                        if (await ConfigHandler.AddBatchRoutingRules(item, item.RuleSet ?? "[]") != 0)
+                    applyResult = await RegionalPresetTransaction.RunAsync(
+                        () => _mutations.RunAsync(async () =>
                         {
-                            throw new IOException($"The routing profile '{item.Remarks}' could not be saved.");
+                            token.ThrowIfCancellationRequested();
+                            Config.ConstItem.GeoSourceUrl = stage.GeoSourceUrl;
+                            Config.ConstItem.SrsSourceUrl = stage.SrsSourceUrl;
+                            Config.ConstItem.RouteRulesTemplateSourceUrl = stage.RouteRulesTemplateSourceUrl;
+                            Config.SimpleDNSItem = stage.SimpleDnsItem;
+
+                            if (stage.Preset == EPresetType.Default)
+                            {
+                                await SQLiteHelper.Instance.DeleteAllAsync<DNSItem>();
+                                foreach (var item in stage.DnsItems)
+                                {
+                                    if (await ConfigHandler.SaveDNSItems(Config, item) != 0)
+                                    {
+                                        throw new IOException($"The {item.CoreType} DNS profile could not be saved.");
+                                    }
+                                }
+
+                                // Default routing uses embedded data only; this call performs no network I/O
+                                // because the route template source was cleared in the staged plan.
+                                if (await ConfigHandler.InitRouting(Config, false) != 0)
+                                {
+                                    throw new IOException("The built-in routing profiles could not be initialized.");
+                                }
+                            }
+                            else
+                            {
+                                foreach (var item in stage.DnsItems)
+                                {
+                                    if (await ConfigHandler.SaveDNSItems(Config, item) != 0)
+                                    {
+                                        throw new IOException($"The {item.CoreType} DNS profile could not be saved.");
+                                    }
+                                }
+
+                                foreach (var itemId in stage.Routing.RemoveItemIds ?? [])
+                                {
+                                    var item = await AppManager.Instance.GetRoutingItem(itemId);
+                                    if (item is not null)
+                                    {
+                                        await ConfigHandler.RemoveRoutingItem(item);
+                                    }
+                                }
+
+                                if (stage.Routing.ClearLegacyRoutingIndex)
+                                {
+                                    Config.RoutingBasicItem.RoutingIndexId = string.Empty;
+                                }
+
+                                var currentRoutes = await AppManager.Instance.RoutingItems() ?? [];
+                                var hasVersion = stage.Routing.TemplateVersion is { Length: > 0 } version
+                                    && currentRoutes.Any(item => item.Remarks?.StartsWith(version, StringComparison.Ordinal) == true);
+                                var builtinFallbackAlreadyInitialized = stage.Routing.IsBuiltinFallback && currentRoutes.Count > 0;
+                                if (!hasVersion && !builtinFallbackAlreadyInitialized)
+                                {
+                                    var nextSort = currentRoutes.Count;
+                                    foreach (var item in stage.Routing.Items)
+                                    {
+                                        item.Sort = ++nextSort;
+                                        if (await ConfigHandler.AddBatchRoutingRules(item, item.RuleSet ?? "[]") != 0)
+                                        {
+                                            throw new IOException($"The routing profile '{item.Remarks}' could not be saved.");
+                                        }
+                                    }
+
+                                    var defaultItem = stage.Routing.DefaultRemarks is { } remarks
+                                        ? stage.Routing.Items.FirstOrDefault(item => item.Remarks == remarks)
+                                        : null;
+                                    if (defaultItem is not null && await ConfigHandler.SetDefaultRouting(Config, defaultItem) != 0)
+                                    {
+                                        throw new IOException("The first staged routing profile could not be activated.");
+                                    }
+                                }
+
+                                if (stage.Routing.ExistingDefaultItemId is { } existingDefaultId)
+                                {
+                                    var existingDefault = currentRoutes.FirstOrDefault(item => item.Id == existingDefaultId);
+                                    if (existingDefault is not null && !existingDefault.IsActive
+                                        && await ConfigHandler.SetDefaultRouting(Config, existingDefault) != 0)
+                                    {
+                                        throw new IOException("The migrated default routing profile could not be activated.");
+                                    }
+                                }
+                            }
+
+                            token.ThrowIfCancellationRequested();
+                            await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+                            token.ThrowIfCancellationRequested();
+                        }, token),
+                        () => RestoreRegionalPresetSnapshotAsync(applyContext));
+
+                    if (!applyResult.Success)
+                    {
+                        AddLog("settings", $"Regional preset config apply failed ({stage.Preset}); rollback={(applyResult.RollbackSucceeded ? "succeeded" : "failed")}: {applyResult.Error}");
+                        if (token.IsCancellationRequested)
+                        {
+                            if (!applyResult.RollbackSucceeded)
+                            {
+                                _ = await RollBackCoreSettingsAsync(applyContext, "regional_preset_config_cancelled");
+                            }
+                            throw new OperationCanceledException(token);
                         }
+                        if (!applyResult.RollbackSucceeded)
+                        {
+                            var fallbackRollback = await RollBackCoreSettingsAsync(applyContext, "regional_preset_config_apply_failed");
+                            AddLog("settings", $"Regional preset config rollback fallback ({stage.Preset}) completed={fallbackRollback.RolledBack}; runtimeRestored={fallbackRollback.OldRuntimeRestored}.");
+                        }
+                        throw new RegionalPresetConfigApplyException();
                     }
 
-                    var defaultItem = stage.Routing.DefaultRemarks is { } remarks
-                        ? stage.Routing.Items.FirstOrDefault(item => item.Remarks == remarks)
-                        : null;
-                    if (defaultItem is not null && await ConfigHandler.SetDefaultRouting(Config, defaultItem) != 0)
-                    {
-                        throw new IOException("The first staged routing profile could not be activated.");
-                    }
-                }
-
-                if (stage.Routing.ExistingDefaultItemId is { } existingDefaultId)
+                },
+                updateGeoFilesTransaction: (beforeCommit, token) => ApplyGeoFilesUpdateAsync(
+                    Config.CheckUpdateItem.UpdateViaProxy,
+                    token,
+                    publishProgress: false,
+                    beforeCommit: beforeCommit),
+                completeCoreApply: async (rollbackGeoFiles, token) =>
                 {
-                    var existingDefault = currentRoutes.FirstOrDefault(item => item.Id == existingDefaultId);
-                    if (existingDefault is not null && !existingDefault.IsActive
-                        && await ConfigHandler.SetDefaultRouting(Config, existingDefault) != 0)
+                    // From this point, finish Core apply/recovery even if the HTTP client disconnects.
+                    // A failed Core apply first restores GeoFiles through this transaction scope,
+                    // then the existing settings rollback can relaunch the previous runtime safely.
+                    token.ThrowIfCancellationRequested();
+                    coreApplyResult = await CompleteCoreAffectingChangeAsync("regional-preset", true,
+                        applyContext,
+                        ApiMessageKeys.CommonCompleted,
+                        new { preset = stage.Preset.ToString() },
+                        beforeRollback: rollbackGeoFiles);
+                    if (!coreApplyResult.Success)
                     {
-                        throw new IOException("The migrated default routing profile could not be activated.");
+                        AddLog("settings", $"Regional preset Core restart failed ({stage.Preset}); Core settings rollback was requested.");
+                        throw new RegionalPresetCoreApplyFailedException();
                     }
-                }
-            }
+                },
+                rollbackConfigurationAndRuntime: async () =>
+                {
+                    if (coreApplyResult is { Success: false })
+                    {
+                        return;
+                    }
 
-            await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
-        }),
-            () => RestoreRegionalPresetSnapshotAsync(applyContext));
-        if (!applyResult.Success)
+                    presetRollback = await RollBackCoreSettingsAsync(applyContext, "regional_preset_geofiles_failed");
+                    if (!presetRollback.RolledBack)
+                    {
+                        AddLog("settings", $"Regional preset rollback failed ({stage.Preset}): {presetRollback.Detail}");
+                    }
+                },
+                cancellationToken: operationToken);
+
+            return coreApplyResult ?? OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
+        }
+        catch (RegionalPresetConfigApplyException)
         {
-            AddLog("settings", $"Regional preset apply failed ({stage.Preset}); rollback={(applyResult.RollbackSucceeded ? "succeeded" : "failed")}: {applyResult.Error}");
             return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
         }
+        catch (RegionalPresetCoreApplyFailedException)
+        {
+            // The enclosing GeoFiles transaction restored its snapshot before this result is returned.
+            return coreApplyResult ?? OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
+        }
+        catch (OperationCanceledException) when (operationToken.IsCancellationRequested)
+        {
+            if (presetRollback is not null)
+            {
+                AddLog("settings", $"Regional preset GeoFiles update canceled ({stage.Preset}); config/runtime rollback={presetRollback.RolledBack}.");
+            }
+            throw;
+        }
+        catch (Exception exception)
+        {
+            if (coreApplyResult is { Success: false })
+            {
+                // CompleteCoreAffectingChangeAsync already restored config/runtime. This means
+                // the GeoFiles transaction itself also reported an incomplete file rollback.
+                AddLog("settings", $"Regional preset GeoFiles rollback failed after Core restart failure ({stage.Preset}): {exception}");
+                return coreApplyResult;
+            }
 
-        return await CompleteCoreAffectingChangeAsync("regional-preset", true,
-            applyContext,
-            ApiMessageKeys.CommonCompleted, new { preset = stage.Preset.ToString() });
+            AddLog("settings", $"Regional preset GeoFiles update failed ({stage.Preset}); restoring config, DNS, routing, and runtime: {exception}");
+            if (presetRollback is null)
+            {
+                presetRollback = await RollBackCoreSettingsAsync(applyContext, "regional_preset_geofiles_failed");
+            }
+            var geoFilesRolledBack = exception is not GeoFilesUpdateRollbackException;
+            return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed,
+                new
+                {
+                    preset = stage.Preset.ToString(),
+                    rolledBack = presetRollback.RolledBack && geoFilesRolledBack,
+                    configAndRuntimeRolledBack = presetRollback.RolledBack,
+                    geoFilesRolledBack,
+                    oldRuntimeRestored = presetRollback.OldRuntimeRestored,
+                });
+        }
     }
 
     private async Task<bool> RestoreRegionalPresetSnapshotAsync(CoreSettingsApplyContext context)
@@ -1200,7 +1316,8 @@ public sealed partial class V2rayRuntime
         bool changed,
         CoreSettingsApplyContext context,
         string successMessageKey = ApiMessageKeys.CommonSaved,
-        object? data = null)
+        object? data = null,
+        Func<Task>? beforeRollback = null)
     {
         var runtime = CurrentCoreRuntime;
         var hasActiveChild = HasTrackedCoreProcesses;
@@ -1217,7 +1334,7 @@ public sealed partial class V2rayRuntime
                     new { runtimeState = runtime.State.ToString().ToLowerInvariant() })
                 : OperationView.Fail("core_runtime_faulted", ApiMessageKeys.SettingsCoreApplyFailed,
                     new { runtimeState = runtime.State.ToString().ToLowerInvariant(), processIds = GetActiveCoreProcessIds() });
-            var rollback = await RollBackCoreSettingsAsync(context, failure.Code);
+            var rollback = await RollBackCoreSettingsAsync(context, failure.Code, beforeRollback);
             return CreateSettingsApplyFailure(section, data, failure.Code, ApiMessageKeys.SettingsCoreApplyFailed,
                 rollback.ConfigRestored, rollback.RolledBack, rollback.OldRuntimeRestored, rollback.Detail);
         }
@@ -1236,7 +1353,7 @@ public sealed partial class V2rayRuntime
             if (!restart.Success)
             {
                 AddLog("settings", $"Settings for {section} failed to apply: {restart.Code}; {CurrentCoreRuntime.LastFailure}");
-                var rollback = await RollBackCoreSettingsAsync(context, restart.Code);
+                var rollback = await RollBackCoreSettingsAsync(context, restart.Code, beforeRollback);
                 return CreateSettingsApplyFailure(section, data, restart.Code, ApiMessageKeys.SettingsCoreApplyFailed,
                     rollback.ConfigRestored, rollback.RolledBack, rollback.OldRuntimeRestored, rollback.Detail);
             }
@@ -1251,9 +1368,9 @@ public sealed partial class V2rayRuntime
         return OperationView.Ok(restarted ? ApiMessageKeys.CoreRestarted : successMessageKey, resultData);
     }
 
-    private async Task<CoreSettingsApplyContext> BeginCoreSettingsApplyAsync()
+    private async Task<CoreSettingsApplyContext> BeginCoreSettingsApplyAsync(CancellationToken cancellationToken = default)
     {
-        await _coreGate.WaitAsync();
+        await _coreGate.WaitAsync(cancellationToken);
         try
         {
             var oldConfig = JsonUtils.DeepCopy(Config)
@@ -1282,9 +1399,26 @@ public sealed partial class V2rayRuntime
         }
     }
 
-    private async Task<CoreSettingsRollbackResult> RollBackCoreSettingsAsync(CoreSettingsApplyContext context, string failureCode)
+    private async Task<CoreSettingsRollbackResult> RollBackCoreSettingsAsync(
+        CoreSettingsApplyContext context,
+        string failureCode,
+        Func<Task>? beforeRuntimeRestore = null)
     {
         var configRestored = false;
+        Exception? additionalRollbackFailure = null;
+        if (beforeRuntimeRestore is not null)
+        {
+            try
+            {
+                await beforeRuntimeRestore();
+            }
+            catch (Exception exception)
+            {
+                additionalRollbackFailure = exception;
+                AddLog("settings", $"Additional state rollback failed before Core recovery ({failureCode}): {exception}");
+            }
+        }
+
         try
         {
             RestoreConfigValues(Config, context.OldConfig);
@@ -1309,6 +1443,11 @@ public sealed partial class V2rayRuntime
                 && current.State == CoreRuntimeState.Running
                 && HasTrackedCoreProcesses)
             {
+                if (additionalRollbackFailure is not null)
+                {
+                    AddLog("settings", $"Core settings were restored and the original Core remained healthy, but additional state rollback failed ({failureCode}).");
+                    return new(false, true, true, additionalRollbackFailure.Message);
+                }
                 AddLog("settings", $"Core settings apply failed ({failureCode}); the original Core remained healthy and its previous configuration was restored.");
                 return new(true, true, true, null);
             }
@@ -1324,9 +1463,30 @@ public sealed partial class V2rayRuntime
 
             if (!context.HadActiveChild)
             {
+                if (additionalRollbackFailure is not null)
+                {
+                    SetCoreRuntime(CurrentCoreRuntime with
+                    {
+                        State = CoreRuntimeState.Faulted,
+                        ProcessIds = GetActiveCoreProcessIds(),
+                        LastFailure = $"Settings rollback failed ({failureCode}); additional state rollback failed: {additionalRollbackFailure.Message}",
+                    });
+                    return new(false, false, configRestored, additionalRollbackFailure.Message);
+                }
                 SetCoreRuntime(CoreRuntimeSnapshot.Stopped);
                 AddLog("settings", $"Core settings apply failed ({failureCode}); the original stopped runtime intent was restored.");
                 return new(true, true, true, null);
+            }
+
+            if (additionalRollbackFailure is not null)
+            {
+                SetCoreRuntime(CurrentCoreRuntime with
+                {
+                    State = CoreRuntimeState.Faulted,
+                    ProcessIds = GetActiveCoreProcessIds(),
+                    LastFailure = $"Settings rollback failed ({failureCode}); the previous Core was not relaunched because additional state rollback failed: {additionalRollbackFailure.Message}",
+                });
+                return new(false, false, configRestored, additionalRollbackFailure.Message);
             }
 
             await CoreManager.Instance.Init(Config, OnCoreMessageAsync);
@@ -1488,4 +1648,6 @@ public sealed partial class V2rayRuntime
     }
 
     private sealed record CoreSettingsRollbackResult(bool RolledBack, bool OldRuntimeRestored, bool ConfigRestored, string? Detail);
+
+    private sealed class RegionalPresetConfigApplyException : Exception { }
 }
