@@ -2911,13 +2911,9 @@ public static class ConfigHandler
                 config.ConstItem.SrsSourceUrl = Global.SingboxRulesetSources[1];
                 config.ConstItem.RouteRulesTemplateSourceUrl = Global.RoutingRulesSources[1];
 
-                var xrayDnsRussiaTask = GetExternalDNSItem(ECoreType.Xray, Global.DNSTemplateSources[1] + "v2ray.json");
-                var singboxDnsRussiaTask = GetExternalDNSItem(ECoreType.sing_box, Global.DNSTemplateSources[1] + "sing_box.json");
-                var simpleDnsRussiaTask = GetExternalSimpleDNSItem(Global.DNSTemplateSources[1] + "simple_dns.json");
-                await Task.WhenAll(xrayDnsRussiaTask, singboxDnsRussiaTask, simpleDnsRussiaTask);
-                var xrayDnsRussia = await xrayDnsRussiaTask;
-                var singboxDnsRussia = await singboxDnsRussiaTask;
-                var simpleDnsRussia = await simpleDnsRussiaTask;
+                var xrayDnsRussia = await GetExternalDNSItem(ECoreType.Xray, Global.DNSTemplateSources[1] + "v2ray.json");
+                var singboxDnsRussia = await GetExternalDNSItem(ECoreType.sing_box, Global.DNSTemplateSources[1] + "sing_box.json");
+                var simpleDnsRussia = await GetExternalSimpleDNSItem(Global.DNSTemplateSources[1] + "simple_dns.json");
 
                 if (simpleDnsRussia == null)
                 {
@@ -2938,13 +2934,9 @@ public static class ConfigHandler
                 config.ConstItem.SrsSourceUrl = Global.SingboxRulesetSources[2];
                 config.ConstItem.RouteRulesTemplateSourceUrl = Global.RoutingRulesSources[2];
 
-                var xrayDnsIranTask = GetExternalDNSItem(ECoreType.Xray, Global.DNSTemplateSources[2] + "v2ray.json");
-                var singboxDnsIranTask = GetExternalDNSItem(ECoreType.sing_box, Global.DNSTemplateSources[2] + "sing_box.json");
-                var simpleDnsIranTask = GetExternalSimpleDNSItem(Global.DNSTemplateSources[2] + "simple_dns.json");
-                await Task.WhenAll(xrayDnsIranTask, singboxDnsIranTask, simpleDnsIranTask);
-                var xrayDnsIran = await xrayDnsIranTask;
-                var singboxDnsIran = await singboxDnsIranTask;
-                var simpleDnsIran = await simpleDnsIranTask;
+                var xrayDnsIran = await GetExternalDNSItem(ECoreType.Xray, Global.DNSTemplateSources[2] + "v2ray.json");
+                var singboxDnsIran = await GetExternalDNSItem(ECoreType.sing_box, Global.DNSTemplateSources[2] + "sing_box.json");
+                var simpleDnsIran = await GetExternalSimpleDNSItem(Global.DNSTemplateSources[2] + "simple_dns.json");
 
                 if (simpleDnsIran == null)
                 {

@@ -34,6 +34,7 @@ public sealed partial class V2rayRuntime(
     private readonly RuntimeOperationCoordinator _operations = operations;
     private readonly RuntimeMutationGate _mutations = new();
     private readonly SemaphoreSlim _coreGate = new(1, 1);
+    private readonly SemaphoreSlim _regionalPresetGate = new(1, 1);
     private readonly SemaphoreSlim _coreMonitorGate = new(1, 1);
     private readonly object _subscriptionGate = new();
     private readonly object _speedtestGate = new();
@@ -247,6 +248,10 @@ public sealed partial class V2rayRuntime(
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
         });
         await ConfigHandler.InitBuiltinDNS(Config);
+        await BuiltinDnsProfileBootstrap.EnsureAsync(
+            Config,
+            async () => await AppManager.Instance.DNSItems() ?? [],
+            ConfigHandler.SaveDNSItems);
         await ConfigHandler.InitBuiltinFullConfigTemplate(Config);
         // Keep startup aligned with Desktop's StatusBarViewModel. In particular,
         // InitBuiltinRouting owns the RoutingIndexId -> IsActive migration and must
@@ -1387,6 +1392,33 @@ public sealed partial class V2rayRuntime(
         {
             return false;
         }
+    }
+
+    private async Task<IWebProxy?> GetRegionalPresetProxyAsync(CancellationToken cancellationToken)
+    {
+        var runtime = CurrentCoreRuntime;
+        var inbound = Config.Inbound.FirstOrDefault();
+        if (runtime.State != CoreRuntimeState.Running
+            || !HasTrackedCoreProcesses
+            || runtime.ProxyPort is not int port
+            || inbound is null
+            || port != inbound.LocalPort
+            || !runtime.Listeners.Any(listener => listener.Name == "local"
+                && listener.Port == port
+                && listener.Protocols.Contains("socks", StringComparer.OrdinalIgnoreCase)))
+        {
+            return null;
+        }
+
+        // IsListeningAsync has a 250 ms connect budget. If the live mixed listener is not
+        // already present, do not probe a configured-but-stopped SOCKS port via DownloadService.
+        if (!await IsListeningAsync(port, cancellationToken)
+            || !ReferenceEquals(runtime, CurrentCoreRuntime))
+        {
+            return null;
+        }
+
+        return new WebProxy($"socks5://{Global.Loopback}:{port}");
     }
 
     internal static async Task<bool> IsProjectedListenerUnavailableAsync(

@@ -16,8 +16,6 @@ public class DownloadService
     public IReadOnlyDictionary<string, string>? RequestHeaders { get; init; }
 
     private static readonly string _tag = "DownloadService";
-    private readonly SemaphoreSlim _proxyCheckGate = new(1, 1);
-    private bool _proxyUnavailable;
 
     /// <summary>
     /// Downloads data with the specified proxy and reports progress messages.
@@ -351,35 +349,17 @@ public class DownloadService
     /// </summary>
     private async Task<WebProxy?> GetWebProxy(bool blProxy, CancellationToken cancellationToken = default)
     {
-        if (!blProxy || _proxyUnavailable)
+        if (!blProxy)
+        {
+            return null;
+        }
+        var port = AppManager.Instance.GetLocalPort(EInboundProtocol.socks);
+        if (await SocksPortCheck(Global.Loopback, port, cancellationToken) == false)
         {
             return null;
         }
 
-        await _proxyCheckGate.WaitAsync(cancellationToken);
-        try
-        {
-            if (_proxyUnavailable)
-            {
-                return null;
-            }
-
-            var port = AppManager.Instance.GetLocalPort(EInboundProtocol.socks);
-            if (!await SocksPortCheck(Global.Loopback, port, cancellationToken))
-            {
-                // Several related template downloads may share this DownloadService. Once its
-                // local SOCKS listener is confirmed unavailable, let the remaining requests
-                // fall back to direct access instead of waiting LocalFetch for each one.
-                _proxyUnavailable = true;
-                return null;
-            }
-
-            return new WebProxy($"socks5://{Global.Loopback}:{port}");
-        }
-        finally
-        {
-            _proxyCheckGate.Release();
-        }
+        return new WebProxy($"socks5://{Global.Loopback}:{port}");
     }
 
     /// <summary>

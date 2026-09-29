@@ -191,8 +191,8 @@ public static class WebApiEndpoints
             ApiReplies.Ok(await runtime.GetFullConfigTemplatesAsync(), "coreTemplates.loaded"));
         app.MapPut("/api/settings/core-templates/{coreType}", async (ECoreType coreType, CoreConfigTemplateInput input, V2rayRuntime runtime) =>
             ApiReplies.Operation(await runtime.SaveFullConfigTemplateAsync(coreType, input), failureStatus: StatusCodes.Status404NotFound));
-        app.MapPost("/api/settings/regional-presets/{preset}", async (EPresetType preset, V2rayRuntime runtime) =>
-            ApiReplies.Operation(await runtime.ApplyRegionalPresetAsync(preset)));
+        app.MapPost("/api/settings/regional-presets/{preset}", async (EPresetType preset, V2rayRuntime runtime, CancellationToken cancellationToken) =>
+            ApiReplies.Operation(await runtime.ApplyRegionalPresetAsync(preset, cancellationToken)));
         app.MapDelete("/api/statistics", async (V2rayRuntime runtime) => ApiReplies.Operation(await runtime.ClearStatisticsAsync()));
 
         app.MapPost("/api/backup/webdav/check", async (V2rayRuntime runtime) => ApiReplies.Operation(await runtime.CheckWebDavAsync()));

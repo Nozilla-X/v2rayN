@@ -165,7 +165,8 @@ public sealed record WebSettingsView(
     string? DomainStrategy,
     string? DomainStrategy4Singbox,
     IReadOnlyList<CoreTypeMapping> CoreTypes,
-    WebSettingsOptionsView Options);
+    WebSettingsOptionsView Options,
+    bool ShowIpInfoColumn);
 
 public sealed record InboundSettingsInput(
     int LocalPort,

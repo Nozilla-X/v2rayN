@@ -97,7 +97,8 @@ public sealed partial class V2rayRuntime
                 Global.DomainStrategies.ToArray(),
                 Global.DomainStrategies4Sbox.ToArray(),
                 Global.DomainStrategies.AppendEmpty().ToArray(),
-                Global.DomainStrategies4Sbox.ToArray())));
+                Global.DomainStrategies4Sbox.ToArray()),
+            ShouldShowIpInfoColumn(Config.SpeedTestItem.IPAPIUrl, Config.UiItem.HideColumnIpInfo)));
     }
 
     public async Task<OperationView> ApplySettingsAsync(SettingsApplyInput input)
@@ -141,11 +142,15 @@ public sealed partial class V2rayRuntime
             await _mutations.RunAsync(async () =>
             {
                 var targetInbound = Config.Inbound[0];
+                var destOverride = NormalizeDestOverride(
+                    targetInbound.SniffingEnabled,
+                    inbound.SniffingEnabled,
+                    inbound.DestOverride);
                 targetInbound.LocalPort = inbound.LocalPort;
                 targetInbound.SecondLocalPortEnabled = inbound.SecondLocalPortEnabled;
                 targetInbound.UdpEnabled = inbound.UdpEnabled;
                 targetInbound.SniffingEnabled = inbound.SniffingEnabled;
-                targetInbound.DestOverride = inbound.DestOverride?.Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+                targetInbound.DestOverride = destOverride.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 targetInbound.RouteOnly = inbound.RouteOnly;
                 targetInbound.AllowLANConn = inbound.AllowLANConn;
                 targetInbound.NewPort4LAN = inbound.AllowLANConn && inbound.NewPort4LAN;
@@ -241,11 +246,12 @@ public sealed partial class V2rayRuntime
         await _mutations.RunAsync(async () =>
         {
             var inbound = Config.Inbound[0];
+            var destOverride = NormalizeDestOverride(inbound.SniffingEnabled, input.SniffingEnabled, input.DestOverride);
             inbound.LocalPort = input.LocalPort;
             inbound.SecondLocalPortEnabled = input.SecondLocalPortEnabled;
             inbound.UdpEnabled = input.UdpEnabled;
             inbound.SniffingEnabled = input.SniffingEnabled;
-            inbound.DestOverride = input.DestOverride?.Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+            inbound.DestOverride = destOverride.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             inbound.RouteOnly = input.RouteOnly;
             inbound.AllowLANConn = input.AllowLANConn;
             inbound.NewPort4LAN = input.AllowLANConn && input.NewPort4LAN;
@@ -893,36 +899,174 @@ public sealed partial class V2rayRuntime
             data: new { coreType = coreType.ToString() });
     }
 
-    public async Task<OperationView> ApplyRegionalPresetAsync(EPresetType preset)
+    public async Task<OperationView> ApplyRegionalPresetAsync(EPresetType preset, CancellationToken cancellationToken = default)
     {
         if (preset is not (EPresetType.Default or EPresetType.Russia or EPresetType.Iran))
         {
             return OperationView.Fail("regional_preset_invalid", ApiMessageKeys.RegionalPresetInvalid);
         }
+
+        await _regionalPresetGate.WaitAsync(cancellationToken);
+        try
+        {
+            var existingDnsItems = await AppManager.Instance.DNSItems() ?? [];
+            var existingRoutingItems = await AppManager.Instance.RoutingItems() ?? [];
+            var proxy = preset == EPresetType.Default
+                ? null
+                : await GetRegionalPresetProxyAsync(cancellationToken);
+            var stager = new RegionalPresetStager(async (url, webProxy, token) =>
+            {
+                var download = new DownloadService();
+                return await download.TryDownloadString(url, webProxy, string.Empty, token);
+            });
+
+            return await RegionalPresetWorkflow.RunAsync(
+                token => stager.StageAsync(preset, existingDnsItems, existingRoutingItems, proxy, token),
+                ApplyStagedRegionalPresetAsync,
+                cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            AddLog("settings", $"Regional preset staging failed ({preset}); no settings were changed: {exception}");
+            return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
+        }
+        finally
+        {
+            _regionalPresetGate.Release();
+        }
+    }
+
+    private async Task<OperationView> ApplyStagedRegionalPresetAsync(RegionalPresetStage stage)
+    {
         await using var applyContext = await BeginCoreSettingsApplyAsync();
         if (applyContext.Failure is { } applyFailure) return applyFailure;
-        var success = await _mutations.RunAsync(async () =>
-        {
-            if (!await ConfigHandler.ApplyRegionalPreset(Config, preset))
-            {
-                return false;
-            }
 
-            if (await ConfigHandler.InitRouting(Config, false) != 0)
+        var applyResult = await RegionalPresetTransaction.RunAsync(
+            () => _mutations.RunAsync(async () =>
+        {
+            Config.ConstItem.GeoSourceUrl = stage.GeoSourceUrl;
+            Config.ConstItem.SrsSourceUrl = stage.SrsSourceUrl;
+            Config.ConstItem.RouteRulesTemplateSourceUrl = stage.RouteRulesTemplateSourceUrl;
+            Config.SimpleDNSItem = stage.SimpleDnsItem;
+
+            if (stage.Preset == EPresetType.Default)
             {
-                return false;
+                await SQLiteHelper.Instance.DeleteAllAsync<DNSItem>();
+                foreach (var item in stage.DnsItems)
+                {
+                    if (await ConfigHandler.SaveDNSItems(Config, item) != 0)
+                    {
+                        throw new IOException($"The {item.CoreType} DNS profile could not be saved.");
+                    }
+                }
+
+                // Default routing uses embedded data only; this call performs no network I/O
+                // because the route template source was cleared in the staged plan.
+                if (await ConfigHandler.InitRouting(Config, false) != 0)
+                {
+                    throw new IOException("The built-in routing profiles could not be initialized.");
+                }
+            }
+            else
+            {
+                foreach (var item in stage.DnsItems)
+                {
+                    if (await ConfigHandler.SaveDNSItems(Config, item) != 0)
+                    {
+                        throw new IOException($"The {item.CoreType} DNS profile could not be saved.");
+                    }
+                }
+
+                var currentRoutes = await AppManager.Instance.RoutingItems() ?? [];
+                var hasVersion = stage.RoutingTemplateVersion is { Length: > 0 } version
+                    && currentRoutes.Any(item => item.Remarks?.StartsWith(version, StringComparison.Ordinal) == true);
+                if (!hasVersion)
+                {
+                    var nextSort = currentRoutes.Count;
+                    foreach (var item in stage.RoutingItems)
+                    {
+                        item.Sort = ++nextSort;
+                        if (await ConfigHandler.AddBatchRoutingRules(item, item.RuleSet ?? "[]") != 0)
+                        {
+                            throw new IOException($"The routing profile '{item.Remarks}' could not be saved.");
+                        }
+                    }
+
+                    if (stage.RoutingItems.Count > 0 && !currentRoutes.Any(item => item.IsActive))
+                    {
+                        var firstAdded = (await AppManager.Instance.RoutingItems() ?? [])
+                            .FirstOrDefault(item => item.Remarks == stage.RoutingItems[0].Remarks);
+                        if (firstAdded is not null && await ConfigHandler.SetDefaultRouting(Config, firstAdded) != 0)
+                        {
+                            throw new IOException("The first regional routing profile could not be activated.");
+                        }
+                    }
+                }
             }
 
             await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
-            return true;
-        });
-        if (success)
+        }),
+            () => RestoreRegionalPresetSnapshotAsync(applyContext));
+        if (!applyResult.Success)
         {
-            return await CompleteCoreAffectingChangeAsync("regional-preset", true,
-                applyContext,
-                ApiMessageKeys.CommonCompleted, new { preset = preset.ToString() });
+            AddLog("settings", $"Regional preset apply failed ({stage.Preset}); rollback={(applyResult.RollbackSucceeded ? "succeeded" : "failed")}: {applyResult.Error}");
+            return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
         }
-        return OperationView.Fail("regional_preset_failed", ApiMessageKeys.RegionalPresetFailed);
+
+        return await CompleteCoreAffectingChangeAsync("regional-preset", true,
+            applyContext,
+            ApiMessageKeys.CommonCompleted, new { preset = stage.Preset.ToString() });
+    }
+
+    private async Task<bool> RestoreRegionalPresetSnapshotAsync(CoreSettingsApplyContext context)
+    {
+        try
+        {
+            await _mutations.RunAsync(async () =>
+            {
+                RestoreConfigValues(Config, context.OldConfig);
+                await EnsureConfigSaveSucceededAsync(() => ConfigHandler.SaveConfig(Config));
+
+                await SQLiteHelper.Instance.DeleteAllAsync<RoutingItem>();
+                if (context.OldRoutingItems.Length > 0
+                    && await SQLiteHelper.Instance.InsertAllAsync(context.OldRoutingItems) != context.OldRoutingItems.Length)
+                {
+                    throw new IOException("Routing profiles could not be restored from the regional preset snapshot.");
+                }
+                await SQLiteHelper.Instance.DeleteAllAsync<DNSItem>();
+                if (context.OldDnsItems.Length > 0
+                    && await SQLiteHelper.Instance.InsertAllAsync(context.OldDnsItems) != context.OldDnsItems.Length)
+                {
+                    throw new IOException("DNS profiles could not be restored from the regional preset snapshot.");
+                }
+                AppManager.Instance.Reset();
+            });
+            return true;
+        }
+        catch (Exception exception)
+        {
+            AddLog("settings", $"Regional preset rollback failed: {exception}");
+            return false;
+        }
+    }
+
+    internal static bool ShouldShowIpInfoColumn(string? ipApiUrl, bool hideColumnIpInfo) =>
+        !string.IsNullOrEmpty(ipApiUrl) && !hideColumnIpInfo;
+
+    internal static string[] NormalizeDestOverride(bool wasSniffingEnabled, bool willEnableSniffing, IEnumerable<string>? destOverride)
+    {
+        var protocols = destOverride?.ToArray() ?? [];
+        if (!wasSniffingEnabled && willEnableSniffing && protocols.Length == 0)
+        {
+            // The public InItem defaults are the same defaults Desktop uses for a fresh profile.
+            return new InItem().DestOverride?.ToArray() ?? [];
+        }
+
+        return protocols;
     }
 
     public async Task<OperationView> ClearStatisticsAsync()
@@ -1041,7 +1185,12 @@ public sealed partial class V2rayRuntime
     {
         var runtime = CurrentCoreRuntime;
         var hasActiveChild = HasTrackedCoreProcesses;
-        var action = CoreSettingsApplyPolicy.Decide(runtime.State, hasActiveChild, changed);
+        var execution = await CoreSettingsApplyExecutor.ExecuteAsync(
+            runtime.State,
+            hasActiveChild,
+            changed,
+            () => RestartCoreLockedAsync(CancellationToken.None));
+        var action = execution.Action;
         if (action is CoreSettingsApplyAction.Busy or CoreSettingsApplyAction.Inconsistent)
         {
             var failure = action == CoreSettingsApplyAction.Busy
@@ -1064,7 +1213,7 @@ public sealed partial class V2rayRuntime
         var restarted = false;
         if (action == CoreSettingsApplyAction.Restart)
         {
-            var restart = await RestartCoreLockedAsync(CancellationToken.None);
+            var restart = execution.RestartResult!;
             if (!restart.Success)
             {
                 AddLog("settings", $"Settings for {section} failed to apply: {restart.Code}; {CurrentCoreRuntime.LastFailure}");
